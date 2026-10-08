@@ -146,3 +146,9 @@ Administrative commands return JSON on success and a nonzero exit status on fail
 escapes terminal control characters in displayed JSON, errors and file paths.
 See [Pages](Pages.md) for author, moderator, reader and version 2 hosting workflows.
 Mail, transfers and shell services are not yet provided.
+
+## Private mail
+
+`HyperNetSuite --config Profile.json mail --help` lists address, device, delivery,
+placement and archive commands. Follow [PrivateMail](PrivateMail.md) for invited
+member setup, explicit first-contact verification and recovery.

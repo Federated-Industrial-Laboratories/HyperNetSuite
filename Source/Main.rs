@@ -8,6 +8,20 @@ mod federation;
 mod federation_proof;
 #[path = "Files.rs"]
 mod files;
+#[path = "Mail.rs"]
+mod mail;
+#[path = "MailArchive.rs"]
+mod mail_archive;
+#[path = "MailCrypto.rs"]
+mod mail_crypto;
+#[path = "MailDelivery.rs"]
+mod mail_delivery;
+#[path = "MailProtocol.rs"]
+mod mail_protocol;
+#[path = "MailTls.rs"]
+mod mail_tls;
+#[path = "MailVault.rs"]
+mod mail_vault;
 #[path = "Markup.rs"]
 mod markup;
 #[path = "Navigation.rs"]
@@ -51,6 +65,8 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Private encrypted mail, selected storage and device management.
+    Mail(mail::Arguments),
     /// Agree, share, review and read explicitly federated Pages.
     #[command(subcommand)]
     Federation(federation::Command),
@@ -261,6 +277,7 @@ fn run() -> Result<()> {
         }
     };
     match options.command {
+        Command::Mail(arguments) => return mail::run(options.config.as_deref(), arguments),
         Command::Pages(command) => return pages::run(options.config.as_deref(), command),
         Command::Federation(command) => return federation::run(options.config.as_deref(), command),
         Command::Keygen { output } => {
@@ -492,7 +509,8 @@ fn run() -> Result<()> {
                 Command::Keygen { .. }
                 | Command::Configure { .. }
                 | Command::Pages(_)
-                | Command::Federation(_) => {
+                | Command::Federation(_)
+                | Command::Mail(_) => {
                     unreachable!()
                 }
             };
