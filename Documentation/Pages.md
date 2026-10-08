@@ -79,9 +79,14 @@ retract bytes already received. Administrators remain trusted for authorisation.
 
 Arrow keys or `j`/`k` scroll; Page Up/Down and Home/End move further. Tab and Shift
 Tab select a link. Enter follows an internal link after checking its network,
-author and namespace. Cross-network trust is never added automatically. External
-HTTPS references are displayed only. `b` returns through at most 16 retained pages;
-`q`, Escape or Ctrl-C exits. A small terminal requests resizing. Pipes and TERM=dumb
+author and namespace. Native and foreign pages use one navigation history.
+Foreign links require an active local agreement for their exact origin network
+and namespace; trust is never added automatically. A selected native replica
+remains required for native links and prevents following foreign links.
+External HTTPS references are displayed only. `b` returns through at most 16
+retained pages across either kind of page; `r` refreshes the current native or
+federated publication with its corresponding proof checks. Back at the first
+page keeps that page open. `q`, Escape or Ctrl-C exits the whole reader. A small terminal requests resizing. Pipes and TERM=dumb
 use plain output without terminal controls. Unicode width varies by terminal;
 use `--ascii` when necessary.
 

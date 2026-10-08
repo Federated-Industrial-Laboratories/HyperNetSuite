@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Independent signed HyperNet command client and local device-key management.
+#[path = "BridgeConsent.rs"]
+mod bridge_consent;
+#[path = "Federation.rs"]
+mod federation;
+#[path = "FederationProof.rs"]
+mod federation_proof;
 #[path = "Files.rs"]
 mod files;
 #[path = "Markup.rs"]
 mod markup;
+#[path = "Navigation.rs"]
+mod navigation;
 #[path = "PageProof.rs"]
 mod page_proof;
 #[path = "Pages.rs"]
@@ -41,6 +49,9 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Agree, share, review and read explicitly federated Pages.
+    #[command(subcommand)]
+    Federation(federation::Command),
     /// Author, review and read inert HyperNet Pages.
     #[command(subcommand)]
     Pages(pages::Command),
@@ -82,7 +93,7 @@ enum Command {
     Invite {
         #[arg(long)]
         device_key: String,
-        #[arg(long, value_parser=clap::value_parser!(u64).range(1..=7))]
+        #[arg(long, value_parser=grant_mask)]
         grants: u64,
         /// Absolute Unix expiry, no more than seven days ahead.
         #[arg(long)]
@@ -99,7 +110,7 @@ enum Command {
     Grant {
         #[arg(long)]
         device_key: String,
-        #[arg(long, value_parser=clap::value_parser!(u64).range(1..=7))]
+        #[arg(long, value_parser=grant_mask)]
         grants: u64,
         #[arg(long)]
         expires: u64,
@@ -191,6 +202,13 @@ fn main() {
     }
 }
 
+fn grant_mask(value: &str) -> std::result::Result<u64, String> {
+    match value.parse::<u64>() {
+        Ok(mask @ (1 | 3 | 5 | 7 | 9)) => Ok(mask),
+        _ => Err("grant must be 1, 3, 5, 7 or dedicated federation grant 9".into()),
+    }
+}
+
 fn now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
@@ -242,6 +260,7 @@ fn run() -> Result<()> {
     };
     match options.command {
         Command::Pages(command) => return pages::run(options.config.as_deref(), command),
+        Command::Federation(command) => return federation::run(options.config.as_deref(), command),
         Command::Keygen { output } => {
             let key = SigningKey::generate(&mut OsRng);
             let identity = Identity {
@@ -468,7 +487,10 @@ fn run() -> Result<()> {
                     checked_key(&profile)?;
                     json!({"type":"Heartbeat","profile":profile})
                 }
-                Command::Keygen { .. } | Command::Configure { .. } | Command::Pages(_) => {
+                Command::Keygen { .. }
+                | Command::Configure { .. }
+                | Command::Pages(_)
+                | Command::Federation(_) => {
                     unreachable!()
                 }
             };
