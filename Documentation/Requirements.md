@@ -16,4 +16,5 @@ security certification claims.
 - Provide safe plain-text output for limited terminals and redirected commands.
 - Keep credentials scoped to the selected network, identity and operation.
 - Explain storage placement, offline delivery and privacy choices clearly.
+- Default Private mailboxes to persistent storage only on user-selected systems.
 - Keep Linux as the initial platform family while preserving portable interfaces.

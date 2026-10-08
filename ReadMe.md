@@ -11,3 +11,5 @@ mailboxes, file exchange and explicitly authorised service connections. They use
 the same documented interfaces available to other applications.
 
 See [Requirements](Documentation/Requirements.md) for the intended contracts.
+
+Licensed under the [MIT License](Licence.txt).
