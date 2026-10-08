@@ -63,7 +63,7 @@ pub fn client(config: &Config) -> Result<Client> {
     }
     Ok(builder.build()?)
 }
-fn signed(
+pub fn signed(
     config: &Config,
     identity: &Identity,
     request_id: &str,
@@ -74,7 +74,7 @@ fn signed(
     let payload = serde_json::to_vec(
         &json!({"version":1,"requestId":request_id,"issuedAt":issued_at,"command":command}),
     )?;
-    if payload.len() > 16384 {
+    if payload.len() > 65536 {
         bail!("command exceeds protocol limit");
     }
     let mut message = Vec::from(DOMAIN);
@@ -88,8 +88,12 @@ fn signed(
         json!({"network":config.network,"publicKey":identity.public_key,"payload":URL_SAFE_NO_PAD.encode(payload),"signature":hex::encode(signature.to_bytes())}),
     )
 }
-pub fn sign_consent(identity: &Identity, payload: &[u8]) -> Result<Vec<u8>> {
-    let mut message = Vec::from(b"HyperNet/Consent/1\0" as &[u8]);
+pub fn sign_consent(identity: &Identity, payload: &[u8], version: u32) -> Result<Vec<u8>> {
+    let mut message = match version {
+        1 => b"HyperNet/Consent/1\0".to_vec(),
+        2 => b"HyperNet/Consent/2\0".to_vec(),
+        _ => bail!("unsupported consent version"),
+    };
     message.extend_from_slice(payload);
     let secret = zeroize::Zeroizing::new(hex_bytes::<32>(&identity.secret_key)?);
     let key = SigningKey::from_bytes(&secret);
@@ -104,16 +108,26 @@ pub fn send(
     issued_at: u64,
     command: Value,
 ) -> Result<Value> {
+    send_envelope(
+        config,
+        &signed(config, identity, request_id, issued_at, command)?,
+    )
+}
+
+pub fn send_envelope(config: &Config, envelope: &Value) -> Result<Value> {
+    if serde_json::to_vec(envelope)?.len() > 98304 {
+        bail!("request exceeds protocol limit");
+    }
     let url = endpoint(&config.endpoint)?.join("V1/Command")?;
-    let response=client(config)?.post(url).json(&signed(config,identity,request_id,issued_at,command)?)
+    let response=client(config)?.post(url).json(envelope)
         .send().map_err(|_|anyhow::anyhow!("request failed; network availability, certificate trust or response time may be invalid"))?;
     let status = response.status();
     let mut bytes = Vec::new();
     response
-        .take(65537)
+        .take(262145)
         .read_to_end(&mut bytes)
         .context("response read failed")?;
-    if bytes.len() > 65536 {
+    if bytes.len() > 262144 {
         bail!("response exceeded protocol limit");
     }
     let value: Value = serde_json::from_slice(&bytes).context("invalid response JSON")?;
