@@ -53,7 +53,10 @@ HyperNetSuite --config Administrator/Profile.json invite --device-key DEVICE_HEX
 ```
 
 Grant masks are 1 for membership, 3 for membership and hosting, 5 for membership
-and administration, and 7 for all three. Administrators cannot register hosting consent. Use a
+and administration, and 7 for all three. Grant 9 selects membership and the
+separate federation bridge service. It cannot combine with hosting or
+administration. See [Federation](Federation.md) for that workflow.
+Administrators cannot register hosting consent. Use a
 separate member-and-host credential for a service. A credential with retained
 hosting consent cannot be promoted to administrator. Invitation expiry is an absolute Unix
 time, within seven days. Membership initially shares this expiry. Transfer the

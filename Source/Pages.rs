@@ -179,7 +179,7 @@ fn descriptor(config: &Config, identity: &Identity, page_id: &str) -> Result<Des
     bail!("page is not currently published")
 }
 
-fn read(
+pub(crate) fn read(
     config: &Config,
     identity: &Identity,
     page_id: &str,
@@ -240,79 +240,6 @@ fn read(
     );
     let body = page_proof::verify(&config.network, &descriptor, &bundle)?;
     Ok((descriptor, body, revision))
-}
-
-fn browse(
-    config: &Config,
-    identity: &Identity,
-    first: String,
-    replica: Option<&str>,
-    tui: bool,
-    ascii: bool,
-) -> Result<()> {
-    let mut current = read(config, identity, &first, replica)?;
-    let mut history = Vec::new();
-    loop {
-        let (descriptor, source, revision) = &current;
-        let document = markup::parse(source).map_err(anyhow::Error::msg)?;
-        let metadata = vec![
-            "Approved at fetch; retained display. Refresh revalidates authority.".into(),
-            format!(
-                "Network {} | namespace {} | page {}",
-                config.network, descriptor.namespace, descriptor.page_id
-            ),
-            format!("Author {}", descriptor.author),
-            format!("Reviewer {}", descriptor.reviewer),
-            format!(
-                "Publication {} | authority revision {} | SHA256 {}",
-                descriptor.publication_version, revision, descriptor.digest
-            ),
-            replica
-                .map(|key| format!("Content supplied by replica {key}"))
-                .unwrap_or_else(|| "Content supplied by authority".into()),
-        ];
-        match reader::show(&document, &metadata, tui, ascii)? {
-            reader::Action::Quit => return Ok(()),
-            reader::Action::Refresh => {
-                current = read(config, identity, &descriptor.page_id, replica)?
-            }
-            reader::Action::Back => {
-                if let Some(previous) = history.pop() {
-                    current = previous;
-                }
-            }
-            reader::Action::Open(index) => {
-                let link = document
-                    .links
-                    .get(index)
-                    .context("link selection is invalid")?;
-                if let Some(address) = link.target.strip_prefix("hypernet://") {
-                    let parts: Vec<_> = address.split('/').collect();
-                    ensure!(
-                        parts.len() == 4 && parts[0] == config.network,
-                        "link requires a separately trusted network profile"
-                    );
-                    let next = read(config, identity, parts[3], replica)?;
-                    ensure!(
-                        next.0.author == parts[1] && next.0.namespace == parts[2],
-                        "link identity does not match publication"
-                    );
-                    if history.len() == 16 {
-                        history.remove(0);
-                    }
-                    history.push(current);
-                    current = next;
-                } else {
-                    // External references cannot cause a fetch, shell invocation or browser launch.
-                    eprintln!(
-                        "External reference (display only): {}",
-                        crate::terminal_text(&link.target, false)
-                    );
-                    return Ok(());
-                }
-            }
-        }
-    }
 }
 
 pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
@@ -453,7 +380,14 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
             replica,
             tui,
             ascii,
-        } => browse(&config, &identity, page_id, replica.as_deref(), tui, ascii)?,
+        } => crate::navigation::browse(
+            &config,
+            &identity,
+            crate::navigation::Location::Native(page_id),
+            replica.as_deref(),
+            tui,
+            ascii,
+        )?,
     }
     Ok(())
 }

@@ -11,7 +11,10 @@ Build with `cargo build --locked --release`. See
 The node and client have separate source, build and package lifecycles.
 
 [Pages](Documentation/Pages.md) supports inert text, exact-content manual review,
-verified publication and reads from explicitly consenting replicas. Mailboxes,
+verified publication and reads from explicitly consenting replicas.
+[Federation](Documentation/Federation.md) adds bilateral agreements, explicit
+author sharing, destination review and independently verified foreign reads.
+Mailboxes,
 file exchange and service connections remain future capabilities.
 It does not yet constitute a qualified production Internet deployment.
 See [Requirements](Documentation/Requirements.md) for the wider product scope.
