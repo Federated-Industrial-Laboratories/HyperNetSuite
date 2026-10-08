@@ -5,7 +5,7 @@ use crate::{
     federation_proof::{self as proof, Publication, Treaty},
     files, markup,
     page_proof::{Bundle, Descriptor, Envelope},
-    protocol, reader,
+    protocol, reader, share_withdrawal,
 };
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
@@ -58,7 +58,7 @@ pub enum Command {
     },
     /// Withdraw network bridge consent after stopping the local bridge.
     WithdrawConsent,
-    /// Allow or stop sharing an exact current native publication as its author.
+    /// Allow an exact publication, or durably request author withdrawal.
     Share {
         #[arg(long)]
         agreement: String,
@@ -66,6 +66,22 @@ pub enum Command {
         page_id: String,
         #[arg(long)]
         withdraw: bool,
+    },
+    /// Retry a saved withdrawal; unbound offline intents need explicit generation confirmation.
+    RetryWithdrawal {
+        #[arg(long)]
+        agreement: String,
+        #[arg(long)]
+        page_id: String,
+        #[arg(long)]
+        expected_generation: Option<u64>,
+    },
+    /// Read own share generation even when the publication or agreement is inactive.
+    ShareStatus {
+        #[arg(long)]
+        agreement: String,
+        #[arg(long)]
+        page_id: String,
     },
     Queue {
         #[arg(long)]
@@ -256,11 +272,39 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
             &certificate,
         )?,
         Command::WithdrawConsent => json!({"type":"BridgeWithdraw"}),
+        Command::RetryWithdrawal {
+            agreement,
+            page_id,
+            expected_generation,
+        } => {
+            return share_withdrawal::run(
+                &config,
+                &identity,
+                &agreement,
+                &page_id,
+                true,
+                expected_generation,
+            );
+        }
+        Command::ShareStatus { agreement, page_id } => {
+            return crate::print_value(&share_withdrawal::status(
+                &config, &identity, &agreement, &page_id,
+            )?);
+        }
         Command::Share {
             agreement,
             page_id,
             withdraw,
         } => {
+            if withdraw {
+                return share_withdrawal::run(
+                    &config, &identity, &agreement, &page_id, false, None,
+                );
+            }
+            let pending =
+                share_withdrawal::Pending::lock(&config, &identity, &agreement, &page_id)?;
+            pending.require_resolved()?;
+            let status = share_withdrawal::status(&config, &identity, &agreement, &page_id)?;
             let treaty = accepted(&config, &identity, &agreement)?;
             ensure!(
                 treaty.source_network == config.network,
@@ -283,7 +327,8 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
                     && descriptor.namespace == treaty.source_namespace,
                 "only the exact source author can share an in-scope publication"
             );
-            json!({"type":"FederationShare","agreementId":agreement,"agreementDigest":treaty.digest()?,"pageId":page_id,"publicationVersion":descriptor.publication_version,"descriptorDigest":proof::descriptor_digest(&descriptor)?,"allow":!withdraw})
+            let request = json!({"type":"FederationShare","agreementId":agreement,"agreementDigest":treaty.digest()?,"pageId":page_id,"publicationVersion":descriptor.publication_version,"descriptorDigest":proof::descriptor_digest(&descriptor)?,"allow":true,"expectedGeneration":status["generation"]});
+            return crate::print_value(&call(&config, &identity, request)?);
         }
         Command::Queue { agreement, after } | Command::List { agreement, after } => {
             protocol::hex_bytes::<16>(&agreement)?;

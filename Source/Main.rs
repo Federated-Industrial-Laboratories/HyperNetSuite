@@ -20,6 +20,8 @@ mod pages;
 mod protocol;
 #[path = "Reader.rs"]
 mod reader;
+#[path = "ShareWithdrawal.rs"]
+mod share_withdrawal;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};

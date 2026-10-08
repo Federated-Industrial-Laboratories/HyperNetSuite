@@ -121,6 +121,8 @@ struct Share {
     publication_version: u64,
     descriptor_digest: String,
     allow: bool,
+    #[serde(default, rename = "expectedGeneration")]
+    _expected_generation: Option<u64>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
