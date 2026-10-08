@@ -133,12 +133,51 @@ Loss of either quorum or transport path prevents lease renewal. Both clocks must
 agree closely; future-dated evidence fails closed. Restarting cannot make expired
 evidence current.
 
-Already displayed or exported bytes cannot be recalled. Retained screen content
-is marked as approval at fetch; refresh requires current permission. The command
-to withdraw author sharing needs a currently readable native publication; native
-withdrawal or loss of source approval already prevents export. A failed sharing
-withdrawal leaves the previous opt-in intact, which can resume if source approval
-is restored. Repeat the withdrawal after recovery or withdraw the native page.
-Manual approval is
-the default. Model adapters, mail, file transfer and shell services are separate
-future features.
+Author withdrawal does not require readable content or current reviewer approval.
+It still requires the author's current valid membership. The authority checks
+immutable ownership and the exact network, agreement and page scope. A committed
+withdrawal remains effective after reviewer restoration or broker restart.
+Re-sharing requires a fresh explicit command against the current generation.
+
+Before contacting the authority, the client saves a signed intent in a private
+`Withdrawals` directory beside the configured identity file. The directory is
+mode 0700; pending files are mode 0600 and contain no private key. Keep this
+identity directory under the user's control. Sharing operations use a per-page
+lock and refuse a new opt-in while a local withdrawal remains pending. Keep using
+the same identity directory across profiles to preserve this local coordination.
+
+The withdrawal command reports `Confirmed` only after an authority commit.
+It reports `Pending` and exits unsuccessfully if it cannot confirm the change.
+A pending request is retained across process restarts; it is not a background
+service and does not retry automatically. Use:
+
+```sh
+HyperNetSuite --config SourceAuthor.json federation retry-withdrawal \
+  --agreement AGREEMENT_ID --page-id PAGE_ID
+HyperNetSuite --config SourceAuthor.json federation share-status \
+  --agreement AGREEMENT_ID --page-id PAGE_ID
+```
+
+If the original request could not observe a generation before the outage, retry
+shows `GenerationConfirmationRequired` and the current sharing status. Review
+that state, then explicitly target the displayed generation:
+
+```sh
+HyperNetSuite --config SourceAuthor.json federation retry-withdrawal \
+  --agreement AGREEMENT_ID --page-id PAGE_ID --expected-generation GENERATION
+```
+
+This confirmation also resolves a conflict with concurrent new consent if the
+original withdrawal never committed. A pending command already bound to a
+generation retries that generation by default. If the withdrawal committed and
+another device subsequently re-shared, retry reports `Confirmed` with
+`SupersededByLaterConsent`; it does not cancel the newer consent. Pending files
+are removed only after confirmation. To withdraw a newer grant after such a
+retry, run a new `share --withdraw` command. Deleting a pending file is not withdrawal.
+
+The five-second remote permission bound starts after committed withdrawal, not
+when an offline user creates an intent. An authority that has not received the
+request may still renew sharing. Already displayed or exported bytes cannot be
+recalled. Retained screen content is marked as approval at fetch; refresh requires
+current permission. Manual approval is the default. Model adapters, mail, file
+transfer and shell services are separate future features.
