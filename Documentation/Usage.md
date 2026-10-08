@@ -11,7 +11,10 @@ bash Tools/Install.sh /Chosen/Prefix
 The installer writes `Bin/HyperNetSuite` and its documentation. It does not
 create a service or change shell profiles. Remove those installed files to
 uninstall. Preserve device keys until their memberships have been revoked.
-Linux is the current supported client platform.
+Linux is the current supported client platform. Run
+`python3 Tests/ReaderTerminal.py /Chosen/Prefix/Bin/HyperNetSuite` to check
+the installed terminal workflow and `python3 Tests/MarkupRobustness.py
+/Chosen/Prefix/Bin/HyperNetSuite` for the bounded parser mutation check.
 
 Create a private directory and generate a device identity:
 
@@ -50,7 +53,9 @@ HyperNetSuite --config Administrator/Profile.json invite --device-key DEVICE_HEX
 ```
 
 Grant masks are 1 for membership, 3 for membership and hosting, 5 for membership
-and administration, and 7 for all three. Invitation expiry is an absolute Unix
+and administration, and 7 for all three. Administrators cannot register hosting consent. Use a
+separate member-and-host credential for a service. A credential with retained
+hosting consent cannot be promoted to administrator. Invitation expiry is an absolute Unix
 time, within seven days. Membership initially shares this expiry. Transfer the
 invitation file through an authenticated confidential channel. Its secret is
 never printed or placed in an argument or URL.
@@ -134,7 +139,7 @@ HyperNetSuite --config Device/Profile.json withdraw
 
 A successful heartbeat reports a short lease, not permission for future work
 without revalidation. Stale, expired, revoked or unavailable authority is denied.
-Commands return JSON on success and a nonzero exit status on failure. The client
+Administrative commands return JSON on success and a nonzero exit status on failure. The client
 escapes terminal control characters in displayed JSON, errors and file paths.
-No Pages, mail, transfers
-or shell services are provided by this client version.
+See [Pages](Pages.md) for author, moderator, reader and version 2 hosting workflows.
+Mail, transfers and shell services are not yet provided.

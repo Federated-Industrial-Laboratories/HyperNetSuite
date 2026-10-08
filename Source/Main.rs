@@ -2,8 +2,16 @@
 // Independent signed HyperNet command client and local device-key management.
 #[path = "Files.rs"]
 mod files;
+#[path = "Markup.rs"]
+mod markup;
+#[path = "PageProof.rs"]
+mod page_proof;
+#[path = "Pages.rs"]
+mod pages;
 #[path = "Protocol.rs"]
 mod protocol;
+#[path = "Reader.rs"]
+mod reader;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -33,6 +41,9 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Author, review and read inert HyperNet Pages.
+    #[command(subcommand)]
+    Pages(pages::Command),
     /// Generate a device key locally. The secret is written only to a new private file.
     Keygen {
         #[arg(long)]
@@ -107,6 +118,9 @@ enum Command {
         expires: u64,
         #[arg(long)]
         certificate: String,
+        /// Exact signed local consent file; required for Pages hosting.
+        #[arg(long)]
+        document: Option<PathBuf>,
     },
     /// Withdraw network hosting consent. Stop the local host first for immediate withdrawal.
     Withdraw,
@@ -162,6 +176,9 @@ struct HostSpecification {
     state_bytes: u64,
     authority_endpoint: String,
     authority_address: String,
+    services: Option<Vec<String>>,
+    namespaces: Option<Vec<String>>,
+    page_cache_bytes: Option<u64>,
 }
 
 fn main() {
@@ -224,6 +241,7 @@ fn run() -> Result<()> {
         }
     };
     match options.command {
+        Command::Pages(command) => return pages::run(options.config.as_deref(), command),
         Command::Keygen { output } => {
             let key = SigningKey::generate(&mut OsRng);
             let identity = Identity {
@@ -299,16 +317,49 @@ fn run() -> Result<()> {
                             "host authority endpoint must use a DNS name and the pinned address port"
                         );
                     }
-                    let payload = serde_json::to_vec(&json!({
-                        "version":1,"network":config.network,"deviceKey":identity.public_key,
+                    let version = match (
+                        &document.services,
+                        &document.namespaces,
+                        document.page_cache_bytes,
+                    ) {
+                        (None, None, None) => 1,
+                        (Some(services), Some(namespaces), Some(cache)) => {
+                            if services != &["Pages"]
+                                || namespaces.is_empty()
+                                || namespaces.len() > 16
+                                || namespaces.iter().any(|name| !markup::namespace(name))
+                                || namespaces
+                                    .iter()
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .len()
+                                    != namespaces.len()
+                                || cache < 65536
+                                || cache > document.state_bytes.saturating_sub(262144)
+                            {
+                                bail!("invalid Pages scope or cache allowance");
+                            }
+                            2
+                        }
+                        _ => bail!(
+                            "Pages consent requires services, namespaces and pageCacheBytes together"
+                        ),
+                    };
+                    let mut value = json!({
+                        "version":version,"network":config.network,"deviceKey":identity.public_key,
                         "grants":document.grants,"expires":document.expires,
                         "memoryBytes":document.memory_bytes,"pids":document.pids,
                         "cpuQuota":document.cpu_quota,"cpuPeriod":document.cpu_period,
                         "stateBytes":document.state_bytes,"authorityEndpoint":document.authority_endpoint,
                         "authorityAddress":document.authority_address
-                    }))?;
+                    });
+                    if version == 2 {
+                        value["services"] = json!(document.services);
+                        value["namespaces"] = json!(document.namespaces);
+                        value["pageCacheBytes"] = json!(document.page_cache_bytes);
+                    }
+                    let payload = serde_json::to_vec(&value)?;
                     protocol::endpoint(&document.authority_endpoint)?;
-                    let mut bytes = protocol::sign_consent(&identity, &payload)?;
+                    let mut bytes = protocol::sign_consent(&identity, &payload, version)?;
                     bytes.push(b'\n');
                     let profile = hex::encode(Sha256::digest(&bytes));
                     bytes.pop();
@@ -397,17 +448,29 @@ fn run() -> Result<()> {
                     grants,
                     expires,
                     certificate,
+                    document,
                 } => {
                     checked_key(&profile)?;
                     checked_key(&certificate)?;
-                    json!({"type":"Consent","profile":profile,"grants":grants,"expires":expires,"certificate":certificate})
+                    let mut command = json!({"type":"Consent","profile":profile,"grants":grants,"expires":expires,"certificate":certificate});
+                    if let Some(path) = document {
+                        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+                        let bytes = files::read_bounded(&path, false)?;
+                        if bytes.len() > 16384 || hex::encode(Sha256::digest(&bytes)) != profile {
+                            bail!("consent document does not match the profile or size bound");
+                        }
+                        command["document"] = json!(URL_SAFE_NO_PAD.encode(bytes));
+                    }
+                    command
                 }
                 Command::Withdraw => json!({"type":"Withdraw"}),
                 Command::Heartbeat { profile } => {
                     checked_key(&profile)?;
                     json!({"type":"Heartbeat","profile":profile})
                 }
-                Command::Keygen { .. } | Command::Configure { .. } => unreachable!(),
+                Command::Keygen { .. } | Command::Configure { .. } | Command::Pages(_) => {
+                    unreachable!()
+                }
             };
             let reply = protocol::send(&config, &identity, &request_id, now()?, body);
             if let Some((path, _invitation)) = &pending {
