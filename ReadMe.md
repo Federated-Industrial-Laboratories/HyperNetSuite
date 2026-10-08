@@ -20,3 +20,8 @@ It does not yet constitute a qualified production Internet deployment.
 See [Requirements](Documentation/Requirements.md) for the wider product scope.
 
 Licensed under the [MIT License](Licence.txt).
+
+Private mail provides owner-controlled addresses, scoped devices, explicit encrypted
+store placement, offline delivery and separate encrypted history transfer. See
+[PrivateMail](Documentation/PrivateMail.md) for setup, recovery and security limits.
+Build with Rust 1.91 or newer.
