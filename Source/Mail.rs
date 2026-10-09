@@ -23,6 +23,8 @@ pub struct Arguments {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Release one selected local letter to a named recipient with explicit consent.
+    ArchiveDisclose(crate::mail_disclosure::Arguments),
     /// Create encrypted local mail state and a separate age identity file.
     Init {
         #[arg(long)]
@@ -494,6 +496,7 @@ pub fn run(path: Option<&Path>, args: Arguments) -> Result<()> {
     }
     let mut v = Vault::open(directory, key, &c.network)?;
     let value = match args.command {
+        Command::ArchiveDisclose(arguments) => crate::mail_disclosure::export(&v, &c, arguments)?,
         Command::Hosts { mailbox } => {
             let identity = directory_key(&v, &c, mailbox.as_deref())?;
             hosts(&mut v, &c, &identity)?;

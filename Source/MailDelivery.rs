@@ -674,6 +674,7 @@ mod tests {
                 expires: now + 300,
             };
             let config = Config {
+                application: false,
                 network,
                 endpoint: "https://authority.example/".into(),
                 ca_certificate: "UnusedCA".into(),

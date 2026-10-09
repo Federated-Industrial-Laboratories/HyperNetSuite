@@ -145,7 +145,7 @@ without revalidation. Stale, expired, revoked or unavailable authority is denied
 Administrative commands return JSON on success and a nonzero exit status on failure. The client
 escapes terminal control characters in displayed JSON, errors and file paths.
 See [Pages](Pages.md) for author, moderator, reader and version 2 hosting workflows.
-Mail, transfers and shell services are not yet provided.
+Mail, transfers and constrained SSH services use their separate consent workflows.
 
 ## Private mail
 
@@ -158,3 +158,9 @@ member setup, explicit first-contact verification and recovery.
 See [TransfersAndServices](TransfersAndServices.md) for encrypted resumable file
 exchange, explicit recipient acceptance and separately approved OpenSSH service
 invocation. Transfer output paths are local choices; content is never executed.
+
+## Application and model access
+
+See [Adapters](Adapters.md) for dedicated application profiles, exact Pages scopes,
+explicit review exchange and selected-letter disclosure. Model processing receives
+no HyperNet credential or executable tool surface.

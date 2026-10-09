@@ -232,3 +232,11 @@ worker. The separate Gate additionally consumes up to 128 MiB of memory, 32 PIDs
 0.5 CPU (50000/100000) and 8 MiB of volatile state. `host-consent` reports both
 sets of limits. `stateBytes` sizes the sole preallocated persistent mailbox file;
 the Gate does not receive a second persistent mailbox database.
+
+## Selected disclosure
+
+[Adapters](Adapters.md) describes `mail archive-disclose` for one explicitly selected
+local letter. It produces plaintext only after named-recipient consent and retains
+a signed metadata receipt. It exports no device, vault or recovery secret. Pages
+application grants do not confer mailbox rights; mail integrations keep their own
+Read, Send and Delete device permissions.

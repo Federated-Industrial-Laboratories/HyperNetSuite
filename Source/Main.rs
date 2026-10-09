@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Independent signed HyperNet command client and local device-key management.
+#[path = "AdapterFiles.rs"]
+mod adapter_files;
+#[path = "Applications.rs"]
+mod applications;
 #[path = "BridgeConsent.rs"]
 mod bridge_consent;
 #[path = "Federation.rs"]
@@ -16,6 +20,8 @@ mod mail_archive;
 mod mail_crypto;
 #[path = "MailDelivery.rs"]
 mod mail_delivery;
+#[path = "MailDisclosure.rs"]
+mod mail_disclosure;
 #[path = "MailProtocol.rs"]
 mod mail_protocol;
 #[path = "MailTls.rs"]
@@ -34,6 +40,8 @@ mod pages;
 mod protocol;
 #[path = "Reader.rs"]
 mod reader;
+#[path = "ReviewAdapter.rs"]
+mod review_adapter;
 #[path = "Services.rs"]
 mod services;
 #[path = "ShareWithdrawal.rs"]
@@ -77,6 +85,12 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Manage separate least-privilege application credentials.
+    #[command(subcommand)]
+    Applications(applications::Command),
+    /// Exchange explicit inert review jobs and bounded recommendations.
+    #[command(subcommand)]
+    Adapters(review_adapter::Command),
     /// Consented encrypted file exchange.
     Transfers(transfers::Arguments),
     /// Discover, request and invoke separately consented SSH services.
@@ -105,6 +119,9 @@ enum Command {
         ca: PathBuf,
         #[arg(long)]
         identity: PathBuf,
+        /// Mark a dedicated application profile for explicit grant and policy checks.
+        #[arg(long)]
+        application: bool,
         #[arg(long)]
         client_certificate: Option<PathBuf>,
         #[arg(long)]
@@ -180,6 +197,8 @@ enum Command {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Config {
+    #[serde(default)]
+    application: bool,
     network: String,
     endpoint: String,
     ca_certificate: PathBuf,
@@ -294,6 +313,12 @@ fn run() -> Result<()> {
         }
     };
     match options.command {
+        Command::Applications(command) => {
+            return applications::run(options.config.as_deref(), command);
+        }
+        Command::Adapters(command) => {
+            return review_adapter::run(options.config.as_deref(), command);
+        }
         Command::Transfers(arguments) => {
             return transfers::run(options.config.as_deref(), arguments);
         }
@@ -315,6 +340,7 @@ fn run() -> Result<()> {
             endpoint,
             ca,
             identity,
+            application,
             client_certificate,
             client_key,
             output,
@@ -326,6 +352,7 @@ fn run() -> Result<()> {
                 bail!("client certificate and key must be provided together");
             }
             let config = Config {
+                application,
                 network,
                 endpoint,
                 ca_certificate: ca.canonicalize()?,
@@ -533,7 +560,9 @@ fn run() -> Result<()> {
                 | Command::Federation(_)
                 | Command::Mail(_)
                 | Command::Transfers(_)
-                | Command::Services(_) => {
+                | Command::Services(_)
+                | Command::Applications(_)
+                | Command::Adapters(_) => {
                     unreachable!()
                 }
             };

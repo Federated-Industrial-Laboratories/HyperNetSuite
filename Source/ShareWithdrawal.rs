@@ -303,6 +303,7 @@ mod tests {
             secret_key: hex::encode(key.to_bytes()),
         };
         let config = Config {
+            application: false,
             network: "10".repeat(32),
             identity: directory.join("Identity.json"),
             endpoint: "https://invalid.test".into(),
