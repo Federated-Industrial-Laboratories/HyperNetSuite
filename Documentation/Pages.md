@@ -50,8 +50,9 @@ HyperNetSuite --config Administrator.json pages review --input Review.json --dec
 Use `--decision reject` to discard the pending revision. Review binds the saved
 exact source, author, namespace, audience, profile, digest and version. Concurrent
 changes make an old decision fail; inspect again before deciding. Unapproved
-content can be offensive. Inspect only in a suitable environment. A model adapter
-is not included; decisions require a designated administrator.
+content can be offensive. Inspect only in a suitable environment. [Adapters](Adapters.md) provides separate
+review application grants and explicit optional model data exchange. Manual review
+remains the default.
 
 An author or administrator withdraws both pending and published content with
 `pages withdraw --page-id ID --expected-version VERSION`. Historical signed

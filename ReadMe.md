@@ -16,6 +16,8 @@ verified publication and reads from explicitly consenting replicas.
 author sharing, destination review and independently verified foreign reads.
 [Transfers and services](Documentation/TransfersAndServices.md) adds encrypted,
 recipient-approved resumable file exchange and separately consented OpenSSH services.
+[Applications and adapters](Documentation/Adapters.md) provides separate Pages
+credentials, explicit review data exchange and selected-letter disclosure.
 It does not yet constitute a qualified production Internet deployment.
 See [Requirements](Documentation/Requirements.md) for the wider product scope.
 

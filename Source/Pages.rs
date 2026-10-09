@@ -118,6 +118,10 @@ fn listing(
     namespace: Option<String>,
     after: Option<String>,
 ) -> Result<()> {
+    ensure!(
+        !config.application || namespace.is_some(),
+        "application listings require --namespace"
+    );
     if let Some(value) = &namespace {
         ensure!(markup::namespace(value), "invalid namespace");
     }
@@ -186,6 +190,10 @@ pub(crate) fn read(
     replica: Option<&str>,
 ) -> Result<(Descriptor, String, u64)> {
     protocol::hex_bytes::<16>(page_id)?;
+    ensure!(
+        !config.application || replica.is_none(),
+        "application grants do not include replica tickets"
+    );
     let reply = if let Some(replica) = replica {
         protocol::hex_bytes::<32>(replica)?;
         let entry = descriptor(config, identity, page_id)?;
@@ -355,14 +363,12 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
                 Decision::Approve => "Approve",
                 Decision::Reject => "Reject",
             };
-            crate::print_value(&call(
-                &config,
-                &identity,
-                json!({"type":"PageReview","pageId":source.page_id,
+            let mut command = json!({"type":"PageReview","pageId":source.page_id,
                 "expectedVersion":version,"revision":source.expected_version+1,"digest":source.digest,"profile":source.profile,
                 "author":proof.public_key,"namespace":source.namespace,"audience":source.audience,
-                "submissionDigest":digest,"decision":decision}),
-            )?)?;
+                "submissionDigest":digest,"decision":decision});
+            crate::applications::manual_review(&config, &identity, &mut command)?;
+            crate::print_value(&call(&config, &identity, command)?)?;
         }
         Command::Withdraw {
             page_id,

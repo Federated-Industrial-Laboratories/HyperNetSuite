@@ -54,6 +54,12 @@ struct Review {
     audience: String,
     submission_digest: String,
     decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    application_policy_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    application_review_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review_expires: Option<u64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -138,6 +144,28 @@ pub fn verify(network: &str, descriptor: &Descriptor, bundle: &Bundle) -> Result
     let (source, source_digest) = submission(network, &bundle.submission)?;
     let (approval, approval_digest) = envelope::<Review>(network, &bundle.approval)?;
     let approval = approval.command;
+    ensure!(
+        approval.review_expires.is_none_or(|value| value > 0),
+        "invalid review deadline"
+    );
+    match (
+        &approval.application_policy_digest,
+        &approval.application_review_mode,
+    ) {
+        (None, None) => {}
+        (Some(digest), Some(mode)) => {
+            ensure!(
+                approval.review_expires.is_some(),
+                "application approval lacks review deadline"
+            );
+            protocol::hex_bytes::<32>(digest)?;
+            ensure!(
+                mode == "Manual" || mode == "Automatic",
+                "invalid application review mode"
+            );
+        }
+        _ => anyhow::bail!("incomplete application review policy"),
+    }
     ensure!(
         approval.kind == "PageReview" && approval.decision == "Approve",
         "page lacks approval evidence"
@@ -271,6 +299,28 @@ mod tests {
         tampered.approval = proof(5, rejected);
         tampered.submission = bundle.submission.clone();
         assert!(verify(&network, &descriptor, &tampered).is_err());
+        let mut application_review = review_command.clone();
+        application_review["applicationPolicyDigest"] = json!("07".repeat(32));
+        application_review["applicationReviewMode"] = json!("Automatic");
+        let mut application_bundle = bundle.clone();
+        let mut application_descriptor = descriptor.clone();
+        application_bundle.approval = proof(5, application_review.clone());
+        application_descriptor.approval_digest =
+            envelope::<Review>(&network, &application_bundle.approval)
+                .unwrap()
+                .1;
+        assert!(verify(&network, &application_descriptor, &application_bundle).is_err());
+        // Historical expiry does not invalidate a signature; live authority controls present reads.
+        application_review["reviewExpires"] = json!(50);
+        application_bundle.approval = proof(5, application_review);
+        application_descriptor.approval_digest =
+            envelope::<Review>(&network, &application_bundle.approval)
+                .unwrap()
+                .1;
+        assert_eq!(
+            verify(&network, &application_descriptor, &application_bundle).unwrap(),
+            body
+        );
         let mut unknown = review_command;
         unknown["execute"] = json!("never");
         assert!(envelope::<Review>(&network, &proof(5, unknown)).is_err());

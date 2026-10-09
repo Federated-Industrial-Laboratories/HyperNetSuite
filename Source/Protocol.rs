@@ -159,6 +159,7 @@ mod tests {
             public_key: hex::encode(key.verifying_key().to_bytes()),
         };
         let config = Config {
+            application: false,
             network: "01".repeat(32),
             endpoint: "https://example.test".into(),
             ca_certificate: "Unused".into(),
