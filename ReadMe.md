@@ -11,6 +11,10 @@ Build with `cargo build --locked --release`. See
 [Usage](Documentation/Usage.md) for enrolment and administration.
 The node and client have separate source, build and package lifecycles.
 
+[Browser](Documentation/Browser.md) provides a trusted paginated catalogue, explicit
+address navigation, retained page state and recoverable errors in one terminal
+session.
+
 [Pages](Documentation/Pages.md) supports responsive inert components, exact-content manual review,
 verified publication and reads from explicitly consenting replicas.
 [HyperPage](Documentation/HyperPage.md) defines panels, rows, scroll boxes, colours

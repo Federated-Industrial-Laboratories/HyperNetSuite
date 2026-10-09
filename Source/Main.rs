@@ -52,6 +52,8 @@ mod services;
 mod share_withdrawal;
 #[path = "SshProof.rs"]
 mod ssh_proof;
+#[path = "TerminalInput.rs"]
+mod terminal_input;
 #[path = "TransferFiles.rs"]
 mod transfer_files;
 #[path = "TransferProtocol.rs"]
@@ -89,6 +91,17 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Browse the configured network catalogue or a verified page address.
+    Browse {
+        #[arg(conflicts_with = "after")]
+        uri: Option<String>,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long)]
+        after: Option<String>,
+        #[arg(long)]
+        ascii: bool,
+    },
     /// Manage separate least-privilege application credentials.
     #[command(subcommand)]
     Applications(applications::Command),
@@ -198,7 +211,7 @@ enum Command {
     },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Config {
     #[serde(default)]
@@ -213,7 +226,7 @@ struct Config {
     client_key: Option<PathBuf>,
 }
 
-#[derive(Serialize, Deserialize, Zeroize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[zeroize(drop)]
 struct Identity {
@@ -318,6 +331,14 @@ fn run() -> Result<()> {
         }
     };
     match options.command {
+        Command::Browse {
+            uri,
+            namespace,
+            after,
+            ascii,
+        } => {
+            return navigation::run(options.config.as_deref(), uri, namespace, after, ascii);
+        }
         Command::Applications(command) => {
             return applications::run(options.config.as_deref(), command);
         }
@@ -559,6 +580,7 @@ fn run() -> Result<()> {
                 }
                 Command::Keygen { .. }
                 | Command::Configure { .. }
+                | Command::Browse { .. }
                 | Command::Pages(_)
                 | Command::Federation(_)
                 | Command::Mail(_)

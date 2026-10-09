@@ -49,7 +49,10 @@ def session(binary, page, action):
         elif action=='terminate': process.send_signal(signal.SIGTERM)
         elif action=='interrupt-signal': process.send_signal(signal.SIGINT)
         elif action=='hangup': process.send_signal(signal.SIGHUP)
-        elif action=='link': os.write(master,b'\t\r')
+        elif action=='link':
+            os.write(master,b'\t\r')
+            output=read_until(master,b'Unapproved preview: navigation is disabled',b'')
+            os.write(master,b'q')
         else: os.write(master,b'q')
         process.wait(timeout=5)
         output=read_until(master,b'\x1b[?1049l',output)

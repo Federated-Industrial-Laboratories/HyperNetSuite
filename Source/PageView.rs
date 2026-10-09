@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
 pub struct View {
     pub offset: usize,
     pub focused: Option<usize>,

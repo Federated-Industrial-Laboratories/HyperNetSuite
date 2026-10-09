@@ -63,6 +63,9 @@ records and copies already viewed cannot be recalled or securely erased.
 
 ## Reader
 
+Use the [Browser](Browser.md) for catalogue and address navigation with retained
+page focus and scrolling. Existing TUI read commands use that same browser.
+
 ```sh
 HyperNetSuite --config Reader.json pages list --namespace News
 HyperNetSuite --config Reader.json pages read --page-id ID --tui

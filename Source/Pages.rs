@@ -135,6 +135,89 @@ fn listing(
     )?)
 }
 
+#[derive(Clone)]
+pub struct Catalogue {
+    pub entries: Vec<Descriptor>,
+    pub next: Option<String>,
+    pub revision: u64,
+}
+
+fn catalogue_result(
+    result: &Value,
+    namespace: Option<&str>,
+    after: Option<&str>,
+) -> Result<Catalogue> {
+    let revision = page_proof::fresh(result)?;
+    let entries: Vec<Descriptor> = serde_json::from_value(result["entries"].clone())?;
+    ensure!(entries.len() <= 32, "catalogue exceeds its entry bound");
+    let mut previous = after;
+    for entry in &entries {
+        for value in [
+            &entry.author,
+            &entry.reviewer,
+            &entry.digest,
+            &entry.submission_digest,
+            &entry.approval_digest,
+        ] {
+            protocol::hex_bytes::<32>(value)?;
+        }
+        protocol::hex_bytes::<16>(&entry.page_id)?;
+        ensure!(
+            entry.profile == markup::PROFILE
+                && entry.audience == "Members"
+                && markup::namespace(&entry.namespace)
+                && namespace.is_none_or(|scope| scope == entry.namespace)
+                && entry.revision > 0
+                && entry.publication_version > entry.revision
+                && previous.is_none_or(|cursor| cursor < entry.page_id.as_str()),
+            "invalid catalogue publication or cursor"
+        );
+        previous = Some(&entry.page_id);
+    }
+    let next: Option<String> = serde_json::from_value(
+        result
+            .get("next")
+            .context("catalogue cursor is missing")?
+            .clone(),
+    )?;
+    if let Some(next) = &next {
+        protocol::hex_bytes::<16>(next)?;
+        ensure!(
+            entries.len() == 32 && previous == Some(next.as_str()),
+            "invalid catalogue continuation"
+        );
+    }
+    Ok(Catalogue {
+        entries,
+        next,
+        revision,
+    })
+}
+
+pub fn catalogue(
+    config: &Config,
+    identity: &Identity,
+    namespace: Option<&str>,
+    after: Option<&str>,
+) -> Result<Catalogue> {
+    ensure!(
+        !config.application || namespace.is_some(),
+        "application listings require --namespace"
+    );
+    if let Some(namespace) = namespace {
+        ensure!(markup::namespace(namespace), "invalid namespace");
+    }
+    if let Some(after) = after {
+        protocol::hex_bytes::<16>(after)?;
+    }
+    let reply = call(
+        config,
+        identity,
+        json!({"type":"PageList","namespace":namespace,"after":after}),
+    )?;
+    catalogue_result(&reply["result"], namespace, after)
+}
+
 fn pending(network: &str, record: &Value) -> Result<(page_proof::Submission, String, Envelope)> {
     ensure!(
         record["network"].as_str() == Some(network),
@@ -162,22 +245,17 @@ fn pending(network: &str, record: &Value) -> Result<(page_proof::Submission, Str
 fn descriptor(config: &Config, identity: &Identity, page_id: &str) -> Result<Descriptor> {
     let mut after: Option<String> = None;
     for _ in 0..8 {
-        let reply = call(
-            config,
-            identity,
-            json!({"type":"PageList","namespace":null,"after":after}),
-        )?;
-        page_proof::fresh(&reply["result"])?;
-        let entries: Vec<Descriptor> = serde_json::from_value(reply["result"]["entries"].clone())?;
-        if let Some(entry) = entries.into_iter().find(|entry| entry.page_id == page_id) {
+        let catalogue = catalogue(config, identity, None, after.as_deref())?;
+        if let Some(entry) = catalogue
+            .entries
+            .into_iter()
+            .find(|entry| entry.page_id == page_id)
+        {
             return Ok(entry);
         }
-        match reply["result"]["next"].as_str() {
+        match catalogue.next {
             None => break,
-            Some(next) => {
-                protocol::hex_bytes::<16>(next)?;
-                after = Some(next.into());
-            }
+            Some(next) => after = Some(next),
         }
     }
     bail!("page is not currently published")
@@ -396,4 +474,63 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
         )?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+    fn entry(id: u64) -> Value {
+        json!({"pageId":format!("{id:032x}"), "publicationVersion":2, "revision":1,
+            "author":"01".repeat(32), "reviewer":"02".repeat(32), "namespace":"News",
+            "audience":"Members", "profile":markup::PROFILE, "digest":"03".repeat(32),
+            "submissionDigest":"04".repeat(32), "approvalDigest":"05".repeat(32)})
+    }
+    fn result(count: u64) -> Value {
+        json!({"entries":(1..=count).map(entry).collect::<Vec<_>>(),"next":null,
+            "authorityRevision":1,"validUntil":crate::now().unwrap()+5})
+    }
+    #[test]
+    fn catalogue_enforces_current_scope_order_freshness_and_continuation() {
+        let mut good = result(32);
+        good["next"] = json!(format!("{:032x}", 32));
+        assert!(catalogue_result(&good, Some("News"), None).is_ok());
+        for field in [
+            "profile",
+            "namespace",
+            "audience",
+            "author",
+            "reviewer",
+            "digest",
+            "submissionDigest",
+            "approvalDigest",
+            "pageId",
+        ] {
+            let mut bad = good.clone();
+            bad["entries"][0][field] = json!("bad");
+            assert!(
+                catalogue_result(&bad, Some("News"), None).is_err(),
+                "{field}"
+            );
+        }
+        for (field, value) in [("revision", 0), ("publicationVersion", 1)] {
+            let mut bad = good.clone();
+            bad["entries"][0][field] = json!(value);
+            assert!(catalogue_result(&bad, None, None).is_err());
+        }
+        let mut bad = good.clone();
+        bad["entries"][1] = bad["entries"][0].clone();
+        assert!(catalogue_result(&bad, None, None).is_err());
+        assert!(catalogue_result(&good, None, Some(&format!("{:032x}", 1))).is_err());
+        assert!(catalogue_result(&result(33), None, None).is_err());
+        let mut bad = result(1);
+        bad["next"] = json!(format!("{:032x}", 1));
+        assert!(catalogue_result(&bad, None, None).is_err());
+        let mut bad = good.clone();
+        bad["next"] = json!(format!("{:032x}", 31));
+        assert!(catalogue_result(&bad, None, None).is_err());
+        let mut bad = good.clone();
+        bad["validUntil"] = json!(crate::now().unwrap() - 1);
+        assert!(catalogue_result(&bad, None, None).is_err());
+        assert!(catalogue_result(&result(0), None, None).is_ok());
+    }
 }
