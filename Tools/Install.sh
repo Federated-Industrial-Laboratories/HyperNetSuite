@@ -13,5 +13,7 @@ Target=${CARGO_TARGET_DIR:-target}
 install -d -m 755 -- "$Prefix/Bin" "$Prefix/Documentation/HyperNetSuite"
 install -m 755 -- "$Target/release/HyperNetSuite" "$Prefix/Bin/HyperNetSuite"
 install -m 644 -- Licence.txt ReadMe.md Documentation/*.md Documentation/MediaSchema.json Documentation/ThirdPartyNotices.txt "$Prefix/Documentation/HyperNetSuite/"
-sed 's#](Documentation/#](#g' ReadMe.md > "$Prefix/Documentation/HyperNetSuite/ReadMe.md"
+install -d -m 755 -- "$Prefix/Examples"
+install -m 644 -- Examples/*.py Examples/*.png Examples/*.svg Examples/*.md "$Prefix/Examples/"
+sed -e 's#](Documentation/#](#g' -e 's#](Examples/#](../../Examples/#g' ReadMe.md > "$Prefix/Documentation/HyperNetSuite/ReadMe.md"
 printf 'Installed HyperNetSuite in %s/Bin\n' "$Prefix"

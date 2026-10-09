@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="240" viewBox="0 0 720 240">
+<rect width="720" height="240" fill="#26243d"/>
+<circle cx="564" cy="75" r="48" fill="#514468"/>
+<rect x="66" y="195" width="590" height="13" rx="4" fill="#c39473"/>
+<rect x="113" y="62" width="49" height="131" rx="4" fill="#d9a957"/>
+<rect x="119" y="79" width="37" height="4" fill="#ffe7a8"/>
+<rect x="119" y="172" width="37" height="4" fill="#ffe7a8"/>
+<rect x="169" y="38" width="63" height="155" rx="4" fill="#80b6b1"/>
+<rect x="179" y="55" width="43" height="5" fill="#d1eee0"/>
+<rect x="239" y="87" width="42" height="106" rx="4" fill="#bf7897"/>
+<rect x="289" y="65" width="46" height="128" rx="4" fill="#9e9bd1"/>
+<path d="M354 91 L399 78 L431 183 L386 196 Z" fill="#e18065"/>
+<rect x="458" y="175" width="156" height="18" rx="3" fill="#e6bd78"/>
+<rect x="467" y="154" width="132" height="19" rx="3" fill="#ba91bf"/>
+<rect x="461" y="131" width="146" height="20" rx="3" fill="#7fa6bf"/>
+<path d="M500 112 Q527 101 555 114 Q580 98 610 112 L610 130 Q580 116 554 131 Q527 117 500 130 Z" fill="#f6e8c8"/>
+<path d="M555 115 V130" stroke="#c39473" stroke-width="2" fill="none"/>
+<circle cx="80" cy="43" r="3" fill="#e6bd78"/>
+<circle cx="414" cy="43" r="4" fill="#e6bd78"/>
+<circle cx="646" cy="101" r="3" fill="#e6bd78"/>
+</svg>

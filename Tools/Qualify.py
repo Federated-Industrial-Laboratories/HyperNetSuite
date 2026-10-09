@@ -70,6 +70,11 @@ def main():
         report['checks'].append('Confined bitmap and vector import, bounds and static export')
         run([sys.executable, str(prefix / 'Tests/MediaTerminal.py'), str(binary)], timeout=90)
         report['checks'].append('Explicit media reveal, bounded local motion and pseudoterminal cleanup')
+        examples = json.loads(run([sys.executable, str(prefix / 'Examples/Prepare.py'),
+                                  '--suite', str(binary), '--output', str(private / 'Examples')], timeout=90))
+        if examples.get('networkUsed') is not False or len(examples.get('pages', {})) != 5:
+            raise ValueError('Installed examples did not prepare five offline pages')
+        report['checks'].append('Installed fictional business examples with confined media import and complete source validation')
     report['status'] = 'Passed'
     print(json.dumps(report, sort_keys=True))
 

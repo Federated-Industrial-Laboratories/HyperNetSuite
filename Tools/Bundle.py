@@ -105,7 +105,7 @@ def architecture():
 def allowed_path(name):
     if name in ('Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite'):
         return True
-    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics)\.py)', name))
+    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Examples/[A-Z][A-Za-z0-9]*\.(py|png|svg|md)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics)\.py)', name))
 
 
 def file_mode(name):
@@ -140,6 +140,7 @@ def validate_manifest(value):
         total += item['size']
     require(paths == sorted(set(paths)) and total <= MAX_ARCHIVE, 'Duplicate, unordered or oversized inventory')
     require({'Bin/HyperNetSuite', 'Licence.txt', 'ReadMe.md', 'Tools/Bundle.py', 'Tools/Qualify.py', 'Tests/ReaderTerminal.py', 'Tests/LayoutTerminal.py', 'Tests/MarkupRobustness.py', 'Tests/MediaImport.py', 'Tests/MediaTerminal.py', 'Documentation/MediaSchema.json', 'Documentation/ThirdPartyNotices.txt'}.issubset(paths), 'Required package files are missing')
+    require({'Examples/Prepare.py', 'Examples/ReadMe.md', 'Examples/Cafe.png', 'Examples/Square.svg', 'Examples/Books.svg', 'Examples/Botanical.svg'}.issubset(paths), 'Required example files are missing')
     require(next(item['sha256'] for item in files if item['path'] == metadata['binary']) == metadata['binarySha256'], 'Binary identity differs from inventory')
     return value
 
@@ -412,7 +413,7 @@ def create(args):
         require(runtime_version == 'HyperNetSuite 0.7.5', 'Binary does not match the current package contract')
         runtime_version = runtime_version.split()[1]
         files = {'Bin/HyperNetSuite': snapshot, 'Licence.txt': repository / 'Licence.txt', 'ReadMe.md': repository / 'ReadMe.md'}
-        for folder in ('Tools', 'Documentation', 'Tests'):
+        for folder in ('Tools', 'Documentation', 'Tests', 'Examples'):
             for path in sorted((repository / folder).iterdir()):
                 name = str(path.relative_to(repository))
                 if allowed_path(name) and path.is_file():

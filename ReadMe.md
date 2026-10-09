@@ -27,6 +27,8 @@ plain-text fallback.
 asset upload and inspection, isolated bitmap/SVG import, terminal graphics and
 bounded client-side motion. Graphical clients can consume the same canonical
 geometry or export it as static SVG.
+[Examples](Examples/ReadMe.md) provides a linked fictional market square, cafe,
+bookshop and plant studio, with colours, images, local effects and a typed form.
 [Federation](Documentation/Federation.md) adds bilateral agreements, explicit
 author sharing, destination review and independently verified foreign reads.
 [Transfers and services](Documentation/TransfersAndServices.md) adds encrypted,

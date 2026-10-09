@@ -30,6 +30,13 @@ binary does not need Python. Qualification uses a pseudoterminal for interactive
 reader checks and also exercises redirected plain output. UTF-8 terminals get
 Unicode text; ASCII output provides a safe fallback.
 
+Tested graphics combinations are xterm 390 with Sixel and WezTerm
+20240203-110809-5046fc22 with iTerm2. Kitty remains experimental: versions 0.48.2
+and 0.49.2 with a software-rendered display can lose images or unrelated text.
+Its native visual qualification is pending. Graphics are explicitly selected and
+off by default; `--graphics off` retains the text and image descriptions. Native
+iTerm2 on macOS remains unqualified.
+
 OpenSSH 10.6 or newer is an additional requirement only for explicitly requested
 SSH service sessions. It is not bundled. Client trust, page reading, mail,
 transfers and service functionality have separate prerequisites documented in
