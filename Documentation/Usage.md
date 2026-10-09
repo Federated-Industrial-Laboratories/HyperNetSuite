@@ -152,3 +152,9 @@ Mail, transfers and shell services are not yet provided.
 `HyperNetSuite --config Profile.json mail --help` lists address, device, delivery,
 placement and archive commands. Follow [PrivateMail](PrivateMail.md) for invited
 member setup, explicit first-contact verification and recovery.
+
+## Consented transfers and services
+
+See [TransfersAndServices](TransfersAndServices.md) for encrypted resumable file
+exchange, explicit recipient acceptance and separately approved OpenSSH service
+invocation. Transfer output paths are local choices; content is never executed.

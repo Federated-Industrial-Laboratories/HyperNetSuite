@@ -386,3 +386,8 @@ pre-release of the same crate. Both maintained age release lines include the
 [current upstream parser fixes](https://github.com/str4d/rage/releases/tag/v0.11.4).
 OpenMLS 0.9.1 includes the [nested-extension decoder fix](https://github.com/openmls/openmls/security/advisories/GHSA-gc79-23g3-8g52).
 These dependency checks are not a security certification of the integrated client.
+
+Transfers reuse the pinned native age X25519 implementation. SSH invocation uses
+an explicitly selected external OpenSSH executable, version 10.6 or newer. The
+qualified baseline is OpenSSH 10.6p1; the Suite does not bundle that executable.
+The operator maintains its platform package, upstream licence notices and updates.
