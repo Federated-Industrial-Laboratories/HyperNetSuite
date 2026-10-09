@@ -27,6 +27,7 @@ def text(value, colour='Default', **attributes):
 
 
 def panel(label, colour, body, **attributes):
+    attributes.setdefault('border', 'Rounded')
     return component('Panel', label=label, colour=colour, padding=1, **attributes) + body + '@End\n'
 
 
@@ -80,15 +81,16 @@ def prepare(suite, output, bindings):
             panel('NIGHTJAR BOOKS', 'BrightMagenta',
                   text('A shelf for every curiosity.', 'BrightWhite', bold=True) +
                   ': Independent stories, staff favourites and a reading circle after dark.\n' +
-                  link('NightjarBooks', 'Browse the bookshop', 'BrightMagenta')),
+                  link('NightjarBooks', 'Browse the bookshop', 'BrightMagenta'), border='Double'),
             panel('FERN & FOUNDRY', 'BrightGreen',
                   text('Make room for something green.', 'BrightWhite', bold=True) +
                   ': Indoor plants, handmade pots and patient advice for new growers.\n' +
-                  link('FernAndFoundry', 'Enter the plant studio', 'BrightGreen'))) +
+                  link('FernAndFoundry', 'Enter the plant studio', 'BrightGreen'), border='Light')) +
         panel('ON THE NOTICEBOARD', 'Cyan',
               text('SAT / coffee tasting    SUN / book swap    WED / repotting table', 'BrightCyan',
                    id='MarketNews', motion={'preset': 'TextScroll', 'durationMs': 7000}) +
-              ': These are sample listings; explore freely without making real bookings.\n') +
+              component('Separator') +
+              ': These are sample listings; explore freely without making real bookings.\n', border='Heavy') +
         link('FieldGuide', 'Open the field guide') +
         text('Tab selects. Enter opens or reveals. b goes back. a starts or pauses local effects.', 'BrightBlack'))
 
@@ -106,9 +108,11 @@ def prepare(suite, output, bindings):
              motion={'preset': 'ColourPulse', 'durationMs': 6000}) +
         image('Cafe', 'our window-side coffee', 12, 'ImagePan') +
         row(panel('FROM THE BAR', 'Yellow',
-                  ': House espresso / cocoa, hazelnut, a soft finish\n: Oat flat white / smooth and gently sweet\n: Filter of the day / ask what is brewing\n'),
+                  ': House espresso / cocoa, hazelnut, a soft finish\n' + component('Separator') +
+                  ': Oat flat white / smooth and gently sweet\n: Filter of the day / ask what is brewing\n'),
             panel('FROM THE OVEN', 'BrightYellow',
-                  ': Butter croissant / crisp layers, baked this morning\n: Orange and almond slice / bright and fragrant\n: Rosemary focaccia / olive oil and sea salt\n')) +
+                  ': Butter croissant / crisp layers, baked this morning\n' + component('Separator') +
+                  ': Orange and almond slice / bright and fragrant\n: Rosemary focaccia / olive oil and sea salt\n', border='Double')) +
         panel('TAKE YOUR TIME', 'Cyan',
               ': Find us beside the bookshop, under the green awning.\n: Sample opening hours: Tuesday to Sunday, 08:00 to 17:00.\n' +
               text('Tasting table / 6 of 10 seats prepared', 'BrightCyan') +
@@ -129,7 +133,7 @@ def prepare(suite, output, bindings):
         text('Independent shelves. Unexpected discoveries.', 'White') +
         image('Books', 'the illustrated bookshelf', 8) +
         panel('STAFF FAVOURITES', 'Magenta',
-              component('ScrollBox', id='ReadingShelf', label='Six imagined books to explore', rows=9, colour='White') + picks + '@End\n') +
+              component('ScrollBox', id='ReadingShelf', label='Six imagined books to explore', rows=9, colour='White', border='Light') + picks + '@End\n', border='Double') +
         row(component('Button', label='Focus the shelf', action={'kind': 'Focus', 'target': 'ReadingShelf'}, colour='BrightMagenta'),
             component('Button', label='See the final recommendation', action={'kind': 'Scroll', 'target': 'ReadingShelf', 'direction': 'End'}, colour='Cyan')) +
         panel('AFTER HOURS', 'BrightBlue',
@@ -143,8 +147,8 @@ def prepare(suite, output, bindings):
         text('FERN & FOUNDRY', 'BrightGreen', bold=True) +
         text('Plants, pots, and the pleasure of helping things grow.', 'White') +
         image('Botanical', 'our botanical illustration', 9, 'ImageFade') +
-        row(panel('EASY COMPANY', 'Green', ': Pothos / trailing leaves for a bright corner\n: Snake plant / a sculptural, patient companion\n: Peperomia / small leaves, plenty of character\n'),
-            panel('MADE BY HAND', 'Yellow', ': Terracotta bowls / warm and tactile\n: Speckled planters / simple shapes, soft colours\n: Cork mats / a quiet place to put down roots\n')) +
+        row(panel('EASY COMPANY', 'Green', ': Pothos / trailing leaves for a bright corner\n: Snake plant / a sculptural, patient companion\n: Peperomia / small leaves, plenty of character\n', border='Light'),
+            panel('MADE BY HAND', 'Yellow', ': Terracotta bowls / warm and tactile\n: Speckled planters / simple shapes, soft colours\n: Cork mats / a quiet place to put down roots\n', border='Double')) +
         panel('THE PROPAGATION BENCH', 'BrightGreen',
               ': This static sample records 24 cuttings taking root. The sweep is a local decoration.\n' +
               component('Progress', id='Cuttings', label='Rooted cuttings', value=24, maximum=32,
@@ -171,7 +175,7 @@ def prepare(suite, output, bindings):
     guide = page('Willowmere / Field guide', 'Square',
         text('A FIELD GUIDE TO THE SQUARE', 'BrightCyan', bold=True) +
         image('Square', 'the neighbourhood illustration', 6) +
-        component('ScrollBox', id='Guide', label='Twelve notes for exploring', rows=14, colour='Cyan') + guide_text + '@End\n' +
+        component('ScrollBox', id='Guide', label='Twelve notes for exploring', rows=14, colour='Cyan', border='Heavy') + guide_text + '@End\n' +
         component('Button', label='Focus the guide', action={'kind': 'Focus', 'target': 'Guide'}, colour='BrightCyan') +
         component('Button', label='Jump to the final note', action={'kind': 'Scroll', 'target': 'Guide', 'direction': 'End'}, colour='Yellow') +
         link('MarketSquare', 'Return to the square'))

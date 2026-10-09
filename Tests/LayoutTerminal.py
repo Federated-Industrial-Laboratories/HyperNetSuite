@@ -48,7 +48,7 @@ def screen(data, rows=120, columns=300):
             if ch == '\r': x = 0
             elif ch == '\n': y += 1
             else:
-                assert ch.isascii(), 'the PTY geometry fixture must remain ASCII'
+                assert ch.isascii() or '\u2500' <= ch <= '\u257f', 'unexpected fixture glyph'
                 assert 0 <= y < rows and 0 <= x < columns, 'paint escaped its viewport bound'
                 cells[y][x] = ch
                 x += 1
@@ -57,14 +57,16 @@ def screen(data, rows=120, columns=300):
 
 
 class Session:
-    def __init__(self, binary, page, columns=96, rows=30, no_colour=False, term='xterm-256color'):
+    def __init__(self, binary, page, columns=96, rows=30, no_colour=False, term='xterm-256color', ascii=False):
         self.master, self.slave = pty.openpty()
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
         self.original = termios.tcgetattr(self.slave)
         env = dict(os.environ, TERM=term)
         env.pop('NO_COLOR', None)
         if no_colour: env['NO_COLOR'] = '1'
-        self.process = subprocess.Popen([binary, 'pages', 'preview', str(page), '--tui'],
+        args = [binary, 'pages', 'preview', str(page), '--tui']
+        if ascii: args.append('--ascii')
+        self.process = subprocess.Popen(args,
             stdin=self.slave, stdout=self.slave, stderr=self.slave, env=env, start_new_session=True)
         self.output = self.read(b'Page content')
 
@@ -209,6 +211,58 @@ def main():
             assert b'\x1b' not in session.output
             assert b'INNERTHREE' in session.output
             checks.append('TERM=dumb stays plain without terminal controls')
+        finally: session.close()
+        page.write_text("""HyperNetPage/2
+# Border fixture
+@Panel {"id":"Frame","label":"FRAME + - |","padding":1,"border":"Rounded","colour":"BrightCyan","motion":{"preset":"BorderEmphasis","durationMs":1000}}
+: Keep + - | text intact
+@Separator {}
+@ScrollBox {"id":"Guide","label":"GUIDE","rows":2,"border":"Double"}
+: FIRST
+@Separator {}
+: LAST
+@End
+@End
+@Button {"label":"PULSE","action":{"kind":"Motion","target":"Frame","running":true}}
+""")
+        session = Session(binary, page, columns=60, rows=24)
+        try:
+            rows = screen(session.output)
+            assert rows[3].startswith('| ╭─FRAME + - |')
+            assert any(row.startswith('| ├' + '─' * 53 + '┤') for row in rows)
+            assert any('╠' + '═' * 49 + '╣' in row for row in rows)
+            checks.append('Rounded perimeter and Double scrollbox inherit exact side junctions')
+            session.key(b'\t', b'GUIDE')
+            rows = session.key(b'\x1b[F', b'LAST')
+            assert any('LAST' in row for row in rows) and not any('FIRST' in row for row in rows)
+            rows = session.resize(24, 24)
+            assert any('╠' + '═' * 13 + '╣' in row for row in rows)
+            assert any('LAST' in row for row in rows)
+            session.resize(60, 24)
+            checks.append('Styled dividers remain clipped and preserve scroll position after resize')
+            session.key(b'm', b'monochrome')
+            session.key(b'\t', b'PULSE')
+            os.write(session.master, b'\r')
+            animation = session.read(b'Motion enabled', timeout=2)
+            until = time.monotonic() + 1.2
+            while time.monotonic() < until:
+                animation += session.read(timeout=min(.2, until - time.monotonic()))
+            assert '┏'.encode() in animation and '╭'.encode() in animation
+            assert not COLOUR.search(animation)
+            for frame in animation.split(b'\x1b[2J')[1:]:
+                painted = screen(frame)
+                assert any('FRAME + - |' in row for row in painted)
+                assert any('Keep + - | text intact' in row for row in painted)
+            assert not session.read(timeout=.25), 'completed border effect repainted while idle'
+            checks.append('Explicit border motion changes monochrome glyphs, preserves labels and stops')
+        finally: session.close()
+        session = Session(binary, page, ascii=True)
+        try:
+            assert session.output.isascii()
+            assert any(row.startswith('| +-FRAME + - |') for row in screen(session.output))
+            session.resize(24, 24)
+            assert session.output.isascii()
+            checks.append('ASCII option overrides every authored border through resize')
         finally: session.close()
     print(json.dumps({'status': 'Pass', 'checks': checks}, indent=2))
 
