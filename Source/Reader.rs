@@ -1181,7 +1181,7 @@ impl Session {
                                         return Ok(Action::Reveal(target.clone()));
                                     }
                                     crate::markup::PageAction::Motion { target, running } => {
-                                        view.motion.target(
+                                        let active = view.motion.target(
                                             &layout,
                                             target,
                                             *running,
@@ -1189,6 +1189,13 @@ impl Session {
                                             body_rows,
                                             std::time::Instant::now(),
                                         );
+                                        input_status = if active {
+                                            "Motion enabled for at most ten seconds; a toggles visible effects"
+                                        } else if *running {
+                                            "Motion target is hidden or the active-effect limit is reached"
+                                        } else {
+                                            "Target motion paused"
+                                        }.into();
                                         dirty = true;
                                         continue;
                                     }

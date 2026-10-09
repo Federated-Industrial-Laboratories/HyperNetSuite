@@ -103,6 +103,11 @@ off initially; no more than eight visible effects run at once. Each activation
 ends within ten seconds and stops when hidden. Help, details and input editing
 pause effects. Completion restores useful static content.
 
+BorderEmphasis accents the perimeter colour, corner marks and bottom rule. The
+glyph changes remain visible in monochrome; labels and interior text stay intact.
+Motion buttons acknowledge activation, target pause or an unavailable target in
+the status line.
+
 The reader owns clocks, frames, cropping, fades and colours. It transmits no
 animation frames and performs no polling or background fetches. Text/layout
 motion is limited to ten paints per second; displays containing revealed media
