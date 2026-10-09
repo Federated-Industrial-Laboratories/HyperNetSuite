@@ -12,25 +12,17 @@ maintained runtime libraries. A distribution name alone does not establish ABI
 compatibility. Package installation checks native architecture and the GLIBC
 minimum; native qualification exercises the actual installed executable.
 
-The qualified 0.7.0 x86_64 binary requires GLIBC 2.39 or newer,
-`/lib64/ld-linux-x86-64.so.2`, `libc.so.6` and `libgcc_s.so.1`. The same binary
-passed the following native installed client checks:
+The current target families are Ubuntu, Debian and Fedora on native x86_64.
+A package's exact manifest remains the authority for its loader and GLIBC needs.
+A rewritten contract requires qualification of the actual new binary; earlier
+installed-client results are not current-version evidence. Native AArch64 and
+other operating systems remain pending.
 
-| Environment | Kernel | Host GLIBC | Client package status |
-| --- | --- | --- | --- |
-| Ubuntu 24.04.4 LTS x86_64 | 7.0.0-34-generic | 2.39 | Native client checks passed |
-| Ubuntu 26.04.1 LTS x86_64 | 7.0.0-38-generic | 2.43 | Native client checks passed |
-| Debian 13 x86_64 | 6.12.111+deb13-amd64 | 2.41 | Native client checks passed |
-| Fedora 44 x86_64 | 6.19.10-300.fc44.x86_64 | 2.43 | Native client checks passed |
-| Native AArch64 GNU/Linux | Not qualified | Not qualified | Pending hardware qualification |
-| Other Linux distributions | Not qualified | 2.39 minimum | Run native qualification before use |
-
-Each completed profile covers authenticated package installation and inventory
-verification, the exact binary version, private identity generation with
-overwrite refusal, safe plain output, pseudoterminal resize and signal
-restoration, and the 260-input bounded markup corpus. These local client checks
-make no network requests. They do not repeat every network protocol workflow or
-qualify HyperNet node confinement; those are separate validation boundaries.
+Client qualification covers signed installation, inventory verification, private
+identity generation, overwrite refusal, plain output, responsive components,
+pseudoterminal resize, signal restoration and malformed markup. These checks do
+not establish network protocol operation or node confinement; those are separate
+validation boundaries.
 
 The package tools need Python 3.11 or newer, OpenSSH `ssh-keygen` with Ed25519
 SSHSIG support and Linux `renameat2` with no-replace semantics. The ordinary client

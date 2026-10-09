@@ -16,12 +16,13 @@ external files.
    network operation.
 7. Retain the previous verified software until the new operation is confirmed.
 
-Version 0.7.0 preserves the 0.6.0 profile, identity and encrypted-vault formats.
-Package installation does not migrate them. An older client can be selected again
-only while its data and protocol contracts remain compatible. Restoring an older
-binary does not undo messages, reviews, transfers or grants already committed to
-authorities. Do not roll back monotonic protocol state or reuse old credentials
-merely to make a previous binary accept them.
+The current prerelease supports one contract. Retired page, consent and authority
+state formats are rejected. Create a fresh isolated installation when replacing
+an incompatible contract; no automatic migration is provided.
+Package installation does not migrate private data or undo committed messages,
+reviews, transfers or grants. Restore only a verified current-contract executable
+when recovering a damaged installation. Do not roll back monotonic protocol state
+or reuse obsolete consent merely to make an earlier executable accept it.
 
 Changes to publisher keys require an independently authenticated new pin. A
 signature by an unrecognised key must not be accepted as an automatic rotation.
@@ -46,7 +47,7 @@ archive must pass the same signature and inventory checks as an initial install.
 From an independently trusted copy of the verifier:
 
 ```sh
-python3 Tools/Bundle.py Remove --prefix /Chosen/HyperNetSuite070 \
+python3 Tools/Bundle.py Remove --prefix /Chosen/HyperNetSuiteCurrent \
   --public-key Publisher.pub
 ```
 

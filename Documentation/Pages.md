@@ -1,17 +1,20 @@
 # Pages
 
-Pages contain inert HyperNetPage/1 text. The client never executes a page, imports
+Pages contain inert HyperNetPage/2 text. The client never executes a page, imports
 assets, interprets HTML, or fetches external links. This profile has no images.
 Keep reader, author, administrator and hosting identities separate. A credential
 with hosting consent cannot use ordinary Pages commands, even after its hosting
 grant is removed. Use a separately invited member identity for reading.
+
+The [HyperPage specification](HyperPage.md) defines responsive components, colours,
+local actions and the strict authoring limits.
 
 ## Author and moderator
 
 Write a UTF-8 draft with a final LF, for example:
 
 ```text
-HyperNetPage/1
+HyperNetPage/2
 # Welcome
 : This paragraph is information.
 ## Notices
@@ -78,38 +81,39 @@ retained text does not imply continuing permission. Press `r` to revalidate.
 Outages, withdrawals or revocations prevent new authorised fetches, but cannot
 retract bytes already received. Administrators remain trusted for authorisation.
 
-Arrow keys or `j`/`k` scroll; Page Up/Down and Home/End move further. Tab and Shift
-Tab select a link. Enter follows an internal link after checking its network,
-author and namespace. Native and foreign pages use one navigation history.
-Foreign links require an active local agreement for their exact origin network
-and namespace; trust is never added automatically. A selected native replica
-remains required for native links and prevents following foreign links.
-External HTTPS references are displayed only. `b` returns through at most 16
-retained pages across either kind of page; `r` refreshes the current native or
-federated publication with its corresponding proof checks. Back at the first
-page keeps that page open. `q`, Escape or Ctrl-C exits the whole reader. A small terminal requests resizing. Pipes and TERM=dumb
-use plain output without terminal controls. Unicode width varies by terminal;
-use `--ascii` when necessary.
+[TerminalLayout](TerminalLayout.md) describes responsive rows, panels, independent
+scrollboxes, Unicode clipping, logical colours and the complete keyboard controls.
+Tab and Shift-Tab select controls; Enter activates a button. Arrow and page keys
+scroll the selected viewport. `p` selects whole-page scrolling, `m` toggles
+monochrome and `i` displays trusted metadata and the full selected destination.
+Plain output contains every component's content, including offscreen text.
 
-Normal exit and handled interrupt, termination and hangup signals restore terminal
-attributes and the alternate screen. Forced process termination, a process abort
-or terminal failure cannot guarantee restoration; `stty sane` and `reset` recover
-a shell terminal. Page content is visually separated from authority information;
-approval is not a guarantee that its statements are accurate or harmless.
+Internal links retain the network, author and namespace checks. Native and foreign
+pages use one navigation history. Foreign links require an active local agreement
+for their exact origin network and namespace; trust is never added automatically.
+A selected native replica remains required for native links and prevents following
+foreign links. External HTTPS references are displayed only. `b` returns through
+at most 16 retained pages; `r` refreshes the current native or federated publication
+with its corresponding proof checks. Back at the first page keeps that page open.
+`q`, Escape or Ctrl-C exits the reader. Approval does not guarantee that a page's
+statements are accurate or harmless.
 
 ## Hosting consent
 
-Add all of the following to the resource specification used by `host-consent`:
+Every host registration requires the exact signed version 3 consent document.
+The specification explicitly includes services, namespaces and both cache limits:
 
 ```json
-{"services":["Pages"],"namespaces":["News"],"pageCacheBytes":1048576}
+{"services":["Pages"],"namespaces":["News"],"pageCacheBytes":1048576,"pageMediaCacheBytes":0}
 ```
 
-These fields select version 2 consent. Namespace labels are case-sensitive ASCII
-letters and digits, start with a letter, and contain at most 32 characters. The
-cache needs at least 64 KiB and must leave 256 KiB of the state budget unused.
-The service and namespace lists are exact allowlists. Version 1 remains
-heartbeat-only. Register version 2 with `consent --document Consent.json` alongside
-its profile hash, grants, expiry and client-certificate fingerprint. The authority
-verifies the exact signed consent file before accepting its scope. Follow the
-HyperNet Hosting guide to initialise and run the confined host.
+Namespace labels are case-sensitive ASCII identifiers. A Pages cache is at least
+64 KiB and fits inside the consented state allowance after its 256 KiB reserve.
+Media hosting is unavailable; its cache allowance must be zero. Heartbeat-only
+consent uses empty services/namespaces and both caches zero. Omitting these fields
+or using a retired consent format is rejected.
+
+Register with `consent --document Consent.json` and the matching profile,
+certificate, grants and expiry. Possessing a profile hash alone grants no hosting
+rights. The infrastructure independently verifies the signed document and scope.
+See [Usage](Usage.md) for the complete signed hosting procedure.

@@ -65,14 +65,14 @@ def main():
     binary=str(Path(sys.argv[1]).resolve())
     with tempfile.TemporaryDirectory(prefix='HyperNetReader') as directory:
         page=Path(directory)/'Draft.txt'
-        page.write_text('HyperNetPage/1\n# Terminal example\n: Unicode 世界 cafe\u0301\n=> https://example.com/ Reference\n')
+        page.write_text('HyperNetPage/2\n# Terminal example\n: Unicode 世界 cafe\u0301\n=> https://example.com/ Reference\n')
         for action in ['quit','resize','interrupt-key','interrupt-signal','terminate','hangup','link']:
             session(binary,page,action)
             print('PASS',action,flush=True)
         plain=subprocess.run([binary,'pages','preview',str(page),'--tui','--ascii'],capture_output=True,check=True)
         assert b'\x1b' not in plain.stdout and b'\\u{4e16}' in plain.stdout and b'UNAPPROVED' in plain.stdout
         print('PASS pipe and ASCII fallback')
-        page.write_bytes(b'HyperNetPage/1\n# Invalid\n: \xff\n')
+        page.write_bytes(b'HyperNetPage/2\n# Invalid\n: \xff\n')
         failed=subprocess.run([binary,'pages','preview',str(page)],capture_output=True)
         assert failed.returncode and b'\x1b' not in failed.stderr
         print('PASS malformed UTF-8 rejection')

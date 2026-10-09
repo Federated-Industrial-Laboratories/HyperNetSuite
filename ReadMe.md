@@ -11,8 +11,11 @@ Build with `cargo build --locked --release`. See
 [Usage](Documentation/Usage.md) for enrolment and administration.
 The node and client have separate source, build and package lifecycles.
 
-[Pages](Documentation/Pages.md) supports inert text, exact-content manual review,
+[Pages](Documentation/Pages.md) supports responsive inert components, exact-content manual review,
 verified publication and reads from explicitly consenting replicas.
+[HyperPage](Documentation/HyperPage.md) defines panels, rows, scroll boxes, colours
+and explicit local controls. The reader adapts to terminal width and has a complete
+plain-text fallback.
 [Federation](Documentation/Federation.md) adds bilateral agreements, explicit
 author sharing, destination review and independently verified foreign reads.
 [Transfers and services](Documentation/TransfersAndServices.md) adds encrypted,

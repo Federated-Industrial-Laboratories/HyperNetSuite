@@ -22,10 +22,10 @@ python3 Tools/Bundle.py Verify --archive HyperNetSuite.tar \
   --signature HyperNetSuite.tar.sig --public-key Publisher.pub
 python3 Tools/Bundle.py Install --archive HyperNetSuite.tar \
   --signature HyperNetSuite.tar.sig --public-key Publisher.pub \
-  --prefix /Chosen/HyperNetSuite070
+  --prefix /Chosen/HyperNetSuiteCurrent
 python3 Tools/Bundle.py VerifyInstalled \
-  --prefix /Chosen/HyperNetSuite070 --public-key Publisher.pub
-python3 Tools/Qualify.py --prefix /Chosen/HyperNetSuite070 \
+  --prefix /Chosen/HyperNetSuiteCurrent --public-key Publisher.pub
+python3 Tools/Qualify.py --prefix /Chosen/HyperNetSuiteCurrent \
   --public-key Publisher.pub
 ```
 

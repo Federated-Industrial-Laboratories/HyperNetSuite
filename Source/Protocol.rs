@@ -88,12 +88,8 @@ pub fn signed(
         json!({"network":config.network,"publicKey":identity.public_key,"payload":URL_SAFE_NO_PAD.encode(payload),"signature":hex::encode(signature.to_bytes())}),
     )
 }
-pub fn sign_consent(identity: &Identity, payload: &[u8], version: u32) -> Result<Vec<u8>> {
-    let mut message = match version {
-        1 => b"HyperNet/Consent/1\0".to_vec(),
-        2 => b"HyperNet/Consent/2\0".to_vec(),
-        _ => bail!("unsupported consent version"),
-    };
+pub fn sign_consent(identity: &Identity, payload: &[u8]) -> Result<Vec<u8>> {
+    let mut message = b"HyperNet/Consent/3\0".to_vec();
     message.extend_from_slice(payload);
     let secret = zeroize::Zeroizing::new(hex_bytes::<32>(&identity.secret_key)?);
     let key = SigningKey::from_bytes(&secret);

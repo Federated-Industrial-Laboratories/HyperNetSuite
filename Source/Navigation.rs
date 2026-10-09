@@ -290,7 +290,7 @@ mod tests {
             source_namespace: "News".into(),
             destination_namespace: "Guests".into(),
             service: "Pages".into(),
-            profile: "HyperNetPage/1".into(),
+            profile: "HyperNetPage/2".into(),
             expires: 200,
         }
     }
@@ -348,7 +348,7 @@ mod tests {
         let link = Link::parse(&target).unwrap();
         let descriptor: Descriptor = serde_json::from_value(json!({"pageId":"04".repeat(16),
             "publicationVersion":2,"revision":1,"author":"03".repeat(32),"reviewer":"05".repeat(32),
-            "namespace":"News","audience":"Members","profile":"HyperNetPage/1","digest":"06".repeat(32),
+            "namespace":"News","audience":"Members","profile":"HyperNetPage/2","digest":"06".repeat(32),
             "submissionDigest":"07".repeat(32),"approvalDigest":"08".repeat(32)})).unwrap();
         let mut page = Page {
             location: Location::Native(link.page_id.into()),
