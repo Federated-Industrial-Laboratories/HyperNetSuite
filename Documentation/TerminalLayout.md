@@ -30,8 +30,10 @@ Deeply nested borders shrink to their available width without crossing a parent.
 
 The active viewport is at most 300 columns by 120 rows, even on larger terminals.
 Layout retains at most 262144 terminal cells across its intermediate and final
-buffers. A page that exceeds this bound reports an error and restores the terminal;
-plain output remains available. Preview wide and narrow layouts before publishing.
+buffers. Browser navigation refuses a page that exceeds this bound and retains
+the previous view. A resize failure keeps trusted recovery controls available;
+shrinking the terminal retries layout. Plain output remains available. Preview
+wide and narrow layouts before publishing.
 Very small terminals request resizing. Static pages redraw only after input or
 resize, and do no animation or background refresh.
 
@@ -64,8 +66,10 @@ Its scrolling is independent of page content. A clipped footer is a summary;
 inspect this details view before following a long destination. External HTTPS
 references remain display-only under the existing navigation policy.
 
-Refresh and Back keep their existing fetch/history behaviour. This renderer does
-not add a catalogue, address editor or cross-page scroll-state persistence.
+The [Browser](Browser.md) retains per-page focus and scroll state across Back.
+It adds trusted catalogue, address and help views. An unchanged exact publication
+keeps its view on Refresh; a changed publication resets document state. Local
+preview and moderation use the same layout without network navigation.
 
 ## Colour and plain output
 
