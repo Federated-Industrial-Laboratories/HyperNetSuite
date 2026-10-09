@@ -41,6 +41,7 @@ The installed `Bin/HyperNetSuite` accepts the documented client commands. Use it
 absolute path or add the chosen `Bin` directory to the shell's search path.
 Qualification checks local identity generation, inert plain output, reader
 terminal restoration, bounded markup, isolated media import and local motion.
+It also prepares and validates the five supplied fictional business examples.
 Its pseudoterminal checks do not establish native graphics support. It makes no network requests
 and does not qualify a remote service or an entire deployment.
 
@@ -60,7 +61,7 @@ bash Tools/Check.sh
 bash Tools/Install.sh /Chosen/SourcePrefix
 ```
 
-This maintainer installer copies the binary and manuals. It retains its original
+This maintainer installer copies the binary, manuals and examples. It retains its original
 interface and can refresh an existing source installation. It provides no
 publisher-signature validation. Use a new prefix and do not mix source-installed
 files with a signed package's managed inventory.

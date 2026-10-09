@@ -83,6 +83,10 @@ current terminal contexts are Kitty for the Kitty protocol, WezTerm for iTerm2
 and xterm with an XTERM_VERSION identity for Sixel. Native iTerm2 on
 macOS remains unqualified and uses the fallback.
 
+Native visual qualification checks that trusted header pixels remain unchanged
+during reveal, motion, scrolling and resize, as well as checking the image and
+cleanup. A visible image alone is insufficient to qualify a terminal.
+
 Native display checks pass with xterm 390 for Sixel and WezTerm
 20240203-110809-5046fc22 for iTerm2. The Kitty adapter remains experimental:
 Kitty 0.48.2 and 0.49.2 with a software-rendered display can lose images and

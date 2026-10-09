@@ -4,5 +4,5 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
 cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
+cargo clippy --release --locked --all-targets -- -D warnings
+cargo test --release --locked

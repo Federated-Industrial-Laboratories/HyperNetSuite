@@ -48,6 +48,21 @@ def capture(directory, name, window):
             'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
+def check_chrome(reference, frame, geometry):
+    # These first three rows are reader-owned and remain static in this fixture.
+    # Colour blocks alone cannot detect damage to the trusted page header.
+    signatures=[]
+    for item in [reference, frame]:
+        with Image.open(item['file']) as source:
+            image=source.convert('RGB')
+            width=min(image.width,32*geometry['cellWidth'])
+            height=min(image.height,3*geometry['cellHeight'])
+            signature=hashlib.sha256(image.crop((0,0,width,height)).tobytes()).hexdigest()
+        item['trustedHeaderSha256']=signature
+        signatures.append(signature)
+    assert signatures[0]==signatures[1], 'trusted header pixels changed during graphics display'
+
+
 def main():
     parser=argparse.ArgumentParser()
     for key in ['suite','kitty','wezterm','xterm','output']:
@@ -142,15 +157,19 @@ time.sleep(5)
                     assert before['colouredPixels']<1000,'image pixels appeared before explicit reveal'
                     run('xdotool','key','Tab','Return');time.sleep(1.5)
                     revealed=capture(output,title+'Revealed',window)
+                    check_chrome(before,revealed,detail)
                     assert revealed['colouredPixels']>before['colouredPixels']+1000,'no native image rendering detected'
                     run('xdotool','key','a');time.sleep(.7)
                     moving=capture(output,title+'Motion',window)
+                    check_chrome(before,moving,detail)
                     run('xdotool','key','a','Tab','Down','Down');time.sleep(.7)
                     scrolled=capture(output,title+'Scrolled',window)
+                    check_chrome(before,scrolled,detail)
                     assert scrolled['colouredPixels']>before['colouredPixels']+1000,'image did not recover after rapid local scrolling'
                     width=int(revealed['width']*.76);height=int(revealed['height']*.82)
                     run('xdotool','windowsize',window,width,height);time.sleep(.7)
                     resized=capture(output,title+'Resized',window)
+                    check_chrome(before,resized,detail)
                     assert resized['colouredPixels']>1000,'image did not recover after resize'
                     run('xdotool','key','q');time.sleep(.5)
                     restored=capture(output,title+'Restored',window)
