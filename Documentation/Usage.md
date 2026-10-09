@@ -1,6 +1,8 @@
 # Command-line use
 
-Build with Rust and Cargo. No HyperNet source checkout is required:
+See [Installation](Installation.md) for signed offline packages and
+[Upgrade and recovery](UpgradeRecovery.md) for safe version changes.
+Build from source with Rust and Cargo. No HyperNet source checkout is required:
 
 ```sh
 cargo build --locked --release

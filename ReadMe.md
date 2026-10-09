@@ -7,7 +7,8 @@ grants, signs bounded hosting consent and provides an independent Pages CLI/TUI.
 HTTPS interface available to other applications.
 
 Build with `cargo build --locked --release`. See
-[Usage](Documentation/Usage.md) for installation, enrolment and administration.
+[Installation](Documentation/Installation.md) for signed offline packages and
+[Usage](Documentation/Usage.md) for enrolment and administration.
 The node and client have separate source, build and package lifecycles.
 
 [Pages](Documentation/Pages.md) supports inert text, exact-content manual review,
@@ -18,6 +19,9 @@ author sharing, destination review and independently verified foreign reads.
 recipient-approved resumable file exchange and separately consented OpenSSH services.
 [Applications and adapters](Documentation/Adapters.md) provides separate Pages
 credentials, explicit review data exchange and selected-letter disclosure.
+[Upgrade and recovery](Documentation/UpgradeRecovery.md),
+[supported platforms](Documentation/SupportedPlatforms.md) and
+[security boundaries](Documentation/Security.md) describe package operation.
 It does not yet constitute a qualified production Internet deployment.
 See [Requirements](Documentation/Requirements.md) for the wider product scope.
 
