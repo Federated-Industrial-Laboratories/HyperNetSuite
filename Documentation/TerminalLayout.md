@@ -14,8 +14,15 @@ the spaces between children. Remaining cells are distributed by Column weight;
 other child types have weight 1. Integer rounding favours document order. A narrow
 row stacks children in the same order and uses its gap between stacked children.
 
-Panels draw a label and border around their padded content. ScrollBox `rows`
-selects its content viewport height, with a separate label and border. Every
+Panels draw a label and border around their padded content. Panel and ScrollBox
+accept `border`: Light, Heavy, Double, Rounded or Ascii. Omitted and null values
+inherit through enclosing containers; the root defaults to Light. Separators
+inherit the same family. A divider spanning the full content width extends through
+its enclosing panel's padding and meets the sides with matching junctions. A
+narrower divider inside a padded or partial-width child remains inset. Nested
+panels retain independent rectangles; adjacent panels do not form a shared grid.
+See [HyperPage](HyperPage.md#border-styles) for the finite glyph families.
+ScrollBox `rows` selects its content viewport height, with a separate label and border. Every
 scrollbox retains its own offset during scrolling and resizing. Its descendants
 are clipped before terminal output, including nested scrollboxes and buttons.
 A page cannot overwrite the approval status or reader controls outside its
@@ -23,7 +30,7 @@ content rectangle.
 
 Text wraps by Unicode grapheme clusters and display width. A grapheme wider than
 its available row is replaced by `?`; no partial wide character is painted.
-Combining clusters without a display cell are escaped. ASCII mode renders
+Combining clusters without a display cell are escaped. The `--ascii` option overrides every generated border with ASCII glyphs and renders
 non-ASCII characters as explicit code-point escapes before measuring them.
 Terminal font and Unicode support can still vary; use ASCII mode when needed.
 Deeply nested borders shrink to their available width without crossing a parent.

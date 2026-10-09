@@ -54,5 +54,8 @@ beyond explicit navigation and media reveal.
 
 The examples exercise responsive rows, panels, colours, scrollboxes, typed form
 fields, static photos, retained vectors and finite text/primitive/image effects.
+Rounded cafe panels, double bookshop frames, light plant panels and a heavy
+noticeboard demonstrate the border styles. Menu and noticeboard separators join
+their containing borders. Pass `--ascii` for the character-only border fallback.
 Labels and descriptive text remain available without colour, graphics or motion.
 All businesses, book titles, events and opening hours are fictional.

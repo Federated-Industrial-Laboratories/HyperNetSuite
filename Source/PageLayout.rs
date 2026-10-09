@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Bounded terminal-cell layout with responsive rows and independently clipped scrollboxes.
-use crate::markup::{Colour, Document, Kind, Node, PageAction, Style, TextKind};
+use crate::{
+    borders::{BorderCell, Part},
+    markup::{BorderStyle, Colour, Document, Kind, Node, PageAction, Style, TextKind},
+};
 use anyhow::{Result, ensure};
 use std::{cell::Cell as Count, collections::BTreeMap, rc::Rc};
 use unicode_segmentation::UnicodeSegmentation;
@@ -16,9 +19,11 @@ pub struct Cell {
     pub continuation: bool,
     pub style: Style,
     pub owner: Option<usize>,
+    pub border: Option<BorderCell>,
 }
 pub struct Line {
     pub cells: Vec<Cell>,
+    separator: bool,
     budget: Rc<Count<usize>>,
 }
 impl Drop for Line {
@@ -133,6 +138,7 @@ fn inherited(parent: Style, own: Style) -> Style {
     Style {
         colour: own.colour.or(parent.colour),
         bold: own.bold || parent.bold,
+        border: own.border.or(parent.border),
     }
 }
 impl Layout {
@@ -167,11 +173,13 @@ impl Builder<'_> {
                     text: " ".into(),
                     continuation: false,
                     style,
-                    owner: None
+                    owner: None,
+                    border: None,
                 };
                 width
             ],
             budget: self.budget.clone(),
+            separator: false,
         })
     }
     fn write(&self, line: &mut Line, start: usize, text: &str, style: Style, owner: Option<usize>) {
@@ -186,6 +194,7 @@ impl Builder<'_> {
                 continuation: false,
                 style,
                 owner,
+                border: None,
             };
             for i in 1..size {
                 line.cells[x + i] = Cell {
@@ -193,6 +202,7 @@ impl Builder<'_> {
                     continuation: true,
                     style,
                     owner,
+                    border: None,
                 };
             }
             x += size;
@@ -300,6 +310,9 @@ impl Builder<'_> {
             for (child, child_width) in children.iter().zip(&widths) {
                 if let Some(row) = child.lines.get(y) {
                     line.cells[x..x + child_width].clone_from_slice(&row.cells);
+                    if *child_width == width {
+                        line.separator = row.separator;
+                    }
                 }
                 x += child_width + gap;
             }
@@ -313,21 +326,47 @@ impl Builder<'_> {
         }
         Ok(block)
     }
+    fn border_cell(
+        &self,
+        line: &mut Line,
+        x: usize,
+        node: &Node,
+        part: Part,
+        style: Style,
+        owner: Option<usize>,
+    ) {
+        let border = BorderCell {
+            key: node.key,
+            style: if self.ascii {
+                BorderStyle::Ascii
+            } else {
+                style.border.unwrap_or_default()
+            },
+            part,
+        };
+        self.write(line, x, border.glyph(false), style, owner);
+        line.cells[x].border = Some(border);
+    }
     fn border(
         &self,
         width: usize,
         label: &str,
         style: Style,
+        node: &Node,
+        bottom: bool,
         owner: Option<usize>,
     ) -> Result<Line> {
         let mut row = self.line(width, style)?;
-        self.write(
-            &mut row,
-            0,
-            &format!("+{}+", "-".repeat(width.saturating_sub(2))),
-            style,
-            owner,
-        );
+        for x in 0..width {
+            let part = match (width >= 3, x, bottom) {
+                (true, 0, false) => Part::TopLeft,
+                (true, 0, true) => Part::BottomLeft,
+                (true, last, false) if last + 1 == width => Part::TopRight,
+                (true, last, true) if last + 1 == width => Part::BottomRight,
+                _ => Part::Horizontal,
+            };
+            self.border_cell(&mut row, x, node, part, style, owner);
+        }
         if width > 4 && !label.is_empty() {
             self.write(
                 &mut row,
@@ -364,36 +403,53 @@ impl Builder<'_> {
             .unwrap_or(0);
         let owner = scroll_rows.map(|_| node.key);
         let mut block = Layout::default();
-        block.lines.push(self.border(width, label, style, owner)?);
+        block
+            .lines
+            .push(self.border(width, label, style, node, false, owner)?);
         for _ in 0..padding {
             let mut row = self.line(width, style)?;
             if border != 0 {
-                self.write(&mut row, 0, "|", style, owner);
-                self.write(&mut row, width - 1, "|", style, owner);
+                self.border_cell(&mut row, 0, node, Part::Vertical, style, owner);
+                self.border_cell(&mut row, width - 1, node, Part::Vertical, style, owner);
             }
             block.lines.push(row);
         }
         for y in 0..rows {
             let mut row = self.line(width, style)?;
             if border != 0 {
-                self.write(&mut row, 0, "|", style, owner);
-                self.write(&mut row, width - 1, "|", style, owner);
+                self.border_cell(&mut row, 0, node, Part::Vertical, style, owner);
+                self.border_cell(&mut row, width - 1, node, Part::Vertical, style, owner);
             }
             if let Some(line) = content.lines.get(offset + y) {
                 let start = border + padding;
                 row.cells[start..start + inner].clone_from_slice(&line.cells);
+                if line.separator && border != 0 {
+                    for cell in &mut row.cells[start..start + inner] {
+                        if let Some(generated) = &mut cell.border {
+                            generated.key = node.key;
+                        }
+                    }
+                    self.border_cell(&mut row, 0, node, Part::LeftJoin, style, owner);
+                    self.border_cell(&mut row, width - 1, node, Part::RightJoin, style, owner);
+                    // A full-width divider crosses this panel's own padding only.
+                    for x in (1..start).chain(start + inner..width - 1) {
+                        self.border_cell(&mut row, x, node, Part::Horizontal, style, owner);
+                    }
+                }
             }
             block.lines.push(row);
         }
         for _ in 0..padding {
             let mut row = self.line(width, style)?;
             if border != 0 {
-                self.write(&mut row, 0, "|", style, owner);
-                self.write(&mut row, width - 1, "|", style, owner);
+                self.border_cell(&mut row, 0, node, Part::Vertical, style, owner);
+                self.border_cell(&mut row, width - 1, node, Part::Vertical, style, owner);
             }
             block.lines.push(row);
         }
-        block.lines.push(self.border(width, "", style, owner)?);
+        block
+            .lines
+            .push(self.border(width, "", style, node, true, owner)?);
         if scroll_rows.is_some() {
             for visual in &mut content.visuals {
                 visual.y -= offset as i64;
@@ -539,7 +595,16 @@ impl Builder<'_> {
                 });
                 Ok(block)
             }
-            Kind::Separator => self.text(&"-".repeat(width), width, style, None),
+            Kind::Separator => {
+                let mut block = Layout::default();
+                let mut row = self.line(width, style)?;
+                for x in 0..width {
+                    self.border_cell(&mut row, x, node, Part::Horizontal, style, None);
+                }
+                row.separator = true;
+                block.lines.push(row);
+                Ok(block)
+            }
             Kind::Spacer { rows } => {
                 let mut block = Layout::default();
                 for _ in 0..*rows {
@@ -633,6 +698,7 @@ pub fn build_with_values(
         Style {
             colour: Some(Colour::Default),
             bold: false,
+            border: Some(BorderStyle::Light),
         },
         0,
     )?;
@@ -651,6 +717,74 @@ mod tests {
             .iter()
             .map(|l| l.cells.iter().map(|c| c.text.as_str()).collect::<String>())
             .collect()
+    }
+    #[test]
+    fn border_families_inherit_join_and_preserve_inset_dividers() {
+        for (name, top, bottom, joined) in [
+            ("Light", '┌', '└', "├──────────────────┤"),
+            ("Heavy", '┏', '┗', "┣━━━━━━━━━━━━━━━━━━┫"),
+            ("Double", '╔', '╚', "╠══════════════════╣"),
+            ("Rounded", '╭', '╰', "├──────────────────┤"),
+            ("Ascii", '+', '+', "+------------------+"),
+        ] {
+            let doc = parse(&format!(
+                "@Panel {{\"label\":\"Frame\",\"border\":\"{name}\",\"padding\":2}}\n@Row {{\"minChildColumns\":12}}\n@Column {{}}\n@Separator {{}}\n@End\n@End\n@Column {{\"padding\":1}}\n@Separator {{}}\n@End\n@Panel {{\"label\":\"Child\",\"padding\":0,\"border\":null}}\n: Text\n@End\n@Panel {{\"label\":\"Override\",\"padding\":0,\"border\":\"Light\"}}\n: Text\n@End\n@End\n@Panel {{\"label\":\"Sibling\",\"padding\":0}}\n: Text\n@End\n"
+            ));
+            let layout = build(&doc, 20, &BTreeMap::new(), false).unwrap();
+            let text = rows(&layout);
+            assert!(text[0].starts_with(top));
+            assert_eq!(text[3], joined);
+            assert_eq!(
+                layout.lines[5].cells[0].border.unwrap().part,
+                Part::Vertical
+            );
+            assert!(text[5].chars().nth(1) == Some(' '));
+            assert!(
+                text.iter()
+                    .find(|line| line.contains("Child"))
+                    .unwrap()
+                    .contains(top)
+            );
+            assert!(
+                text.iter()
+                    .find(|line| line.contains("Override"))
+                    .unwrap()
+                    .contains('┌')
+            );
+            assert!(
+                text.iter()
+                    .find(|line| line.contains("Sibling"))
+                    .unwrap()
+                    .starts_with('┌')
+            );
+            assert!(text.iter().any(|line| line.starts_with(bottom)));
+            let ascii = build(&doc, 20, &BTreeMap::new(), true).unwrap();
+            assert!(rows(&ascii).iter().all(|line| line.is_ascii()));
+            assert_eq!(rows(&ascii)[3], "+------------------+");
+        }
+    }
+    #[test]
+    fn styled_scroll_dividers_clip_and_reflow_at_cell_boundaries() {
+        let doc = parse(concat!(
+            "@Panel {\"label\":\"世界 ─ +\",\"border\":\"Rounded\",\"padding\":1}\n",
+            "@ScrollBox {\"id\":\"Guide\",\"label\":\"Guide\",\"rows\":2,\"border\":\"Double\"}\n",
+            ": First 世界\n@Separator {}\n: Last café\n@End\n@End\n"
+        ));
+        for width in 1..=40 {
+            for ascii in [false, true] {
+                let layout = build(&doc, width, &BTreeMap::new(), ascii).unwrap();
+                assert!(rows(&layout).iter().all(|line| line.width() == width));
+                let key = layout.ids["Guide"];
+                let offset = layout.scrolls[&key].maximum;
+                let scrolled = build(&doc, width, &BTreeMap::from([(key, offset)]), ascii).unwrap();
+                assert!(rows(&scrolled).iter().all(|line| line.width() == width));
+                if width == 40 && !ascii {
+                    let text = rows(&scrolled).join("\n");
+                    assert!(text.contains("╠══════════════════════════════════╣"));
+                    assert!(text.contains("Last café") && !text.contains("First"));
+                }
+            }
+        }
     }
     #[test]
     fn images_are_clipped_to_every_scrollbox_and_alt_text_is_retained() {

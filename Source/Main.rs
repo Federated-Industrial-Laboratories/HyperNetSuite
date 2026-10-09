@@ -4,6 +4,8 @@
 mod adapter_files;
 #[path = "Applications.rs"]
 mod applications;
+#[path = "Borders.rs"]
+mod borders;
 #[path = "BridgeConsent.rs"]
 mod bridge_consent;
 #[path = "Federation.rs"]

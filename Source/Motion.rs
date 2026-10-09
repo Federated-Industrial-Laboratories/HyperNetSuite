@@ -157,13 +157,10 @@ impl State {
                             }
                         }
                         Preset::TextFade => cell.style.bold = accent,
-                        Preset::BorderEmphasis
-                            if y == visual.y
-                                || y == visual.y + visual.rows as i64 - 1
-                                || index == 0
-                                || index + 1 == end - start =>
-                        {
-                            if accent {
+                        Preset::BorderEmphasis => {
+                            if accent
+                                && let Some(border) = cell.border.filter(|b| b.key == visual.key)
+                            {
                                 cell.style.bold = true;
                                 cell.style.colour =
                                     Some(if cell.style.colour == Some(Colour::BrightCyan) {
@@ -171,17 +168,7 @@ impl State {
                                     } else {
                                         Colour::BrightCyan
                                     });
-                                // Generated corners and the bottom rule remain visible in monochrome.
-                                // The top label and all interior text retain their exact glyphs.
-                                if (y == visual.y || y == visual.y + visual.rows as i64 - 1)
-                                    && (index == 0 || index + 1 == end - start)
-                                    && cell.text == "+"
-                                {
-                                    cell.text = "*".into();
-                                } else if y == visual.y + visual.rows as i64 - 1 && cell.text == "-"
-                                {
-                                    cell.text = "=".into();
-                                }
+                                cell.text = border.glyph(true).into();
                             }
                         }
                         Preset::ProgressSweep
@@ -205,54 +192,51 @@ pub fn visible(v: &Visual, offset: usize, rows: usize) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn targeted_border_emphasis_changes_visible_glyphs_and_preserves_content() {
-        for colour in ["BrightGreen", "BrightCyan"] {
-            let d = crate::markup::parse(&format!(
-                "HyperNetPage/2\n# Border\n@Panel {{\"id\":\"Greenhouse\",\"label\":\"A-B\",\"colour\":\"{colour}\",\"motion\":{{\"preset\":\"BorderEmphasis\",\"durationMs\":1000}}}}\n: Keep A-B + | unchanged\n@End\n"
-            )).unwrap();
-            let layout = crate::page_layout::build(&d, 40, &BTreeMap::new(), false).unwrap();
-            let visual = &layout.visuals[0];
-            let mut state = State::default();
-            let now = Instant::now();
-            assert!(!state.target(&layout, "Greenhouse", true, 100, 10, now));
-            assert!(state.target(&layout, "Greenhouse", true, 0, 10, now));
-            let mut active = crate::page_layout::build(&d, 40, &BTreeMap::new(), false).unwrap();
-            state.apply(&mut active, now + Duration::from_millis(250));
-            for (y, (before, after)) in layout.lines.iter().zip(&active.lines).enumerate() {
-                for (x, (a, b)) in before.cells.iter().zip(&after.cells).enumerate() {
-                    let border = y >= visual.y as usize
-                        && y < (visual.y + visual.rows as i64) as usize
-                        && (y == visual.y as usize
-                            || y == (visual.y + visual.rows as i64 - 1) as usize
-                            || x == 0
-                            || x + 1 == visual.width);
-                    if border {
-                        assert_ne!(a.style.colour, b.style.colour);
-                    } else {
-                        assert_eq!(a.text, b.text);
-                        assert_eq!(a.style.colour, b.style.colour);
-                        assert_eq!(a.style.bold, b.style.bold);
+    fn targeted_border_emphasis_changes_generated_glyphs_and_preserves_content() {
+        for border in ["Light", "Heavy", "Double", "Rounded", "Ascii"] {
+            for ascii in [false, true] {
+                let d = crate::markup::parse(&format!(
+                    "HyperNetPage/2\n# Border\n@Panel {{\"id\":\"Greenhouse\",\"label\":\"A-B + ─ 世界\",\"colour\":\"BrightCyan\",\"border\":\"{border}\",\"motion\":{{\"preset\":\"BorderEmphasis\",\"durationMs\":1000}}}}\n: Keep A-B + | ─ ╬ unchanged\n@Separator {{}}\n@Panel {{\"label\":\"Nested\"}}\n: Inner\n@End\n@End\n"
+                )).unwrap();
+                let layout = crate::page_layout::build(&d, 50, &BTreeMap::new(), ascii).unwrap();
+                let visual = &layout.visuals[0];
+                let mut state = State::default();
+                let now = Instant::now();
+                assert!(!state.target(&layout, "Greenhouse", true, 100, 10, now));
+                assert!(state.target(&layout, "Greenhouse", true, 0, 20, now));
+                let mut active =
+                    crate::page_layout::build(&d, 50, &BTreeMap::new(), ascii).unwrap();
+                state.apply(&mut active, now + Duration::from_millis(250));
+                let mut changed = 0;
+                for (before, after) in layout.lines.iter().zip(&active.lines) {
+                    for (a, b) in before.cells.iter().zip(&after.cells) {
+                        if a.border.is_some_and(|border| border.key == visual.key) {
+                            assert_ne!(a.style.colour, b.style.colour);
+                            assert_ne!(a.text, b.text);
+                            changed += 1;
+                        } else {
+                            assert_eq!(a.text, b.text);
+                            assert_eq!(a.style.colour, b.style.colour);
+                            assert_eq!(a.style.bold, b.style.bold);
+                        }
+                        if ascii {
+                            assert!(b.text.is_ascii());
+                        }
                     }
                 }
+                assert!(changed > 50);
+                assert!(state.sync(&layout, 0, 20, now + Duration::from_secs(1)));
+                let mut completed =
+                    crate::page_layout::build(&d, 50, &BTreeMap::new(), ascii).unwrap();
+                state.apply(&mut completed, now + Duration::from_secs(1));
+                for (before, after) in layout.lines.iter().zip(&completed.lines) {
+                    for (a, b) in before.cells.iter().zip(&after.cells) {
+                        assert_eq!(a.text, b.text);
+                    }
+                }
+                assert!(state.target(&layout, "Greenhouse", true, 0, 20, now));
+                assert!(!state.target(&layout, "Greenhouse", false, 0, 20, now));
             }
-            let text = |line: &crate::page_layout::Line| {
-                line.cells
-                    .iter()
-                    .map(|c| c.text.as_str())
-                    .collect::<String>()
-            };
-            assert!(text(&active.lines[visual.y as usize]).contains("A-B"));
-            assert!(
-                text(&active.lines[(visual.y + visual.rows as i64 - 1) as usize]).contains("*===")
-            );
-            assert!(state.sync(&layout, 0, 10, now + Duration::from_secs(1)));
-            let mut completed = crate::page_layout::build(&d, 40, &BTreeMap::new(), false).unwrap();
-            state.apply(&mut completed, now + Duration::from_secs(1));
-            for (before, after) in layout.lines.iter().zip(&completed.lines) {
-                assert_eq!(text(before), text(after));
-            }
-            assert!(state.target(&layout, "Greenhouse", true, 0, 10, now));
-            assert!(!state.target(&layout, "Greenhouse", false, 0, 10, now));
         }
     }
     #[test]
