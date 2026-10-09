@@ -105,7 +105,7 @@ def architecture():
 def allowed_path(name):
     if name in ('Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite'):
         return True
-    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Examples/[A-Z][A-Za-z0-9]*\.(py|png|svg|md)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics)\.py)', name))
+    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Examples/[A-Z][A-Za-z0-9]*\.(py|png|svg|md)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics|NetworkProvisioning)\.py)', name))
 
 
 def file_mode(name):

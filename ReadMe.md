@@ -11,6 +11,11 @@ Build with `cargo build --locked --release`. See
 [Usage](Documentation/Usage.md) for enrolment and administration.
 The node and client have separate source, build and package lifecycles.
 
+[Offline networks](Documentation/Networks.md) prepares independently authenticated
+replacement-network trust and separate client keys without any host tooling or
+network connection. Prepared profiles confer no membership; online joining
+requires the approved relay connector and is currently unavailable.
+
 [Browser](Documentation/Browser.md) provides a trusted paginated catalogue, explicit
 address navigation, retained page state and recoverable errors in one terminal
 session.
@@ -42,8 +47,9 @@ It does not yet constitute a qualified production Internet deployment.
 See [Requirements](Documentation/Requirements.md) for the wider product scope.
 
 [Replacement network contracts](Documentation/Contracts.md) specify the 0.8.0
-authority, policy and runtime boundaries. They do not change the current
-executable capabilities or qualification claims.
+authority, policy and runtime boundaries. The offline bootstrap subset is
+implemented; current authority, Byzantine consensus and complete relay coverage
+require their separate runtime integration and qualification.
 
 Licensed under the [MIT License](Licence.txt).
 

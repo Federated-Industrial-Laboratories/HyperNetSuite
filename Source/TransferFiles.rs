@@ -67,9 +67,23 @@ pub fn read(path: &Path, maximum: usize, private: bool) -> Result<Vec<u8>> {
     let (parent, value) = parent(path)?;
     read_at(&parent, value, maximum, private)
 }
+pub fn read_single(path: &Path, maximum: usize, private: bool) -> Result<Vec<u8>> {
+    let (parent, value) = parent(path)?;
+    read_file(&parent, value, maximum, private, true)
+}
 pub fn read_at(parent: &File, value: &OsStr, maximum: usize, private: bool) -> Result<Vec<u8>> {
+    read_file(parent, value, maximum, private, private)
+}
+fn read_file(
+    parent: &File,
+    value: &OsStr,
+    maximum: usize,
+    private: bool,
+    single: bool,
+) -> Result<Vec<u8>> {
     let f = open_at(parent, value, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
     let m = f.metadata()?;
+    ensure!(!single || m.nlink() == 1, "input must have one hard link");
     ensure!(
         m.is_file() && m.len() <= maximum as u64,
         "input must be a bounded regular file"
@@ -161,6 +175,51 @@ pub fn atomic_at(parent: &File, destination: &OsStr, bytes: &[u8], replace: bool
 pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let (parent, value) = parent(path)?;
     atomic_at(&parent, value, bytes, false)
+}
+pub fn remove_private_at(parent: &File, value: &OsStr) -> Result<()> {
+    let file = open_at(parent, value, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0
+            && metadata.nlink() == 1,
+        "unsafe private removal target"
+    );
+    let value = name(value)?;
+    ensure!(
+        unsafe { libc::unlinkat(parent.as_raw_fd(), value.as_ptr(), 0) } == 0,
+        "cannot remove private profile"
+    );
+    parent.sync_all()?;
+    Ok(())
+}
+pub fn profile_lock(parent: &File, value: &OsStr) -> Result<File> {
+    use sha2::{Digest, Sha256};
+    let label = format!(
+        "Network{}.lock",
+        hex::encode(Sha256::digest(value.as_bytes()))
+    );
+    let file = open_at(
+        parent,
+        OsStr::new(&label),
+        libc::O_RDWR | libc::O_CREAT | libc::O_NONBLOCK,
+        0o600,
+    )?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0
+            && metadata.nlink() == 1,
+        "unsafe profile lock"
+    );
+    ensure!(
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "another command owns this profile"
+    );
+    parent.sync_all()?;
+    Ok(file)
 }
 pub struct Destination {
     parent: File,
