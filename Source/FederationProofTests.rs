@@ -43,7 +43,12 @@ fn request(network: &str, seed: u8, command: Value) -> Envelope {
 }
 fn fixture(now: u64) -> (Treaty, Value) {
     let treaty = Treaty {
-        version: 1,
+        version: 2,
+        media_profiles: Vec::new(),
+        media_source_hosts: Vec::new(),
+        media_destination_hosts: Vec::new(),
+        media_max_bytes: 0,
+        media_required_copies: 0,
         agreement_id: "03".repeat(16),
         source_network: "01".repeat(32),
         destination_network: "02".repeat(32),

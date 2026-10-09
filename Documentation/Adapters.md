@@ -46,6 +46,9 @@ namespace, page allowlist and action:
 | PagesSubmit | Submit and withdraw this application's own pages |
 | ReviewInspect | Queue and inspect pending pages |
 | ReviewDecide | Approve or reject exact pending content; requires ReviewInspect |
+| MediaRead | Fetch exact currently published assets; Suite also uses PagesRead |
+| MediaSubmit | Upload own pending assets and replicate own publication; Suite also uses PagesSubmit |
+| MediaInspect | Fetch and attest exact pending assets; Suite also uses ReviewInspect |
 
 Review permissions require an administrator owner. ReviewDecide also requires
 `--review-policy-digest POLICY_SHA256` and `--review-mode manual` or `automatic`
@@ -212,6 +215,34 @@ and published without replacing an existing file. The receipt is saved before
 plaintext export. If export fails, inspect the retained private receipt and select
 new paths for another export. Expiry controls apply permission; it cannot erase
 copies already released. Delete plaintext exports according to the chosen policy.
+
+## Selected review media
+
+Text review export includes the signed Asset declarations but never fetches asset
+bytes. An administrator or a ReviewInspect application with separate MediaInspect
+permission can disclose one asset for an existing unexpired review job:
+
+```sh
+HyperNetSuite --config Reviewer/Profile.json adapters media-export \
+  --receipt ReviewExchange/Receipt.json --asset Diagram --consent-media-disclosure \
+  --output ReviewExchange/Diagram.json --media-receipt ReviewExchange/DiagramReceipt.json
+```
+
+This rechecks the exact pending submission and full canonical asset. It records a
+media inspection attestation and saves a signed disclosure receipt before writing
+plaintext bytes. The output contains `disclosure` metadata and an unpadded
+base64url `payload`. Metadata includes version 1, kind `PageMediaReview`, network,
+reviewJobId, reviewJobDigest, requester, recipient, purpose, policyDigest,
+issuedAt, expires, consentMediaDisclosure, pageId, revision, sourceDigest and the
+exact Asset declaration. The original job determines recipient, policy and expiry;
+the page cannot change them. The export is at most two MiB and follows the same
+private-directory and no-overwrite rules. MediaInspect alone cannot approve.
+
+The attestation confirms this client's byte verification, not human examination
+or model accuracy. The operator must arrange assessment before approving. A
+separate disclosure flag is required even when the original text job permitted
+disclosure. No provider is started or contacted. Expiry cannot recall plaintext
+already released.
 
 ## One-letter mail disclosure
 

@@ -110,10 +110,16 @@ fn validate(value: &Consent) -> Result<()> {
         }
     }
     ensure!(
-        sorted(&value.permissions, 4)
+        sorted(&value.permissions, 7)
             && value.permissions.iter().all(|p| matches!(
                 p.as_str(),
-                "PagesRead" | "PagesSubmit" | "ReviewInspect" | "ReviewDecide"
+                "PagesRead"
+                    | "PagesSubmit"
+                    | "ReviewInspect"
+                    | "ReviewDecide"
+                    | "MediaRead"
+                    | "MediaSubmit"
+                    | "MediaInspect"
             )),
         "invalid application permissions"
     );

@@ -5,7 +5,7 @@ use crate::{
     federation_proof::{self as proof, Publication, Treaty},
     files, markup,
     page_proof::{Bundle, Descriptor, Envelope},
-    protocol, reader, share_withdrawal,
+    protocol, share_withdrawal,
 };
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
@@ -100,6 +100,10 @@ pub enum Command {
         tui: bool,
         #[arg(long)]
         ascii: bool,
+        #[command(flatten)]
+        graphics: crate::terminal_graphics::Options,
+        #[arg(long = "media")]
+        media: Vec<String>,
     },
     Review {
         #[arg(long)]
@@ -130,6 +134,8 @@ pub enum Command {
         tui: bool,
         #[arg(long)]
         ascii: bool,
+        #[command(flatten)]
+        graphics: crate::terminal_graphics::Options,
     },
 }
 
@@ -184,7 +190,10 @@ pub(crate) fn load(
     proof::read(&config.network, agreement, page, &response["result"])
 }
 
-fn pending(network: &str, record: &Value) -> Result<(Treaty, Descriptor, String, String)> {
+pub(crate) fn pending(
+    network: &str,
+    record: &Value,
+) -> Result<(Treaty, Descriptor, String, String)> {
     ensure!(
         record["network"].as_str() == Some(network),
         "review record belongs to another destination"
@@ -343,6 +352,8 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
             output,
             tui,
             ascii,
+            graphics,
+            media,
         } => {
             protocol::hex_bytes::<16>(&agreement)?;
             protocol::hex_bytes::<16>(&page_id)?;
@@ -363,7 +374,7 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
             );
             files::write_new(&output, &serde_json::to_vec_pretty(&record)?)?;
             let document = markup::parse(&body).map_err(anyhow::Error::msg)?;
-            reader::show(
+            crate::media::local_show(
                 &document,
                 &[
                     "UNAPPROVED imported page; local review is required.".into(),
@@ -378,6 +389,8 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
                 ],
                 tui,
                 ascii,
+                &graphics,
+                &media,
             )?;
             return Ok(());
         }
@@ -400,14 +413,16 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
             page_id,
             tui,
             ascii,
+            graphics,
         } => {
-            return crate::navigation::browse(
+            return crate::navigation::browse_graphics(
                 &config,
                 &identity,
                 crate::navigation::Location::Federated { agreement, page_id },
                 None,
                 tui,
                 ascii,
+                graphics,
             );
         }
     };

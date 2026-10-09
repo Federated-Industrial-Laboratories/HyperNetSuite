@@ -53,12 +53,27 @@ pub struct ScrollInfo {
     pub offset: usize,
     pub maximum: usize,
 }
+#[derive(Clone)]
+pub struct Visual {
+    pub key: usize,
+    pub id: Option<String>,
+    pub asset: Option<String>,
+    pub fit: crate::markup::Fit,
+    pub x: i64,
+    pub y: i64,
+    pub width: usize,
+    pub rows: usize,
+    pub top: i64,
+    pub bottom: i64,
+    pub effect: Option<crate::markup::Effect>,
+}
 #[derive(Default)]
 pub struct Layout {
     pub lines: Vec<Line>,
     pub controls: Vec<Control>,
     pub scrolls: BTreeMap<usize, ScrollInfo>,
     pub ids: BTreeMap<String, usize>,
+    pub visuals: Vec<Visual>,
 }
 struct Builder<'a> {
     budget: Rc<Count<usize>>,
@@ -126,6 +141,13 @@ impl Layout {
             control.x += x as i64;
             control.y += y as i64;
         }
+        for visual in &mut child.visuals {
+            visual.x += x as i64;
+            visual.y += y as i64;
+            visual.top += y as i64;
+            visual.bottom += y as i64;
+        }
+        self.visuals.append(&mut child.visuals);
         self.controls.append(&mut child.controls);
         self.scrolls.append(&mut child.scrolls);
         self.ids.append(&mut child.ids);
@@ -373,6 +395,11 @@ impl Builder<'_> {
         }
         block.lines.push(self.border(width, "", style, owner)?);
         if scroll_rows.is_some() {
+            for visual in &mut content.visuals {
+                visual.y -= offset as i64;
+                visual.top = (visual.top - offset as i64).max(0);
+                visual.bottom = (visual.bottom - offset as i64).min(rows as i64);
+            }
             for control in &mut content.controls {
                 control.ancestors.push(Ancestor {
                     key: node.key,
@@ -407,7 +434,7 @@ impl Builder<'_> {
     }
     fn node(&self, node: &Node, width: usize, parent: Style) -> Result<Layout> {
         let mut style = inherited(parent, node.style);
-        match &node.kind {
+        let mut block = match &node.kind {
             Kind::Text { text, kind } => {
                 let prefix = match kind {
                     TextKind::Paragraph => "",
@@ -486,6 +513,32 @@ impl Builder<'_> {
                 );
                 self.panel(node, label, 0, width, style, Some(usize::from(*rows)))
             }
+            Kind::Image {
+                asset,
+                alt,
+                rows,
+                fit,
+            } => {
+                let mut block = self.text(&format!("[Image: {alt}]"), width, style, None)?;
+                let top = block.lines.len();
+                for _ in 0..*rows {
+                    block.lines.push(self.line(width, style)?);
+                }
+                block.visuals.push(Visual {
+                    key: node.key,
+                    id: node.id.clone(),
+                    asset: Some(asset.clone()),
+                    fit: *fit,
+                    x: 0,
+                    y: top as i64,
+                    width,
+                    rows: usize::from(*rows),
+                    top: top as i64,
+                    bottom: (top + usize::from(*rows)) as i64,
+                    effect: node.motion,
+                });
+                Ok(block)
+            }
             Kind::Separator => self.text(&"-".repeat(width), width, style, None),
             Kind::Spacer { rows } => {
                 let mut block = Layout::default();
@@ -525,7 +578,27 @@ impl Builder<'_> {
                 });
                 Ok(block)
             }
+        }?;
+        if let Some(id) = &node.id {
+            block.ids.insert(id.clone(), node.key);
         }
+        if node.motion.is_some() && !matches!(node.kind, Kind::Image { .. }) {
+            let rows = block.lines.len();
+            block.visuals.push(Visual {
+                key: node.key,
+                id: node.id.clone(),
+                asset: None,
+                fit: crate::markup::Fit::Contain,
+                x: 0,
+                y: 0,
+                width,
+                rows,
+                top: 0,
+                bottom: rows as i64,
+                effect: node.motion,
+            });
+        }
+        Ok(block)
     }
 }
 #[cfg(test)]
@@ -578,6 +651,24 @@ mod tests {
             .iter()
             .map(|l| l.cells.iter().map(|c| c.text.as_str()).collect::<String>())
             .collect()
+    }
+    #[test]
+    fn images_are_clipped_to_every_scrollbox_and_alt_text_is_retained() {
+        let asset = format!(
+            r#"@Asset {{"id":"Picture","profile":"HyperNetRaster/1","width":1,"height":1,"bytes":3,"digest":"{}","hosts":["{}"],"copies":1}}"#,
+            "0".repeat(64),
+            "1".repeat(64)
+        );
+        let doc = parse(&format!(
+            "{asset}\n@ScrollBox {{\"id\":\"Outer\",\"label\":\"Outer\",\"rows\":4}}\n: Above\n@ScrollBox {{\"id\":\"Inner\",\"label\":\"Inner\",\"rows\":6}}\n@Image {{\"id\":\"View\",\"asset\":\"Picture\",\"alt\":\"Red diagram\",\"rows\":8}}\n@End\n@End\n"
+        ));
+        let first = build(&doc, 40, &BTreeMap::new(), false).unwrap();
+        let offsets = BTreeMap::from([(first.ids["Outer"], 2), (first.ids["Inner"], 3)]);
+        let clipped = build(&doc, 40, &offsets, false).unwrap();
+        let image = &clipped.visuals[0];
+        assert!(image.top >= 1 && image.bottom <= 5);
+        assert!(image.y < image.top && image.bottom - image.top <= 4);
+        assert!(doc.lines.iter().any(|line| line.contains("Red diagram")));
     }
     #[test]
     fn weighted_rows_stack_and_preserve_unicode_cell_boundaries() {

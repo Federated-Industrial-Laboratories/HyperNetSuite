@@ -35,7 +35,8 @@ the previous view. A resize failure keeps trusted recovery controls available;
 shrinking the terminal retries layout. Plain output remains available. Preview
 wide and narrow layouts before publishing.
 Very small terminals request resizing. Static pages redraw only after input or
-resize, and do no animation or background refresh.
+resize. Motion starts only through an explicit reader action and remains bounded
+and client-side; there is no background refresh. See [MediaViewer](MediaViewer.md).
 
 ## Keyboard
 

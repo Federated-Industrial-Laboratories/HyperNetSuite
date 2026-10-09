@@ -4,6 +4,7 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 
 | Package | Version | Declared licence |
 | --- | --- | --- |
+| adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
 | aead | 0.5.2 | MIT OR Apache-2.0 |
 | aes | 0.8.4 | MIT OR Apache-2.0 |
 | aes-gcm | 0.10.3 | Apache-2.0 OR MIT |
@@ -17,6 +18,8 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | anstyle-wincon | 3.0.11 | MIT OR Apache-2.0 |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
 | arc-swap | 1.9.2 | MIT OR Apache-2.0 |
+| arrayref | 0.3.9 | BSD-2-Clause |
+| arrayvec | 0.7.8 | MIT OR Apache-2.0 |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT |
 | autocfg | 1.5.1 | Apache-2.0 OR MIT |
 | base16ct | 0.2.0 | Apache-2.0 OR MIT |
@@ -31,6 +34,8 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
 | block-buffer | 0.12.1 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 |
+| bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
+| byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.1 | MIT |
 | cc | 1.6.0 | MIT OR Apache-2.0 |
 | cexpr | 0.6.0 | Apache-2.0/MIT |
@@ -54,6 +59,7 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
 | crabgrind | 0.2.6 | MIT |
+| crc32fast | 1.5.2 | MIT OR Apache-2.0 |
 | crossbeam-deque | 0.8.8 | MIT OR Apache-2.0 |
 | crossbeam-epoch | 0.9.21 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 |
@@ -78,11 +84,14 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | either | 1.19.0 | MIT OR Apache-2.0 |
 | elliptic-curve | 0.13.8 | Apache-2.0 OR MIT |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
+| euclid | 0.22.14 | MIT OR Apache-2.0 |
+| fdeflate | 0.3.7 | MIT OR Apache-2.0 |
 | ff | 0.13.1 | MIT/Apache-2.0 |
 | fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | fiat-crypto | 0.3.0 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | find-crate | 0.6.3 | Apache-2.0 OR MIT |
 | find-msvc-tools | 0.1.14 | MIT OR Apache-2.0 |
+| flate2 | 1.1.10 | MIT OR Apache-2.0 |
 | fluent | 0.16.1 | Apache-2.0 OR MIT |
 | fluent-bundle | 0.15.3 | Apache-2.0 OR MIT |
 | fluent-langneg | 0.13.1 | Apache-2.0 OR MIT |
@@ -137,6 +146,7 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | icu_provider | 2.1.1 | Unicode-3.0 |
 | idna | 1.1.0 | MIT OR Apache-2.0 |
 | idna_adapter | 1.2.1 | Apache-2.0 OR MIT |
+| image | 0.25.10 | MIT OR Apache-2.0 |
 | inout | 0.1.4 | MIT OR Apache-2.0 |
 | intl-memoizer | 0.5.3 | Apache-2.0 OR MIT |
 | intl_pluralrules | 7.0.2 | Apache-2.0/MIT |
@@ -149,6 +159,7 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | k256 | 0.13.4 | Apache-2.0 OR MIT |
 | keccak | 0.2.2 | Apache-2.0 OR MIT |
 | kem | 0.3.0 | Apache-2.0 OR MIT |
+| kurbo | 0.13.1 | Apache-2.0 OR MIT |
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 |
 | libc | 0.2.190 | MIT OR Apache-2.0 |
 | libcrux-aead | 0.0.9 | Apache-2.0 |
@@ -181,10 +192,13 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | mime | 0.3.17 | MIT OR Apache-2.0 |
 | mime_guess | 2.0.5 | MIT |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
+| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
+| miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mio | 1.2.4 | MIT |
 | ml-dsa | 0.1.1 | Apache-2.0 OR MIT |
 | ml-kem | 0.3.2 | Apache-2.0 OR MIT |
 | module-lattice | 0.2.3 | Apache-2.0 OR MIT |
+| moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | nom | 7.1.3 | MIT |
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 |
 | num-integer | 0.1.47 | MIT OR Apache-2.0 |
@@ -212,7 +226,9 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | pkcs8 | 0.10.2 | Apache-2.0 OR MIT |
 | pkcs8 | 0.11.0 | Apache-2.0 OR MIT |
 | pkg-config | 0.3.34 | MIT OR Apache-2.0 |
+| png | 0.18.1 | MIT OR Apache-2.0 |
 | poly1305 | 0.8.0 | Apache-2.0 OR MIT |
+| polycool | 0.4.0 | MIT OR Apache-2.0 |
 | polyval | 0.6.2 | Apache-2.0 OR MIT |
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
@@ -221,6 +237,7 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | proc-macro-error-attr2 | 2.0.0 | MIT OR Apache-2.0 |
 | proc-macro-error2 | 2.0.1 | MIT OR Apache-2.0 |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
+| pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
 | quinn | 0.11.12 | MIT OR Apache-2.0 |
 | quinn-proto | 0.11.19 | MIT OR Apache-2.0 |
 | quinn-udp | 0.5.16 | MIT OR Apache-2.0 |
@@ -242,6 +259,7 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | reqwest | 0.12.28 | MIT OR Apache-2.0 |
 | rfc6979 | 0.4.0 | Apache-2.0 OR MIT |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
+| roxmltree | 0.21.1 | MIT OR Apache-2.0 |
 | rust-embed | 8.13.0 | MIT |
 | rust-embed-impl | 8.13.0 | MIT |
 | rust-embed-utils | 8.13.0 | MIT |
@@ -281,6 +299,8 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
 | signature | 2.2.0 | Apache-2.0 OR MIT |
 | signature | 3.0.0 | Apache-2.0 OR MIT |
+| simd-adler32 | 0.3.10 | MIT |
+| siphasher | 1.0.4 | MIT OR Apache-2.0 |
 | slab | 0.4.12 | MIT |
 | smallvec | 1.16.2 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
@@ -288,8 +308,10 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | spki | 0.8.1 | Apache-2.0 OR MIT |
 | sponge-cursor | 0.1.0 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
+| strict-num | 0.1.1 | MIT |
 | strsim | 0.11.1 | MIT |
 | subtle | 2.6.1 | BSD-3-Clause |
+| svgtypes | 0.16.1 | Apache-2.0 OR MIT |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.6 | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Apache-2.0 |
@@ -298,6 +320,8 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
+| tiny-skia | 0.12.0 | BSD-3-Clause |
+| tiny-skia-path | 0.12.0 | BSD-3-Clause |
 | tinystr | 0.8.4 | Unicode-3.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
 | tls_codec | 0.5.0 | Apache-2.0 OR MIT |
@@ -366,7 +390,10 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | zerotrie | 0.2.5 | Unicode-3.0 |
 | zerovec | 0.11.8 | Unicode-3.0 |
 | zerovec-derive | 0.11.6 | Unicode-3.0 |
+| zlib-rs | 0.6.8 | Zlib |
 | zmij | 1.0.23 | MIT |
+| zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
+| zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib |
 
 The supported profile uses OpenMLS 0.9.1 with OpenMlsRustCrypto 0.6.0,
 `default-features = false`, and the RFC 9420 X25519/AES-128-GCM/SHA-256/Ed25519
@@ -391,3 +418,9 @@ Transfers reuse the pinned native age X25519 implementation. SSH invocation uses
 an explicitly selected external OpenSSH executable, version 10.6 or newer. The
 qualified baseline is OpenSSH 10.6p1; the Suite does not bundle that executable.
 The operator maintains its platform package, upstream licence notices and updates.
+
+The media importer pins image 0.25.10 with only PNG and JPEG features, roxmltree
+0.21.1 and svgtypes 0.16.1. Canonical vector rendering pins tiny-skia 0.12.0 with
+only its std feature. It does not enable tiny-skia PNG decoding or SIMD. Both
+encoded-image import and canonical-vector rasterisation run in the restricted
+worker. Library allocation limits supplement the operating-system boundary.

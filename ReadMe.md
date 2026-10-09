@@ -23,6 +23,10 @@ verified publication and reads from explicitly consenting replicas.
 [HyperPage](Documentation/HyperPage.md) defines panels, rows, scroll boxes, colours
 and explicit local controls. The reader adapts to terminal width and has a complete
 plain-text fallback.
+[Media](Documentation/Media.md) provides separately consented storage, explicit
+asset upload and inspection, isolated bitmap/SVG import, terminal graphics and
+bounded client-side motion. Graphical clients can consume the same canonical
+geometry or export it as static SVG.
 [Federation](Documentation/Federation.md) adds bilateral agreements, explicit
 author sharing, destination review and independently verified foreign reads.
 [Transfers and services](Documentation/TransfersAndServices.md) adds encrypted,

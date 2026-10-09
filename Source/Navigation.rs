@@ -248,6 +248,7 @@ impl Entry {
             links: Vec::new(),
             nodes: Vec::new(),
             forms: Vec::new(),
+            assets: Vec::new(),
         };
         for (key, descriptor) in result.entries.iter().enumerate() {
             let target = uri(network, descriptor);
@@ -267,6 +268,7 @@ impl Entry {
                 key,
                 id: None,
                 style: markup::Style::default(),
+                motion: None,
                 kind: markup::Kind::Button {
                     label,
                     action: markup::PageAction::Navigate { link: key },
@@ -282,6 +284,7 @@ impl Entry {
                 key: 0,
                 id: None,
                 style: markup::Style::default(),
+                motion: None,
                 kind: markup::Kind::Text {
                     text: document.lines[0].clone(),
                     kind: markup::TextKind::Paragraph,
@@ -472,6 +475,7 @@ impl Browser {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     config_path: Option<&Path>,
     target: Option<String>,
@@ -479,6 +483,7 @@ pub fn run(
     after: Option<String>,
     ascii: bool,
     forms: crate::form_ui::Options,
+    graphics: crate::terminal_graphics::Options,
 ) -> Result<()> {
     let config: Config = serde_json::from_slice(&crate::files::read_bounded(
         config_path.context("--config is required")?,
@@ -501,17 +506,18 @@ pub fn run(
     );
     let forms = forms.context(&config)?;
     session(
-        &config, &identity, None, target, namespace, after, None, true, ascii, forms,
+        &config, &identity, None, target, namespace, after, None, true, ascii, forms, graphics,
     )
 }
 
-pub fn browse(
+pub fn browse_graphics(
     config: &Config,
     identity: &Identity,
     first: Location,
     replica: Option<&str>,
     tui: bool,
     ascii: bool,
+    graphics: crate::terminal_graphics::Options,
 ) -> Result<()> {
     session(
         config,
@@ -524,6 +530,7 @@ pub fn browse(
         tui,
         ascii,
         None,
+        graphics,
     )
 }
 
@@ -539,8 +546,10 @@ fn session(
     tui: bool,
     ascii: bool,
     forms: Option<crate::form_ui::Context>,
+    graphics: crate::terminal_graphics::Options,
 ) -> Result<()> {
     let session = reader::Session::new(tui, ascii)?;
+    session.configure_graphics(&graphics)?;
     let placeholder = Entry::catalogue(
         &config.network,
         namespace.clone(),
@@ -637,6 +646,59 @@ fn session(
         let failure;
         let response = match action {
             reader::Action::Quit => return Ok(()),
+            reader::Action::Reveal(target) => {
+                let Content::Page(page) = &browser.current.content else {
+                    continue;
+                };
+                let asset = crate::media::image_asset(&browser.current.document, &target)?;
+                let location = page.location.clone();
+                let expected = page.descriptor.clone();
+                let config = config.clone();
+                let identity = identity.clone();
+                let selected = asset.clone();
+                let fetched = session.request(move || {
+                    let reference = match location {
+                        Location::Native(id) => crate::media::read_reference(
+                            &config,
+                            &identity,
+                            &id,
+                            &selected.id,
+                            Some(&expected),
+                        )?,
+                        Location::Federated { agreement, page_id } => {
+                            crate::media::federated_reference(
+                                &config,
+                                &identity,
+                                &agreement,
+                                &page_id,
+                                &selected.id,
+                                Some(&expected),
+                            )?
+                        }
+                    };
+                    let bytes = crate::media::fetch(&config, &identity, &reference, None, false)?;
+                    crate::media_import::render_asset(&selected, &bytes)
+                });
+                match fetched {
+                    Ok(None) => return Ok(()),
+                    Ok(Some(pixels)) => match session.install_image(&asset, pixels) {
+                        Ok(()) => {
+                            browser.current.view.revealed.insert(asset.id);
+                            browser.status = "Verified media revealed; terminal support may require alt fallback".into();
+                        }
+                        Err(error) => {
+                            browser.status = reader::bounded_status(&format!(
+                                "Could not display media: {error:#}"
+                            ))
+                        }
+                    },
+                    Err(error) => {
+                        browser.status =
+                            reader::bounded_status(&format!("Could not reveal media: {error:#}"))
+                    }
+                }
+                continue;
+            }
             reader::Action::Submit(form) => {
                 let Some(context) = &forms else {
                     browser.status = "Form sending needs browse --vault, --key and --mailbox; use --mail-config for separate mail credentials".into();
@@ -859,7 +921,12 @@ mod tests {
             )
         };
         Treaty {
-            version: 1,
+            version: 2,
+            media_profiles: Vec::new(),
+            media_source_hosts: Vec::new(),
+            media_destination_hosts: Vec::new(),
+            media_max_bytes: 0,
+            media_required_copies: 0,
             agreement_id: hex::encode([id; 16]),
             source_network: "01".repeat(32),
             destination_network: "02".repeat(32),

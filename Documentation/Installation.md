@@ -40,7 +40,8 @@ host-maintained dynamic libraries; the package does not copy system libraries.
 The installed `Bin/HyperNetSuite` accepts the documented client commands. Use its
 absolute path or add the chosen `Bin` directory to the shell's search path.
 Qualification checks local identity generation, inert plain output, reader
-terminal restoration and bounded markup handling. It makes no network requests
+terminal restoration, bounded markup, isolated media import and local motion.
+Its pseudoterminal checks do not establish native graphics support. It makes no network requests
 and does not qualify a remote service or an entire deployment.
 
 `VerifyInstalled` reauthenticates the retained signed archive and checks every
@@ -77,3 +78,26 @@ interpreter, shared-library names and minimum GLIBC symbol version. The signing
 key is supplied explicitly and is never bundled. Archive creation does not
 publish anything. Signing-key custody and any public distribution require a
 separate operational decision.
+
+## Native graphics checks
+
+`Tests/NativeGraphics.py` drives actual Kitty, xterm and WezTerm executables on an
+isolated X display. Supply `--suite`, `--kitty`, `--xterm`, `--wezterm` and a new
+private `--output` directory. It needs Python Pillow, Xvfb, xdotool and ImageMagick
+for test capture only; these are not client runtime dependencies. For example:
+
+```sh
+xvfb-run --auto-servernum --server-args='-screen 0 1440x1100x24 -nolisten tcp' \
+  python3 Tests/NativeGraphics.py --suite /Chosen/HyperNetSuiteCurrent/Bin/HyperNetSuite \
+  --kitty /Chosen/Kitty/bin/kitty --xterm /usr/bin/xterm \
+  --wezterm /Chosen/WezTerm/wezterm --output /Chosen/GraphicsResults
+```
+
+The check exercises explicit reveal, nested clipping, local motion, scroll, resize
+and exit restoration, retaining screenshots and exact executable identities.
+Inspect the captured clipping and adjacent text before qualifying a terminal
+version. Linux WezTerm checks the iTerm2 protocol implementation; it does not
+qualify native iTerm2 or macOS. Multiplexer and SSH contexts remain text fallback.
+Kitty visual qualification is still pending; the documented software-display
+failure is described in [MediaViewer](MediaViewer.md). Use repeated `--adapter`
+options to select only the terminal profiles being checked.

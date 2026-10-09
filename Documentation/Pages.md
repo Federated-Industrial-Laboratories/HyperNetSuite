@@ -1,7 +1,8 @@
 # Pages
 
-Pages contain inert HyperNetPage/2 text. The client never executes a page, imports
-assets, interprets HTML, or fetches external links. This profile has no images.
+Pages contain inert HyperNetPage/2 components. The client never executes a page,
+interprets HTML, or fetches external links. Images require exact manifests and
+explicit reveal; [Media](Media.md) describes authoring and separate storage consent.
 Keep reader, author, administrator and hosting identities separate. A credential
 with hosting consent cannot use ordinary Pages commands, even after its hosting
 grant is removed. Use a separately invited member identity for reading.
@@ -112,7 +113,8 @@ The specification explicitly includes services, namespaces and both cache limits
 
 Namespace labels are case-sensitive ASCII identifiers. A Pages cache is at least
 64 KiB and fits inside the consented state allowance after its 256 KiB reserve.
-Media hosting is unavailable; its cache allowance must be zero. Heartbeat-only
+Page text hosting does not grant media storage; its media cache allowance must
+be zero. Media uses the separate PageMedia consent and store. Heartbeat-only
 consent uses empty services/namespaces and both caches zero. Omitting these fields
 or using a retired consent format is rejected.
 

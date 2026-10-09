@@ -5,7 +5,7 @@ use crate::{
     page_layout::{self, Control, ControlKind, Layout},
 };
 use anyhow::{Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
 pub struct View {
@@ -15,6 +15,8 @@ pub struct View {
     pub monochrome: bool,
     pub details: bool,
     pub details_offset: usize,
+    pub revealed: BTreeSet<String>,
+    pub motion: crate::motion::State,
     pub form_values: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
 }
 impl View {
@@ -26,6 +28,8 @@ impl View {
             monochrome: std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
             details: false,
             details_offset: 0,
+            revealed: BTreeSet::new(),
+            motion: crate::motion::State::default(),
             form_values: BTreeMap::new(),
         }
     }
@@ -180,7 +184,9 @@ impl View {
         };
         match action {
             PageAction::Navigate { link } => Ok(Some(*link)),
-            PageAction::Submit { .. } => Ok(None),
+            PageAction::Submit { .. } | PageAction::Reveal { .. } | PageAction::Motion { .. } => {
+                Ok(None)
+            }
             PageAction::Focus { target } => {
                 self.focused = Some(*layout.ids.get(target).context("missing focus target")?);
                 Ok(None)

@@ -29,6 +29,7 @@ pub enum Action {
     Next,
     Previous,
     Submit(String),
+    Reveal(String),
 }
 
 struct Terminal {
@@ -197,6 +198,19 @@ fn selected_label(
             .get(*link)
             .map(|link| format!("Navigate: {label} -> {}", text(&link.target, true)))
             .unwrap_or_else(|| "Invalid navigation control".into()),
+        ControlKind::Action(PageAction::Reveal { target }) => {
+            format!(
+                "Reveal image: {label} -> {} | explicit media retrieval",
+                text(target, ascii)
+            )
+        }
+        ControlKind::Action(PageAction::Motion { target, running }) => {
+            format!(
+                "Local motion: {label} -> {} {}",
+                text(target, ascii),
+                if *running { "start" } else { "pause" }
+            )
+        }
         ControlKind::Action(PageAction::Submit { form }) => {
             format!("Review form: {label} | form {form}")
         }
@@ -287,7 +301,27 @@ fn save_field_value(
     Ok(())
 }
 
+#[derive(Default)]
+struct ImageCache {
+    pixels: std::collections::BTreeMap<String, crate::media_import::Pixels>,
+    order: std::collections::VecDeque<String>,
+    bytes: usize,
+}
+fn image_key(asset: &crate::markup::media::Asset) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        asset.profile, asset.width, asset.height, asset.digest
+    )
+}
 pub struct Session {
+    image_namespace: u32,
+    images: std::cell::RefCell<ImageCache>,
+    graphics: std::cell::RefCell<crate::terminal_graphics::Options>,
+    graphics_budget: std::cell::RefCell<crate::terminal_graphics::Budget>,
+    placements: std::cell::RefCell<Vec<u32>>,
+    graphics_last_frame: std::cell::Cell<Option<std::time::Instant>>,
+    graphics_pending: std::cell::Cell<bool>,
+    synchronized: std::cell::Cell<bool>,
     terminal: Option<Terminal>,
     ascii: bool,
     monochrome: std::cell::Cell<bool>,
@@ -295,6 +329,148 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn configure_graphics(&self, options: &crate::terminal_graphics::Options) -> Result<()> {
+        options.validate()?;
+        *self.graphics.borrow_mut() = options.clone();
+        Ok(())
+    }
+    pub fn install_image(
+        &self,
+        asset: &crate::markup::media::Asset,
+        pixels: crate::media_import::Pixels,
+    ) -> Result<()> {
+        crate::markup::media::validate_asset(asset).map_err(anyhow::Error::msg)?;
+        pixels.validate()?;
+        ensure!(
+            pixels.width == asset.width && pixels.height == asset.height,
+            "rendered media dimensions differ from manifest"
+        );
+        let key = image_key(asset);
+        let mut cache = self.images.borrow_mut();
+        if cache.pixels.contains_key(&key) {
+            return Ok(());
+        }
+        // Eight MiB remains available for decoded input, cropped frames and encoded output.
+        while cache.bytes + pixels.rgb.len() > 8 * 1024 * 1024 {
+            let oldest = cache
+                .order
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("media cache budget exhausted"))?;
+            if let Some(old) = cache.pixels.remove(&oldest) {
+                cache.bytes -= old.rgb.len();
+            }
+        }
+        cache.bytes += pixels.rgb.len();
+        cache.order.push_back(key.clone());
+        cache.pixels.insert(key, pixels);
+        Ok(())
+    }
+    fn clear_graphics(&self, out: &mut impl Write) -> Result<()> {
+        let mut placements = self.placements.borrow_mut();
+        if !placements.is_empty() {
+            out.write_all(&crate::terminal_graphics::cleanup(
+                self.graphics.borrow().graphics,
+                &placements,
+            ))?;
+            placements.clear();
+        }
+        Ok(())
+    }
+    fn draw_images(
+        &self,
+        out: &mut impl Write,
+        document: &Document,
+        view: &crate::page_view::View,
+        layout: &crate::page_layout::Layout,
+        rows: usize,
+    ) -> Result<()> {
+        use crate::terminal_graphics::{self as graphics, Adapter};
+        let options = self.graphics.borrow();
+        let Some(geometry) = options.geometry() else {
+            return Ok(());
+        };
+        if options.graphics == Adapter::Off {
+            return Ok(());
+        }
+        let now = std::time::Instant::now();
+        if self.graphics_last_frame.get().is_some_and(|at| {
+            now.saturating_duration_since(at) < std::time::Duration::from_millis(500)
+        }) {
+            self.graphics_pending.set(true);
+            return Ok(());
+        }
+        self.graphics_pending.set(false);
+        let cache = self.images.borrow();
+        let mut encoded = b"\x1b7".to_vec();
+        let mut placements = Vec::new();
+        for visual in &layout.visuals {
+            let Some(asset_id) = &visual.asset else {
+                continue;
+            };
+            if !view.revealed.contains(asset_id)
+                || !crate::motion::visible(visual, view.offset, rows)
+            {
+                continue;
+            }
+            let Some(asset) = document.assets.iter().find(|a| &a.id == asset_id) else {
+                continue;
+            };
+            let Some(pixels) = cache.pixels.get(&image_key(asset)) else {
+                continue;
+            };
+            let width = visual.width as u32 * u32::from(geometry.width);
+            let height = visual.rows as u32 * u32::from(geometry.height);
+            let Some((width, height)) = graphics::bounded_viewport(width, height) else {
+                continue;
+            };
+            let top = visual.top.max(view.offset as i64);
+            let bottom = visual.bottom.min((view.offset + rows) as i64);
+            let crop_top = (top - visual.y).max(0) as u32 * u32::from(geometry.height);
+            let crop_bottom = (bottom - visual.y).max(0) as u32 * u32::from(geometry.height);
+            let Ok(frame) = graphics::fit(
+                pixels,
+                width,
+                height,
+                visual.fit,
+                crop_top,
+                crop_bottom,
+                view.motion.phase(visual.key, now),
+            ) else {
+                continue;
+            };
+            let id = self.image_namespace + visual.key as u32;
+            let Ok(bytes) = graphics::encode(options.graphics, &frame, id) else {
+                continue;
+            };
+            // Two complete image paints per second fit the one-second aggregate ceiling.
+            if encoded.len().saturating_add(bytes.len()).saturating_add(32)
+                > graphics::MAX_OPERATION / 2
+            {
+                continue;
+            }
+            write!(
+                encoded,
+                "\x1b[{};{}H",
+                top - view.offset as i64 + 4,
+                visual.x + 3
+            )?;
+            encoded.extend_from_slice(&bytes);
+            placements.push(id);
+        }
+        encoded.extend_from_slice(b"\x1b8");
+        let sent_at = std::time::Instant::now();
+        if !placements.is_empty()
+            && self
+                .graphics_budget
+                .borrow_mut()
+                .allow(encoded.len(), sent_at)
+        {
+            out.write_all(&encoded)?;
+            *self.placements.borrow_mut() = placements;
+            self.graphics_last_frame.set(Some(sent_at));
+        }
+        Ok(())
+    }
     pub fn confirm_form(&self, review: &crate::forms::Review) -> Result<Option<bool>> {
         ensure!(
             self.interactive(),
@@ -413,6 +589,14 @@ impl Session {
             && io::stdout().is_terminal()
             && !std::env::var("TERM").is_ok_and(|term| term == "dumb");
         Ok(Self {
+            image_namespace: (rand::random::<u32>() & 0xffff_fe00) + 1,
+            images: Default::default(),
+            graphics: Default::default(),
+            graphics_budget: Default::default(),
+            placements: Default::default(),
+            graphics_last_frame: Default::default(),
+            graphics_pending: Default::default(),
+            synchronized: Default::default(),
             terminal: if interactive {
                 Some(Terminal::enter()?)
             } else {
@@ -539,7 +723,8 @@ impl Session {
             }
             return Ok(Action::Quit);
         }
-        let mut out = io::stdout();
+        let _graphics_guard = GraphicsGuard(self);
+        let mut terminal_out = io::stdout();
         let no_colour = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
         let mut layout = crate::page_layout::Layout::default();
         let mut dirty = true;
@@ -563,11 +748,42 @@ impl Session {
                 dimensions = Some(current_size);
                 dirty = true;
             }
-            if dirty {
+            let now = std::time::Instant::now();
+            if self.graphics_pending.get()
+                && self.graphics_last_frame.get().is_none_or(|at| {
+                    now.saturating_duration_since(at) >= std::time::Duration::from_millis(500)
+                })
+            {
+                dirty = true;
+            }
+            if help || view.details || field_editor.is_some() || editor.is_some() {
+                view.motion.pause();
+            }
+            if view.motion.sync(&layout, view.offset, body_rows, now) {
+                dirty = true;
+            }
+            let bitmap = !view.revealed.is_empty();
+            if view.motion.due(now, bitmap) {
+                dirty = true;
+            }
+            if dirty && view.motion.can_paint(now) {
+                let mut out = Vec::new();
+                let synchronized = {
+                    let graphics = self.graphics.borrow();
+                    matches!(
+                        graphics.graphics,
+                        crate::terminal_graphics::Adapter::Kitty
+                            | crate::terminal_graphics::Adapter::ITerm2
+                    ) && graphics.geometry().is_some()
+                };
+                if synchronized {
+                    out.extend_from_slice(b"\x1b[?2026h");
+                }
                 let (columns, rows) = current_size;
                 let width = usize::from(columns.saturating_sub(1))
                     .clamp(1, crate::page_layout::MAX_COLUMNS);
                 let height = usize::from(rows).clamp(1, crate::page_layout::MAX_ROWS);
+                self.clear_graphics(&mut out)?;
                 queue!(
                     out,
                     SetAttribute(Attribute::Reset),
@@ -597,6 +813,8 @@ impl Session {
                             Some(bounded_status(&format!("Layout unavailable: {error:#}")))
                         }
                     };
+                    view.motion.sync(&layout, view.offset, body_rows, now);
+                    view.motion.apply(&mut layout, now);
                     detail_rows = metadata
                         .iter()
                         .flat_map(|line| crate::page_layout::wrap(line, content_width))
@@ -777,7 +995,28 @@ impl Session {
                     format!("Status: {status}")
                 };
                 chrome(&mut out, 0, (height - 1) as u16, &footer, width)?;
-                out.flush()?;
+                if !help
+                    && !view.details
+                    && field_editor.is_none()
+                    && editor.is_none()
+                    && layout_error.is_none()
+                    && current_size.0 >= 20
+                    && current_size.1 >= 8
+                {
+                    self.draw_images(&mut out, document, view, &layout, body_rows)?;
+                }
+                if synchronized {
+                    out.extend_from_slice(b"\x1b[?2026l");
+                }
+                ensure!(
+                    out.len() <= 3 * 1024 * 1024,
+                    "terminal frame exceeds its output bound"
+                );
+                self.synchronized.set(synchronized);
+                terminal_out.write_all(&out)?;
+                terminal_out.flush()?;
+                self.synchronized.set(false);
+                view.motion.painted(std::time::Instant::now());
                 dirty = false;
                 reveal = false;
             }
@@ -850,6 +1089,21 @@ impl Session {
                             view.details = !view.details;
                             dirty = true;
                         }
+                        KeyCode::Char('a') if !view.details && !help && layout_error.is_none() => {
+                            view.motion.toggle(
+                                &layout,
+                                view.offset,
+                                body_rows,
+                                std::time::Instant::now(),
+                            );
+                            input_status = if view.motion.running() {
+                                "Local motion enabled for visible effects (at most ten seconds)"
+                            } else {
+                                "Motion paused"
+                            }
+                            .into();
+                            dirty = true;
+                        }
                         KeyCode::Char('m') => {
                             view.monochrome = no_colour || !view.monochrome;
                             self.monochrome.set(view.monochrome);
@@ -918,6 +1172,30 @@ impl Session {
                                     continue;
                                 }
                             }
+                            if let Some(control) = view.selected(&layout)
+                                && let crate::page_layout::ControlKind::Action(action) =
+                                    &control.kind
+                            {
+                                match action {
+                                    crate::markup::PageAction::Reveal { target } => {
+                                        return Ok(Action::Reveal(target.clone()));
+                                    }
+                                    crate::markup::PageAction::Motion { target, running } => {
+                                        view.motion.target(
+                                            &layout,
+                                            target,
+                                            *running,
+                                            view.offset,
+                                            body_rows,
+                                            std::time::Instant::now(),
+                                        );
+                                        dirty = true;
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             let previous = view.focused;
                             if let Some(link) = view.activate(&layout)? {
                                 ensure!(
@@ -975,7 +1253,25 @@ impl Session {
     }
 }
 
+struct GraphicsGuard<'a>(&'a Session);
+impl Drop for GraphicsGuard<'_> {
+    fn drop(&mut self) {
+        let mut out = io::stdout();
+        if self.0.synchronized.replace(false) {
+            let _ = out.write_all(b"\x1b[?2026l");
+        }
+        let had_images = !self.0.placements.borrow().is_empty();
+        let _ = self.0.clear_graphics(&mut out);
+        if had_images {
+            let _ = execute!(out, Clear(ClearType::All));
+        }
+        let _ = out.flush();
+    }
+}
 const HELP: &[&str] = &[
+    "a starts or pauses visible local effects. Effects stop after ten seconds and when hidden.",
+    "Images require an explicit Reveal control and --graphics selection; alt text always remains available.",
+    "Graphics require qualified terminal geometry; tmux, screen and remote SSH retain text fallback.",
     "Browser: o edits an address; c fetches the configured native catalogue.",
     "Enter opens the selected control. Tab and Shift-Tab change focus.",
     "Pages: arrows, j/k, PageUp/PageDown, Home/End scroll. p returns focus to page scrolling.",
@@ -1046,17 +1342,6 @@ impl AddressEditor {
             _ => Edit::Ignore,
         }
     }
-}
-
-pub fn show(document: &Document, metadata: &[String], tui: bool, ascii: bool) -> Result<Action> {
-    let session = Session::new(tui, ascii)?;
-    session.show(
-        document,
-        metadata,
-        &mut crate::page_view::View::new(),
-        "",
-        Mode::Preview,
-    )
 }
 
 #[cfg(test)]

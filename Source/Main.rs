@@ -34,6 +34,16 @@ mod mail_tls;
 mod mail_vault;
 #[path = "Markup.rs"]
 mod markup;
+#[path = "Media.rs"]
+mod media;
+#[path = "MediaImport.rs"]
+mod media_import;
+#[path = "MediaProtocol.rs"]
+mod media_protocol;
+#[path = "MediaWorker.rs"]
+mod media_worker;
+#[path = "Motion.rs"]
+mod motion;
 #[path = "Navigation.rs"]
 mod navigation;
 #[path = "PageLayout.rs"]
@@ -56,6 +66,8 @@ mod services;
 mod share_withdrawal;
 #[path = "SshProof.rs"]
 mod ssh_proof;
+#[path = "TerminalGraphics.rs"]
+mod terminal_graphics;
 #[path = "TerminalInput.rs"]
 mod terminal_input;
 #[path = "TransferFiles.rs"]
@@ -107,6 +119,8 @@ enum Command {
         ascii: bool,
         #[command(flatten)]
         forms: form_ui::Options,
+        #[command(flatten)]
+        graphics: terminal_graphics::Options,
     },
     /// Fill and exchange explicitly accepted encrypted form submissions.
     Forms(forms::Arguments),
@@ -126,6 +140,9 @@ enum Command {
     /// Agree, share, review and read explicitly federated Pages.
     #[command(subcommand)]
     Federation(federation::Command),
+    /// Import, store, review and reveal explicitly consented page media.
+    #[command(subcommand)]
+    Media(media::Command),
     /// Author, review and read inert HyperNet Pages.
     #[command(subcommand)]
     Pages(pages::Command),
@@ -325,6 +342,12 @@ fn terminal_text(raw: &str, multiline: bool) -> String {
 }
 
 fn run() -> Result<()> {
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--internal-media-worker"))
+    {
+        anyhow::ensure!(std::env::args_os().count() == 2, "invalid worker arguments");
+        return media_worker::run();
+    }
     files::disable_dumps()?;
     let options = match Options::try_parse() {
         Ok(options) => options,
@@ -345,6 +368,7 @@ fn run() -> Result<()> {
             after,
             ascii,
             forms,
+            graphics,
         } => {
             return navigation::run(
                 options.config.as_deref(),
@@ -353,6 +377,7 @@ fn run() -> Result<()> {
                 after,
                 ascii,
                 forms,
+                graphics,
             );
         }
         Command::Applications(command) => {
@@ -367,6 +392,7 @@ fn run() -> Result<()> {
         Command::Services(command) => return services::run(options.config.as_deref(), command),
         Command::Forms(arguments) => return forms::run(options.config.as_deref(), arguments),
         Command::Mail(arguments) => return mail::run(options.config.as_deref(), arguments),
+        Command::Media(command) => return media::run(options.config.as_deref(), command),
         Command::Pages(command) => return pages::run(options.config.as_deref(), command),
         Command::Federation(command) => return federation::run(options.config.as_deref(), command),
         Command::Keygen { output } => {
@@ -597,6 +623,7 @@ fn run() -> Result<()> {
                 }
                 Command::Keygen { .. }
                 | Command::Configure { .. }
+                | Command::Media(_)
                 | Command::Browse { .. }
                 | Command::Pages(_)
                 | Command::Federation(_)
