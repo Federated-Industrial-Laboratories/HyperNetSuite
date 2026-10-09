@@ -34,8 +34,20 @@ mod pages;
 mod protocol;
 #[path = "Reader.rs"]
 mod reader;
+#[path = "Services.rs"]
+mod services;
 #[path = "ShareWithdrawal.rs"]
 mod share_withdrawal;
+#[path = "SshProof.rs"]
+mod ssh_proof;
+#[path = "TransferFiles.rs"]
+mod transfer_files;
+#[path = "TransferProtocol.rs"]
+mod transfer_protocol;
+#[path = "TransferVault.rs"]
+mod transfer_vault;
+#[path = "Transfers.rs"]
+mod transfers;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -65,6 +77,11 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Consented encrypted file exchange.
+    Transfers(transfers::Arguments),
+    /// Discover, request and invoke separately consented SSH services.
+    #[command(subcommand)]
+    Services(services::Command),
     /// Private encrypted mail, selected storage and device management.
     Mail(mail::Arguments),
     /// Agree, share, review and read explicitly federated Pages.
@@ -277,6 +294,10 @@ fn run() -> Result<()> {
         }
     };
     match options.command {
+        Command::Transfers(arguments) => {
+            return transfers::run(options.config.as_deref(), arguments);
+        }
+        Command::Services(command) => return services::run(options.config.as_deref(), command),
         Command::Mail(arguments) => return mail::run(options.config.as_deref(), arguments),
         Command::Pages(command) => return pages::run(options.config.as_deref(), command),
         Command::Federation(command) => return federation::run(options.config.as_deref(), command),
@@ -510,7 +531,9 @@ fn run() -> Result<()> {
                 | Command::Configure { .. }
                 | Command::Pages(_)
                 | Command::Federation(_)
-                | Command::Mail(_) => {
+                | Command::Mail(_)
+                | Command::Transfers(_)
+                | Command::Services(_) => {
                     unreachable!()
                 }
             };

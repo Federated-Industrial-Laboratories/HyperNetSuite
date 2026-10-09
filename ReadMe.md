@@ -14,8 +14,8 @@ The node and client have separate source, build and package lifecycles.
 verified publication and reads from explicitly consenting replicas.
 [Federation](Documentation/Federation.md) adds bilateral agreements, explicit
 author sharing, destination review and independently verified foreign reads.
-Mailboxes,
-file exchange and service connections remain future capabilities.
+[Transfers and services](Documentation/TransfersAndServices.md) adds encrypted,
+recipient-approved resumable file exchange and separately consented OpenSSH services.
 It does not yet constitute a qualified production Internet deployment.
 See [Requirements](Documentation/Requirements.md) for the wider product scope.
 

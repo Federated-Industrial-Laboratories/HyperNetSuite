@@ -12,5 +12,6 @@ cargo build --locked --release
 Target=${CARGO_TARGET_DIR:-target}
 install -d -m 755 -- "$Prefix/Bin" "$Prefix/Documentation/HyperNetSuite"
 install -m 755 -- "$Target/release/HyperNetSuite" "$Prefix/Bin/HyperNetSuite"
-install -m 644 -- Licence.txt ReadMe.md Documentation/Usage.md Documentation/Pages.md Documentation/Federation.md Documentation/PrivateMail.md Documentation/Dependencies.md Documentation/ThirdPartyNotices.txt "$Prefix/Documentation/HyperNetSuite/"
+install -m 644 -- Licence.txt ReadMe.md Documentation/Usage.md Documentation/Requirements.md Documentation/Pages.md Documentation/Federation.md Documentation/PrivateMail.md Documentation/TransfersAndServices.md Documentation/Dependencies.md Documentation/ThirdPartyNotices.txt "$Prefix/Documentation/HyperNetSuite/"
+sed 's#](Documentation/#](#g' ReadMe.md > "$Prefix/Documentation/HyperNetSuite/ReadMe.md"
 printf 'Installed HyperNetSuite in %s/Bin\n' "$Prefix"
