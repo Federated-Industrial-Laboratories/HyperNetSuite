@@ -12,7 +12,7 @@ use std::{
     path::Path,
 };
 
-const DOMAIN: &[u8] = b"HyperNet/BridgeConsent/1\0";
+const DOMAIN: &[u8] = b"HyperNet/BridgeConsent/2\0";
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Endpoint {
@@ -25,11 +25,28 @@ pub struct Endpoint {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MediaEndpoint {
+    pub network: String,
+    pub host_key: String,
+    pub endpoint: String,
+    pub address: SocketAddr,
+    pub ca_digest: String,
+    pub certificate_digest: String,
+    pub authority_signer: String,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Consent {
     pub version: u32,
     pub service: String,
     pub agreement_id: String,
     pub treaty_digest: String,
+    pub media_profiles: Vec<String>,
+    pub media_source_hosts: Vec<String>,
+    pub media_destination_hosts: Vec<String>,
+    pub media_max_bytes: u64,
+    pub media_required_copies: u16,
+    pub media: Vec<MediaEndpoint>,
     pub source_namespace: String,
     pub destination_namespace: String,
     pub source: Endpoint,
@@ -89,11 +106,50 @@ impl Consent {
     pub fn validate(&self) -> Result<()> {
         let now = crate::now()?;
         ensure!(
-            self.version == 1 && self.service == "FederationPages",
+            self.version == 2 && self.service == "FederationPages",
             "unsupported bridge consent"
         );
         protocol::hex_bytes::<16>(&self.agreement_id)?;
         protocol::hex_bytes::<32>(&self.treaty_digest)?;
+        ensure!(
+            self.media.len() <= 6
+                && self.media.len()
+                    == self.media_source_hosts.len() + self.media_destination_hosts.len(),
+            "media routes differ from consented hosts"
+        );
+        let mut route_ids = std::collections::BTreeSet::new();
+        for media in &self.media {
+            for key in [
+                &media.network,
+                &media.host_key,
+                &media.ca_digest,
+                &media.certificate_digest,
+                &media.authority_signer,
+            ] {
+                protocol::hex_bytes::<32>(key)?;
+            }
+            let hosts = if media.network == self.source.network {
+                &self.media_source_hosts
+            } else if media.network == self.destination.network {
+                &self.media_destination_hosts
+            } else {
+                anyhow::bail!("media route outside treaty networks");
+            };
+            ensure!(
+                hosts.contains(&media.host_key)
+                    && route_ids.insert((&media.network, &media.host_key)),
+                "duplicate or unconsented media route"
+            );
+            Endpoint {
+                network: media.network.clone(),
+                device_key: media.host_key.clone(),
+                authority_key: media.authority_signer.clone(),
+                authority_endpoint: media.endpoint.clone(),
+                authority_address: media.address,
+                ca_certificate_digest: media.ca_digest.clone(),
+            }
+            .validate()?;
+        }
         self.source.validate()?;
         self.destination.validate()?;
         let keys = [
@@ -132,7 +188,12 @@ impl Consent {
     }
     fn matches(&self, treaty: &Treaty) -> Result<()> {
         ensure!(
-            self.treaty_digest == treaty.digest()?
+            self.media_profiles == treaty.media_profiles
+                && self.media_source_hosts == treaty.media_source_hosts
+                && self.media_destination_hosts == treaty.media_destination_hosts
+                && self.media_max_bytes == treaty.media_max_bytes
+                && self.media_required_copies == treaty.media_required_copies
+                && self.treaty_digest == treaty.digest()?
                 && self.agreement_id == treaty.agreement_id
                 && self.source.network == treaty.source_network
                 && self.destination.network == treaty.destination_network

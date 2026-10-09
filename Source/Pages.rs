@@ -3,7 +3,7 @@
 use crate::{
     Config, Identity, files, markup,
     page_proof::{self, Bundle, Descriptor, Envelope},
-    protocol, reader,
+    protocol,
 };
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -30,6 +30,11 @@ pub enum Command {
         tui: bool,
         #[arg(long)]
         ascii: bool,
+        #[command(flatten)]
+        graphics: crate::terminal_graphics::Options,
+        /// Bind an asset ID to one explicit canonical local file for preview.
+        #[arg(long = "media")]
+        media: Vec<String>,
     },
     /// Save a signed retry record before submitting a draft for manual review.
     Submit {
@@ -61,6 +66,11 @@ pub enum Command {
         tui: bool,
         #[arg(long)]
         ascii: bool,
+        #[command(flatten)]
+        graphics: crate::terminal_graphics::Options,
+        /// Bind an asset ID to one explicit canonical local file for preview.
+        #[arg(long = "media")]
+        media: Vec<String>,
     },
     /// Make a manual decision about the exact retained review record.
     Review {
@@ -92,6 +102,8 @@ pub enum Command {
         tui: bool,
         #[arg(long)]
         ascii: bool,
+        #[command(flatten)]
+        graphics: crate::terminal_graphics::Options,
     },
 }
 
@@ -249,7 +261,10 @@ pub fn catalogue(
     catalogue_result(&reply["result"], namespace, after)
 }
 
-fn pending(network: &str, record: &Value) -> Result<(page_proof::Submission, String, Envelope)> {
+pub(crate) fn pending(
+    network: &str,
+    record: &Value,
+) -> Result<(page_proof::Submission, String, Envelope)> {
     ensure!(
         record["network"].as_str() == Some(network),
         "review record belongs to another network"
@@ -360,15 +375,24 @@ pub(crate) fn read(
 }
 
 pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
-    if let Command::Preview { file, tui, ascii } = command {
+    if let Command::Preview {
+        file,
+        tui,
+        ascii,
+        graphics,
+        media,
+    } = command
+    {
         let source = body(&file)?;
         preview_form_bound(&source)?;
         let document = markup::parse(&source).map_err(anyhow::Error::msg)?;
-        reader::show(
+        crate::media::local_show(
             &document,
             &["UNAPPROVED local draft; no authority lookup or publication.".into()],
             tui,
             ascii,
+            &graphics,
+            &media,
         )?;
         return Ok(());
     }
@@ -437,6 +461,8 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
             output,
             tui,
             ascii,
+            graphics,
+            media,
         } => {
             protocol::hex_bytes::<16>(&page_id)?;
             let reply = call(
@@ -452,7 +478,7 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
             let (source, digest, _) = pending(&config.network, &record)?;
             files::write_new(&output, &serde_json::to_vec_pretty(&record)?)?;
             let document = markup::parse(&source.body).map_err(anyhow::Error::msg)?;
-            reader::show(
+            crate::media::local_show(
                 &document,
                 &[
                     "UNAPPROVED submission. Review this exact retained record.".into(),
@@ -463,6 +489,8 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
                 ],
                 tui,
                 ascii,
+                &graphics,
+                &media,
             )?;
         }
         Command::Review { input, decision } => {
@@ -498,13 +526,15 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
             replica,
             tui,
             ascii,
-        } => crate::navigation::browse(
+            graphics,
+        } => crate::navigation::browse_graphics(
             &config,
             &identity,
             crate::navigation::Location::Native(page_id),
             replica.as_deref(),
             tui,
             ascii,
+            graphics,
         )?,
     }
     Ok(())

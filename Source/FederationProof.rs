@@ -26,6 +26,11 @@ pub struct Treaty {
     pub source_namespace: String,
     pub destination_namespace: String,
     pub service: String,
+    pub media_profiles: Vec<String>,
+    pub media_source_hosts: Vec<String>,
+    pub media_destination_hosts: Vec<String>,
+    pub media_max_bytes: u64,
+    pub media_required_copies: u16,
     pub profile: String,
     pub expires: u64,
 }
@@ -49,7 +54,7 @@ impl Treaty {
             );
         }
         ensure!(
-            self.version == 1
+            self.version == 2
                 && self.source_network != self.destination_network
                 && self.service == "Pages"
                 && self.profile == markup::PROFILE
@@ -58,11 +63,60 @@ impl Treaty {
                 && markup::namespace(&self.destination_namespace),
             "invalid federation treaty"
         );
+        let enabled = !self.media_profiles.is_empty();
+        ensure!(
+            self.media_profiles.windows(2).all(|p| p[0] < p[1])
+                && self
+                    .media_profiles
+                    .iter()
+                    .all(|p| matches!(p.as_str(), "HyperNetRaster/1" | "HyperNetVector/1")),
+            "invalid federation media profiles"
+        );
+        if enabled {
+            ensure!(
+                (1..=markup::media::MAX_PAGE_BYTES).contains(&self.media_max_bytes)
+                    && self.media_required_copies > 0
+                    && usize::from(self.media_required_copies)
+                        <= self.media_destination_hosts.len(),
+                "invalid federation media budget or copies"
+            );
+            for hosts in [&self.media_source_hosts, &self.media_destination_hosts] {
+                ensure!(
+                    (1..=3).contains(&hosts.len()) && hosts.windows(2).all(|p| p[0] < p[1]),
+                    "invalid media host scope"
+                );
+                for host in hosts {
+                    protocol::hex_bytes::<32>(host)?;
+                }
+            }
+        } else {
+            ensure!(
+                self.media_source_hosts.is_empty()
+                    && self.media_destination_hosts.is_empty()
+                    && self.media_max_bytes == 0
+                    && self.media_required_copies == 0,
+                "disabled media must have empty scope"
+            );
+        }
+        Ok(())
+    }
+    pub fn validate_media(&self, body: &str) -> Result<()> {
+        let document = markup::parse(body).map_err(anyhow::Error::msg)?;
+        let total: u64 = document.assets.iter().map(|a| a.bytes).sum();
+        ensure!(
+            total <= self.media_max_bytes
+                && document
+                    .assets
+                    .iter()
+                    .all(|a| self.media_profiles.contains(&a.profile)
+                        && a.hosts.iter().all(|h| self.media_source_hosts.contains(h))),
+            "media source exceeds the explicit federation scope"
+        );
         Ok(())
     }
     pub fn digest(&self) -> Result<String> {
         self.validate()?;
-        digest(b"HyperNet/FederationTreaty/1\0", self)
+        digest(b"HyperNet/FederationTreaty/2\0", self)
     }
 }
 
@@ -183,6 +237,7 @@ pub fn artifact(
         "foreign publication is outside treaty scope"
     );
     let body = page_proof::verify(&treaty.source_network, descriptor, bundle)?;
+    treaty.validate_media(&body)?;
     let (share, share_digest) =
         page_proof::envelope::<Share>(&treaty.source_network, author_share)?;
     let share = share.command;

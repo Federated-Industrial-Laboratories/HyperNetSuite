@@ -66,6 +66,10 @@ def main():
         report['checks'].append('Reader and component layout pseudoterminal resize, focus, signals and restoration')
         report['markup'] = json.loads(run([sys.executable, str(prefix / 'Tests/MarkupRobustness.py'), str(binary)], timeout=90))
         report['checks'].append('Bounded markup rejection and output safety')
+        report['mediaImport'] = json.loads(run([sys.executable, str(prefix / 'Tests/MediaImport.py'), str(binary)], timeout=90))
+        report['checks'].append('Confined bitmap and vector import, bounds and static export')
+        run([sys.executable, str(prefix / 'Tests/MediaTerminal.py'), str(binary)], timeout=90)
+        report['checks'].append('Explicit media reveal, bounded local motion and pseudoterminal cleanup')
     report['status'] = 'Passed'
     print(json.dumps(report, sort_keys=True))
 

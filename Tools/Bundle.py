@@ -105,7 +105,7 @@ def architecture():
 def allowed_path(name):
     if name in ('Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite'):
         return True
-    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness)\.py)', name))
+    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics)\.py)', name))
 
 
 def file_mode(name):
@@ -139,7 +139,7 @@ def validate_manifest(value):
         paths.append(name)
         total += item['size']
     require(paths == sorted(set(paths)) and total <= MAX_ARCHIVE, 'Duplicate, unordered or oversized inventory')
-    require({'Bin/HyperNetSuite', 'Licence.txt', 'ReadMe.md', 'Tools/Bundle.py', 'Tools/Qualify.py', 'Tests/ReaderTerminal.py', 'Tests/LayoutTerminal.py', 'Tests/MarkupRobustness.py', 'Documentation/ThirdPartyNotices.txt'}.issubset(paths), 'Required package files are missing')
+    require({'Bin/HyperNetSuite', 'Licence.txt', 'ReadMe.md', 'Tools/Bundle.py', 'Tools/Qualify.py', 'Tests/ReaderTerminal.py', 'Tests/LayoutTerminal.py', 'Tests/MarkupRobustness.py', 'Tests/MediaImport.py', 'Tests/MediaTerminal.py', 'Documentation/MediaSchema.json', 'Documentation/ThirdPartyNotices.txt'}.issubset(paths), 'Required package files are missing')
     require(next(item['sha256'] for item in files if item['path'] == metadata['binary']) == metadata['binarySha256'], 'Binary identity differs from inventory')
     return value
 

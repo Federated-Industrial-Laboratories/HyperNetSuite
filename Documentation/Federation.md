@@ -18,7 +18,7 @@ Prepare the same public treaty file for both administrators:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "agreementId": "REPLACE_WITH_16_RANDOM_BYTES_AS_LOWERCASE_HEX",
   "sourceNetwork": "SOURCE_NETWORK_HEX",
   "destinationNetwork": "DESTINATION_NETWORK_HEX",
@@ -30,6 +30,11 @@ Prepare the same public treaty file for both administrators:
   "destinationNamespace": "PartnerNews",
   "service": "Pages",
   "profile": "HyperNetPage/2",
+  "mediaProfiles": [],
+  "mediaSourceHosts": [],
+  "mediaDestinationHosts": [],
+  "mediaMaxBytes": 0,
+  "mediaRequiredCopies": 0,
   "expires": 1800000000
 }
 ```
@@ -50,6 +55,13 @@ HyperNetSuite --config DestinationAdministrator.json federation agreements
 The identifier binds immutable terms. Withdrawn agreements cannot be restored;
 renegotiation requires a new identifier. There is no discovery or implicit trust.
 The authority signing key configured at each broker must match its treaty key.
+The five media fields above explicitly disable media exchange. For media, both
+administrators select sorted `HyperNetRaster/1` and/or `HyperNetVector/1` profiles,
+one to three source and destination PageMedia host keys, a per-page byte bound
+of at most 4194304, and a required copy count within the destination host count.
+All source manifest hosts must fit the treaty. The signed source manifest remains
+unchanged; the treaty defines separate destination placement. Empty fields never
+imply permission to copy assets.
 
 ## Consent to a bridge
 
@@ -71,7 +83,7 @@ HyperNetSuite --config DestinationBridge.json federation register --consent Cons
 Register the exact same consent file on both sides. Use `openssl x509 -in
 Client.pem -outform DER | openssl dgst -sha256` for a client certificate hash.
 The command reports the profile digest and combined memory allowance, including
-two fixed relays. Signing and registration do not start a bridge. Install and
+two authority relays plus any explicitly consented media relays. Signing and registration do not start a bridge. Install and
 start it with HyperNet's independent container tools. Its two TLS clients use
 separate roots and credentials; its network permits only the consented endpoints.
 
@@ -95,6 +107,14 @@ The bridge imports into quarantine. Only the destination administrator can inspe
 and approve that exact descriptor. `--decision reject` suppresses it. Changed
 source publications need fresh author sharing and fresh destination review.
 Repeated bridge refreshes do not change publication versions or undo a rejection.
+Media needs version 2 bridge consent with the exact treaty media fields and fixed
+routes containing network, host key, endpoint, address, CA digest, certificate
+digest and media authority signer. The bridge verifies complete canonical assets
+before sealing destination copies. Destination approval requires its copy policy
+and explicit media review. Use `media inspect --federated --review Review.json`
+with an asset and private output path before reviewing the page. A reader uses
+`media read --agreement AGREEMENT_ID --page-id PAGE_ID --asset ASSET_ID --output PATH`,
+or an explicit browser Reveal control. These operations use destination stores.
 
 The independent reader verifies native author/source-review signatures, author
 sharing, destination approval and short signed evidence from both authorities.
@@ -180,4 +200,5 @@ when an offline user creates an intent. An authority that has not received the
 request may still renew sharing. Already displayed or exported bytes cannot be
 recalled. Retained screen content is marked as approval at fetch; refresh requires
 current permission. Manual approval is the default. Model adapters, mail, file
-transfer and shell services are separate future features.
+transfer and shell services retain their separate permissions and protocols;
+this Pages agreement does not bridge them.

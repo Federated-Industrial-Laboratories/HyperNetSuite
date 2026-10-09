@@ -60,6 +60,7 @@ passed to a browser, shell or other program.
 | n / p | Next or previous catalogue batch |
 | i | Show the page's trusted publication details and full selected destination |
 | m | Toggle publisher colours and monochrome |
+| a | Start or pause the page's bounded local motion |
 
 See [TerminalLayout](TerminalLayout.md) for page scrolling, nested focus, wrapping
 and colour controls. The browser keeps at most 16 prior views in memory. Back
@@ -108,3 +109,10 @@ Native forms support local field editing and a separate trusted send review.
 See [Forms](Forms.md) for explicit mailbox selection, keyboard controls,
 confirmation and recovery. Pages cannot choose local credentials, autofill
 values or submit automatically.
+
+Images remain labelled placeholders until the reader activates an explicit
+Reveal control. Each fetch rechecks the exact page and consented media route.
+Select a graphics protocol explicitly; unsupported terminal contexts retain
+alt text. Animation uses local clocks and cached pixels, with no network frame
+stream or background fetch. See [Media](Media.md) for commands and
+[MediaViewer](MediaViewer.md) for supported graphics, isolation and limits.

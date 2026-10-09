@@ -18,6 +18,20 @@ pub enum Decision {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Disclose one verified asset for an existing review job after separate media consent.
+    #[command(name = "media-export")]
+    MediaExport {
+        #[arg(long)]
+        receipt: PathBuf,
+        #[arg(long)]
+        asset: String,
+        #[arg(long)]
+        consent_media_disclosure: bool,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        media_receipt: PathBuf,
+    },
     /// Disclose one verified pending page after explicit plaintext consent.
     #[command(name = "review-export")]
     Export {
@@ -245,6 +259,58 @@ pub fn run(path: Option<&Path>, command: Command) -> Result<()> {
     let c: Config = files::read(path.context("--config is required")?, files::MAX_FILE)?;
     let key = crate::load_identity(&c.identity)?;
     match command {
+        Command::MediaExport {
+            receipt,
+            asset,
+            consent_media_disclosure,
+            output,
+            media_receipt,
+        } => {
+            ensure!(
+                consent_media_disclosure,
+                "--consent-media-disclosure is required to release selected asset bytes"
+            );
+            let proof: wire::Signed = files::read(&receipt, files::MAX_FILE)?;
+            let saved = files::verify::<Saved>(&c, &key, &proof)?.disclosure;
+            validate_job(&c, &key, &saved)?;
+            let j = &saved.job;
+            let current = inspect(&c, &key, &j.page_id)?;
+            let (source, digest, _) = validate_source(&c.network, &current)?;
+            ensure!(
+                current.version == j.expected_version
+                    && digest == j.submission_digest
+                    && source.body == j.body,
+                "pending page changed since review export"
+            );
+            let reference = crate::media::reference(
+                &j.page_id,
+                j.revision,
+                &j.digest,
+                &j.namespace,
+                &j.body,
+                &asset,
+            )?;
+            let bytes = crate::media::fetch(&c, &key, &reference, None, true)?;
+            let disclosure = json!({"version":1,"kind":"PageMediaReview","network":c.network,
+                "reviewJobId":j.job_id,"reviewJobDigest":job_digest(j)?,"requester":key.public_key,
+                "recipient":j.recipient,"purpose":j.purpose,"policyDigest":j.policy_digest,
+                "issuedAt":crate::now()?,"expires":j.expires,"consentMediaDisclosure":true,
+                "pageId":j.page_id,"revision":j.revision,"sourceDigest":j.digest,"asset":reference.asset});
+            files::write(&media_receipt, &files::sign(&c, &key, &disclosure)?)?;
+            files::lifetime(j.issued_at, j.expires, crate::now()?)?;
+            let export = serde_json::to_vec(
+                &json!({"disclosure":disclosure,"payload":wire::encode(&bytes)}),
+            )?;
+            ensure!(
+                export.len() <= 2 * 1024 * 1024,
+                "media export exceeds its bound"
+            );
+            crate::transfer_files::Destination::open(&output)?.publish(&export)?;
+            crate::print_value(
+                &json!({"reviewJobId":j.job_id,"asset":asset,"bytes":bytes.len(),
+                "credentialsExported":false,"executionAllowed":false}),
+            )
+        }
         Command::Export {
             page_id,
             recipient,
