@@ -797,6 +797,7 @@ pub fn run(path: Option<&Path>, args: Arguments) -> Result<()> {
                 ciphertext: None,
                 receipts: BTreeMap::new(),
                 state: "Queued".into(),
+                form_consent: None,
             };
             v.data.outbox.insert(id.clone(), item);
             v.commit()?;

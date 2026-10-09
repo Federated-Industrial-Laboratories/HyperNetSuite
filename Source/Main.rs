@@ -12,6 +12,10 @@ mod federation;
 mod federation_proof;
 #[path = "Files.rs"]
 mod files;
+#[path = "FormUi.rs"]
+mod form_ui;
+#[path = "Forms.rs"]
+mod forms;
 #[path = "Mail.rs"]
 mod mail;
 #[path = "MailArchive.rs"]
@@ -101,7 +105,11 @@ enum Command {
         after: Option<String>,
         #[arg(long)]
         ascii: bool,
+        #[command(flatten)]
+        forms: form_ui::Options,
     },
+    /// Fill and exchange explicitly accepted encrypted form submissions.
+    Forms(forms::Arguments),
     /// Manage separate least-privilege application credentials.
     #[command(subcommand)]
     Applications(applications::Command),
@@ -336,8 +344,16 @@ fn run() -> Result<()> {
             namespace,
             after,
             ascii,
+            forms,
         } => {
-            return navigation::run(options.config.as_deref(), uri, namespace, after, ascii);
+            return navigation::run(
+                options.config.as_deref(),
+                uri,
+                namespace,
+                after,
+                ascii,
+                forms,
+            );
         }
         Command::Applications(command) => {
             return applications::run(options.config.as_deref(), command);
@@ -349,6 +365,7 @@ fn run() -> Result<()> {
             return transfers::run(options.config.as_deref(), arguments);
         }
         Command::Services(command) => return services::run(options.config.as_deref(), command),
+        Command::Forms(arguments) => return forms::run(options.config.as_deref(), arguments),
         Command::Mail(arguments) => return mail::run(options.config.as_deref(), arguments),
         Command::Pages(command) => return pages::run(options.config.as_deref(), command),
         Command::Federation(command) => return federation::run(options.config.as_deref(), command),
@@ -584,6 +601,7 @@ fn run() -> Result<()> {
                 | Command::Pages(_)
                 | Command::Federation(_)
                 | Command::Mail(_)
+                | Command::Forms(_)
                 | Command::Transfers(_)
                 | Command::Services(_)
                 | Command::Applications(_)

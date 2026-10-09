@@ -15,6 +15,9 @@ The node and client have separate source, build and package lifecycles.
 address navigation, retained page state and recoverable errors in one terminal
 session.
 
+[Forms](Documentation/Forms.md) adds bounded typed fields, explicit browser and
+CLI confirmation, encrypted mail delivery and independently accepted typed intake.
+
 [Pages](Documentation/Pages.md) supports responsive inert components, exact-content manual review,
 verified publication and reads from explicitly consenting replicas.
 [HyperPage](Documentation/HyperPage.md) defines panels, rows, scroll boxes, colours

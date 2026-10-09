@@ -58,6 +58,7 @@ pub struct Outbox {
     pub ciphertext: Option<wire::Ciphertext>,
     pub receipts: BTreeMap<String, wire::Signed>,
     pub state: String,
+    pub form_consent: Option<crate::forms::Consent>,
 }
 impl Drop for Outbox {
     fn drop(&mut self) {
@@ -85,6 +86,9 @@ pub struct Data {
     pub hosts: BTreeMap<String, wire::Signed>,
     pub outbox: BTreeMap<String, Outbox>,
     pub archive: BTreeMap<String, Archived>,
+    pub form_reviews: BTreeMap<String, crate::forms::Prepared>,
+    pub accepted_forms: BTreeMap<String, crate::forms::Accepted>,
+    pub form_ledger: BTreeMap<String, crate::forms::LedgerEntry>,
 }
 pub struct Vault {
     pub data: Data,
@@ -153,7 +157,7 @@ impl Vault {
         let lock = Self::lock(directory)?;
         let mut v = Self {
             data: Data {
-                version: 1,
+                version: 2,
                 network: network.into(),
                 authority_signer: authority_signer.into(),
                 clock_floor: crate::now()?,
@@ -162,6 +166,9 @@ impl Vault {
                 hosts: BTreeMap::new(),
                 outbox: BTreeMap::new(),
                 archive: BTreeMap::new(),
+                form_reviews: BTreeMap::new(),
+                accepted_forms: BTreeMap::new(),
+                form_ledger: BTreeMap::new(),
             },
             directory: directory.into(),
             key,
@@ -202,7 +209,11 @@ impl Vault {
         let plain = mail_crypto::decrypt_age(&key, &bytes, MAX_VAULT)?;
         let data: Data = serde_json::from_slice(&plain)?;
         ensure!(
-            data.version == 1 && data.network == network,
+            data.version == 2,
+            "unsupported mail vault schema; expected version 2"
+        );
+        ensure!(
+            data.network == network,
             "mail vault belongs to another network"
         );
         ensure!(
@@ -236,7 +247,10 @@ impl Vault {
         ensure!(
             self.data.mailboxes.len() <= 64
                 && self.data.outbox.len() <= 128
-                && self.data.archive.len() <= 1024,
+                && self.data.archive.len() <= 1024
+                && self.data.form_reviews.len() <= 64
+                && self.data.accepted_forms.len() <= 128
+                && self.data.form_ledger.len() <= 1024,
             "mail vault quota exceeded"
         );
         let plain = zeroize::Zeroizing::new(serde_json::to_vec(&self.data)?);

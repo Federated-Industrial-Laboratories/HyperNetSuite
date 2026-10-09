@@ -41,6 +41,11 @@ pub(super) fn retry(v: &mut Vault, c: &Config, id: &str) -> Result<Value> {
                 "contact manifest fork"
             );
         }
+        reviewed_policy(
+            v.data.outbox[id].form_consent.as_ref(),
+            own_manifest(v, &label)?,
+            &signed,
+        )?;
         let now = crate::now()?;
         let expected_expiry = v.data.outbox[id].expires;
         if expected_expiry == 0 {
@@ -171,8 +176,22 @@ pub(super) fn retry(v: &mut Vault, c: &Config, id: &str) -> Result<Value> {
     v.commit()?;
     Ok(result)
 }
+fn reviewed_policy(
+    consent: Option<&crate::forms::Consent>,
+    sender: &wire::Signed,
+    recipient: &wire::Signed,
+) -> Result<()> {
+    if let Some(consent) = consent {
+        ensure!(
+            wire::object_digest(recipient)? == consent.recipient_manifest_digest
+                && wire::object_digest(sender)? == consent.sender_manifest_digest,
+            "reviewed form mailbox or destination changed; no new ciphertext created"
+        );
+    }
+    Ok(())
+}
 // Use exactly the live receiving set used by MLS and the authority's prekey claim.
-fn default_expiry(
+pub(super) fn default_expiry(
     recipient: &wire::Manifest,
     sender_expires: u64,
     device_expires: u64,
@@ -753,6 +772,36 @@ mod tests {
         );
         m.devices[0].expires = now;
         assert!(default_expiry(&m, now + 200, now + 150, now).is_err());
+    }
+    #[test]
+    fn reviewed_form_policy_cannot_change_before_encryption() {
+        let f = Fixture::new();
+        let consent = crate::forms::Consent {
+            review_id: "81".repeat(16),
+            sender_manifest_digest: wire::object_digest(&f.cipher.sender_manifest).unwrap(),
+            recipient_manifest_digest: wire::object_digest(&f.cipher.recipient_manifest).unwrap(),
+        };
+        assert!(
+            reviewed_policy(
+                Some(&consent),
+                &f.cipher.sender_manifest,
+                &f.cipher.recipient_manifest
+            )
+            .is_ok()
+        );
+        let sender = renewed(
+            &f.config.network,
+            &f.sender_owner,
+            &f.cipher.sender_manifest,
+        );
+        let recipient = renewed(
+            &f.config.network,
+            &f.recipient_owner,
+            &f.cipher.recipient_manifest,
+        );
+        assert!(reviewed_policy(Some(&consent), &sender, &f.cipher.recipient_manifest).is_err());
+        assert!(reviewed_policy(Some(&consent), &f.cipher.sender_manifest, &recipient).is_err());
+        assert!(reviewed_policy(None, &sender, &recipient).is_ok());
     }
     #[test]
     fn lost_put_receipt_survives_sender_and_recipient_renewal_without_upload() {

@@ -247,6 +247,7 @@ impl Entry {
             lines: Vec::new(),
             links: Vec::new(),
             nodes: Vec::new(),
+            forms: Vec::new(),
         };
         for (key, descriptor) in result.entries.iter().enumerate() {
             let target = uri(network, descriptor);
@@ -327,7 +328,10 @@ impl Entry {
         }
     }
     fn mode(&self) -> reader::Mode {
-        match self.content {
+        match &self.content {
+            Content::Page(page) if matches!(page.location, Location::Federated { .. }) => {
+                reader::Mode::Foreign
+            }
             Content::Page(_) => reader::Mode::Page,
             Content::Catalogue(_) => reader::Mode::Catalogue,
         }
@@ -474,6 +478,7 @@ pub fn run(
     namespace: Option<String>,
     after: Option<String>,
     ascii: bool,
+    forms: crate::form_ui::Options,
 ) -> Result<()> {
     let config: Config = serde_json::from_slice(&crate::files::read_bounded(
         config_path.context("--config is required")?,
@@ -494,8 +499,9 @@ pub fn run(
         !config.application || namespace.is_some(),
         "application browser requires --namespace"
     );
+    let forms = forms.context(&config)?;
     session(
-        &config, &identity, None, target, namespace, after, None, true, ascii,
+        &config, &identity, None, target, namespace, after, None, true, ascii, forms,
     )
 }
 
@@ -517,6 +523,7 @@ pub fn browse(
         replica,
         tui,
         ascii,
+        None,
     )
 }
 
@@ -531,6 +538,7 @@ fn session(
     replica: Option<&str>,
     tui: bool,
     ascii: bool,
+    forms: Option<crate::form_ui::Context>,
 ) -> Result<()> {
     let session = reader::Session::new(tui, ascii)?;
     let placeholder = Entry::catalogue(
@@ -629,6 +637,91 @@ fn session(
         let failure;
         let response = match action {
             reader::Action::Quit => return Ok(()),
+            reader::Action::Submit(form) => {
+                let Some(context) = &forms else {
+                    browser.status = "Form sending needs browse --vault, --key and --mailbox; use --mail-config for separate mail credentials".into();
+                    continue;
+                };
+                let Content::Page(page) = &browser.current.content else {
+                    continue;
+                };
+                if !matches!(page.location, Location::Native(_)) || page.network != config.network {
+                    browser.status = "Foreign forms cannot send through this network".into();
+                    continue;
+                }
+                let expected = page.descriptor.clone();
+                let values = browser
+                    .current
+                    .view
+                    .form_values
+                    .get(&form)
+                    .cloned()
+                    .unwrap_or_default();
+                let mail = context.clone();
+                let read_config = config.clone();
+                let prepared = session.request(move || {
+                    crate::forms::prepare(
+                        &mail.config,
+                        &read_config,
+                        &mail.settings,
+                        &expected,
+                        &form,
+                        values,
+                        None,
+                    )
+                });
+                let review = match prepared {
+                    Ok(Some(review)) => review,
+                    Ok(None) => return Ok(()),
+                    Err(error) => {
+                        browser.status =
+                            reader::bounded_status(&format!("Could not prepare form: {error:#}"));
+                        continue;
+                    }
+                };
+                match session.confirm_form(&review)? {
+                    None => return Ok(()),
+                    Some(false) => {
+                        match crate::forms::discard(
+                            &context.config,
+                            &context.settings,
+                            &review.review_id,
+                        ) {
+                            Ok(()) => {
+                                browser.status = "Form review cancelled; no submission sent".into()
+                            }
+                            Err(error) => {
+                                browser.status = reader::bounded_status(&format!(
+                                    "No submission sent; review cleanup failed: {error:#}"
+                                ))
+                            }
+                        }
+                    }
+                    Some(true) => {
+                        let mail = context.clone();
+                        let read_config = config.clone();
+                        let id = review.review_id.clone();
+                        match session.request(move || {
+                            crate::forms::confirm(&mail.config, &read_config, &mail.settings, &id)
+                        }) {
+                            Ok(None) => return Ok(()),
+                            Ok(Some(result)) => {
+                                browser.status = reader::bounded_status(&format!(
+                                    "Form submission {}: {}",
+                                    review.submission_id, result
+                                ))
+                            }
+                            Err(error) => {
+                                browser.status = reader::bounded_status(&format!(
+                                    "Form {} delivery not confirmed: {error:#}; inspect the outbox before retry",
+                                    review.submission_id
+                                ))
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             reader::Action::Back => {
                 browser.back();
                 continue;
