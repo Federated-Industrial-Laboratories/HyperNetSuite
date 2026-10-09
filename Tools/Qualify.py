@@ -56,13 +56,14 @@ def main():
             raise ValueError('Identity overwrite protection failed')
         report['checks'].append('Private identity generation and overwrite refusal')
         page = private / 'Page.txt'
-        page.write_text('HyperNetPage/1\n# Qualification\n: Safe plain text.\n=> https://example.com/ Inert reference\n')
+        page.write_text('HyperNetPage/2\n# Qualification\n: Safe plain text.\n=> https://example.com/ Inert reference\n')
         preview = run([str(binary), 'pages', 'preview', str(page), '--ascii'])
         if b'UNAPPROVED' not in preview or b'Safe plain text.' not in preview or any(byte < 32 and byte != 10 or byte == 127 for byte in preview):
             raise ValueError('Plain preview output failed')
         report['checks'].append('Safe plain preview and inert link')
         run([sys.executable, str(prefix / 'Tests/ReaderTerminal.py'), str(binary)], timeout=90)
-        report['checks'].append('Reader pseudoterminal resize, signals and restoration')
+        run([sys.executable, str(prefix / 'Tests/LayoutTerminal.py'), str(binary)], timeout=90)
+        report['checks'].append('Reader and component layout pseudoterminal resize, focus, signals and restoration')
         report['markup'] = json.loads(run([sys.executable, str(prefix / 'Tests/MarkupRobustness.py'), str(binary)], timeout=90))
         report['checks'].append('Bounded markup rejection and output safety')
     report['status'] = 'Passed'

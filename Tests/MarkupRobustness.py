@@ -15,7 +15,7 @@ import tempfile
 
 binary=Path(sys.argv[1]).resolve()
 generator=random.Random(0x4859504552)
-base=b'HyperNetPage/1\n# Sample\n: Text with a bounded paragraph.\n=> https://example.com/ Link\n'
+base=b'HyperNetPage/2\n# Sample\n: Text with a bounded paragraph.\n=> https://example.com/ Link\n'
 accepted=0
 with tempfile.TemporaryDirectory(prefix='HyperNetMarkup') as directory:
     path=Path(directory)/'Input.txt'

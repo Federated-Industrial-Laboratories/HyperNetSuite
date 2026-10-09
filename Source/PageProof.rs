@@ -128,7 +128,7 @@ pub fn submission(network: &str, proof: &Envelope) -> Result<(Submission, String
         value.expected_version.checked_add(1).is_some(),
         "page version overflow"
     );
-    markup::validate(&value.body).map_err(anyhow::Error::msg)?;
+    markup::validate_profile(&value.profile, &value.body).map_err(anyhow::Error::msg)?;
     ensure!(
         hex::encode(Sha256::digest(value.body.as_bytes())) == value.digest,
         "page source digest mismatch"
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn archived_proofs_bind_exact_content_reviewer_and_scope() {
         let network = "01".repeat(32);
-        let body = "HyperNetPage/1\n# Example\n: Exact reviewed content.\n";
+        let body = "HyperNetPage/2\n# Example\n: Exact reviewed content.\n";
         let source = proof(
             3,
             json!({"type":"PageSubmit","pageId":"04".repeat(16),"expectedVersion":0,"namespace":"News","audience":"Members","profile":markup::PROFILE,"digest":hex::encode(Sha256::digest(body)),"body":body}),

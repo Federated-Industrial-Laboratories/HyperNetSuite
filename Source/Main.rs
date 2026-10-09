@@ -32,8 +32,12 @@ mod mail_vault;
 mod markup;
 #[path = "Navigation.rs"]
 mod navigation;
+#[path = "PageLayout.rs"]
+mod page_layout;
 #[path = "PageProof.rs"]
 mod page_proof;
+#[path = "PageView.rs"]
+mod page_view;
 #[path = "Pages.rs"]
 mod pages;
 #[path = "Protocol.rs"]
@@ -181,9 +185,9 @@ enum Command {
         expires: u64,
         #[arg(long)]
         certificate: String,
-        /// Exact signed local consent file; required for Pages hosting.
+        /// Exact signed local consent file for the selected hosting services.
         #[arg(long)]
-        document: Option<PathBuf>,
+        document: PathBuf,
     },
     /// Withdraw network hosting consent. Stop the local host first for immediate withdrawal.
     Withdraw,
@@ -241,9 +245,10 @@ struct HostSpecification {
     state_bytes: u64,
     authority_endpoint: String,
     authority_address: String,
-    services: Option<Vec<String>>,
-    namespaces: Option<Vec<String>>,
-    page_cache_bytes: Option<u64>,
+    services: Vec<String>,
+    namespaces: Vec<String>,
+    page_cache_bytes: u64,
+    page_media_cache_bytes: u64,
 }
 
 fn main() {
@@ -403,49 +408,47 @@ fn run() -> Result<()> {
                             "host authority endpoint must use a DNS name and the pinned address port"
                         );
                     }
-                    let version = match (
-                        &document.services,
-                        &document.namespaces,
-                        document.page_cache_bytes,
-                    ) {
-                        (None, None, None) => 1,
-                        (Some(services), Some(namespaces), Some(cache)) => {
-                            if services != &["Pages"]
-                                || namespaces.is_empty()
-                                || namespaces.len() > 16
-                                || namespaces.iter().any(|name| !markup::namespace(name))
-                                || namespaces
-                                    .iter()
-                                    .collect::<std::collections::BTreeSet<_>>()
-                                    .len()
-                                    != namespaces.len()
-                                || cache < 65536
-                                || cache > document.state_bytes.saturating_sub(262144)
-                            {
-                                bail!("invalid Pages scope or cache allowance");
-                            }
-                            2
+                    if document.page_media_cache_bytes != 0 {
+                        bail!("media hosting is unavailable; pageMediaCacheBytes must be zero");
+                    }
+                    if document.services.is_empty() {
+                        if !document.namespaces.is_empty() || document.page_cache_bytes != 0 {
+                            bail!(
+                                "heartbeat-only consent requires empty namespaces and zero cache"
+                            );
                         }
-                        _ => bail!(
-                            "Pages consent requires services, namespaces and pageCacheBytes together"
-                        ),
-                    };
-                    let mut value = json!({
-                        "version":version,"network":config.network,"deviceKey":identity.public_key,
+                    } else if document.services != ["Pages"]
+                        || document.namespaces.is_empty()
+                        || document.namespaces.len() > 16
+                        || document
+                            .namespaces
+                            .iter()
+                            .any(|name| !markup::namespace(name))
+                        || document
+                            .namespaces
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            != document.namespaces.len()
+                        || document.page_cache_bytes < 65536
+                        || document.page_cache_bytes > document.state_bytes.saturating_sub(262144)
+                    {
+                        bail!("invalid Pages scope or cache allowance");
+                    }
+                    let value = json!({
+                        "version":3,"network":config.network,"deviceKey":identity.public_key,
                         "grants":document.grants,"expires":document.expires,
                         "memoryBytes":document.memory_bytes,"pids":document.pids,
                         "cpuQuota":document.cpu_quota,"cpuPeriod":document.cpu_period,
                         "stateBytes":document.state_bytes,"authorityEndpoint":document.authority_endpoint,
-                        "authorityAddress":document.authority_address
+                        "authorityAddress":document.authority_address,
+                        "services":document.services,"namespaces":document.namespaces,
+                        "pageCacheBytes":document.page_cache_bytes,
+                        "pageMediaCacheBytes":document.page_media_cache_bytes
                     });
-                    if version == 2 {
-                        value["services"] = json!(document.services);
-                        value["namespaces"] = json!(document.namespaces);
-                        value["pageCacheBytes"] = json!(document.page_cache_bytes);
-                    }
                     let payload = serde_json::to_vec(&value)?;
                     protocol::endpoint(&document.authority_endpoint)?;
-                    let mut bytes = protocol::sign_consent(&identity, &payload, version)?;
+                    let mut bytes = protocol::sign_consent(&identity, &payload)?;
                     bytes.push(b'\n');
                     let profile = hex::encode(Sha256::digest(&bytes));
                     bytes.pop();
@@ -539,9 +542,9 @@ fn run() -> Result<()> {
                     checked_key(&profile)?;
                     checked_key(&certificate)?;
                     let mut command = json!({"type":"Consent","profile":profile,"grants":grants,"expires":expires,"certificate":certificate});
-                    if let Some(path) = document {
+                    {
                         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-                        let bytes = files::read_bounded(&path, false)?;
+                        let bytes = files::read_bounded(&document, false)?;
                         if bytes.len() > 16384 || hex::encode(Sha256::digest(&bytes)) != profile {
                             bail!("consent document does not match the profile or size bound");
                         }
@@ -604,7 +607,14 @@ mod command_tests {
                 "1800000000",
             ];
             if command == "consent" {
-                args.extend(["--profile", "00", "--certificate", "00"]);
+                args.extend([
+                    "--profile",
+                    "00",
+                    "--certificate",
+                    "00",
+                    "--document",
+                    "Consent.json",
+                ]);
             } else {
                 args.extend(["--device-key", "00"]);
             }

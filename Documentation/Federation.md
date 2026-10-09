@@ -29,7 +29,7 @@ Prepare the same public treaty file for both administrators:
   "sourceNamespace": "News",
   "destinationNamespace": "PartnerNews",
   "service": "Pages",
-  "profile": "HyperNetPage/1",
+  "profile": "HyperNetPage/2",
   "expires": 1800000000
 }
 ```

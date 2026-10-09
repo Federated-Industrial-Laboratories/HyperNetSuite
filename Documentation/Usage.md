@@ -107,7 +107,8 @@ A host owner signs explicit resource limits. The specification has these fields:
   "cpuPeriod": 100000,
   "stateBytes": 16777216,
   "authorityEndpoint": "https://authority.example:8443",
-  "authorityAddress": "192.0.2.10:8443"
+  "authorityAddress": "192.0.2.10:8443",
+  "services": [], "namespaces": [], "pageCacheBytes": 0, "pageMediaCacheBytes": 0
 }
 ```
 
@@ -120,13 +121,13 @@ HyperNetSuite --config Device/Profile.json host-consent --spec Specification.jso
 ```
 
 This signs the exact local specification and reports its SHA-256 profile digest.
-It does not start hosting. Version 1 also consents to a separate relay allowance: 128 MiB memory, half a CPU, 32 processes, 8 MiB temporary storage and an aggregate 1 MiB/s byte rate. The command reports the combined memory allowance. Register that digest and the SHA-256 fingerprint of
+It does not start hosting. Version 3 also consents to a separate relay allowance: 128 MiB memory, half a CPU, 32 processes, 8 MiB temporary storage and an aggregate 1 MiB/s byte rate. The command reports the combined memory allowance. Register that digest and the SHA-256 fingerprint of
 the host's DER client certificate with the authority:
 
 ```sh
 openssl x509 -in HostCertificate.pem -outform DER | openssl dgst -sha256
 HyperNetSuite --config Device/Profile.json consent --profile PROFILE_HEX \
-  --grants 2 --expires UNIX_SECONDS --certificate CERTIFICATE_HEX
+  --grants 2 --expires UNIX_SECONDS --certificate CERTIFICATE_HEX --document Consent.json
 HyperNetSuite --config Device/Profile.json heartbeat --profile PROFILE_HEX
 ```
 
@@ -146,7 +147,7 @@ A successful heartbeat reports a short lease, not permission for future work
 without revalidation. Stale, expired, revoked or unavailable authority is denied.
 Administrative commands return JSON on success and a nonzero exit status on failure. The client
 escapes terminal control characters in displayed JSON, errors and file paths.
-See [Pages](Pages.md) for author, moderator, reader and version 2 hosting workflows.
+See [Pages](Pages.md) for author, moderator, reader and version 3 hosting workflows.
 Mail, transfers and constrained SSH services use their separate consent workflows.
 
 ## Private mail

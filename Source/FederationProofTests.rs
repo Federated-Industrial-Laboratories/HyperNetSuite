@@ -58,7 +58,7 @@ fn fixture(now: u64) -> (Treaty, Value) {
         expires: now + 3600,
     };
     let page = "04".repeat(16);
-    let body = "HyperNetPage/1\n# Shared\n: Exact authorised bytes.\n";
+    let body = "HyperNetPage/2\n# Shared\n: Exact authorised bytes.\n";
     let body_digest = hex::encode(Sha256::digest(body));
     let submission = request(
         &treaty.source_network,

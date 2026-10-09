@@ -19,7 +19,7 @@ import tarfile
 import tempfile
 
 PRODUCT = 'HyperNetSuite'
-VERSION = '0.7.0'
+VERSION = '0.7.5'
 NAMESPACE = 'HyperNetSuiteBundle1'
 PRINCIPAL = 'HyperNetSuitePublisher'
 MAX_ARCHIVE = 512 * 1024 * 1024
@@ -105,7 +105,7 @@ def architecture():
 def allowed_path(name):
     if name in ('Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite'):
         return True
-    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt)|Tests/(ReaderTerminal|MarkupRobustness)\.py)', name))
+    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness)\.py)', name))
 
 
 def file_mode(name):
@@ -139,7 +139,7 @@ def validate_manifest(value):
         paths.append(name)
         total += item['size']
     require(paths == sorted(set(paths)) and total <= MAX_ARCHIVE, 'Duplicate, unordered or oversized inventory')
-    require({'Bin/HyperNetSuite', 'Licence.txt', 'ReadMe.md', 'Tools/Bundle.py', 'Tools/Qualify.py', 'Tests/ReaderTerminal.py', 'Tests/MarkupRobustness.py', 'Documentation/ThirdPartyNotices.txt'}.issubset(paths), 'Required package files are missing')
+    require({'Bin/HyperNetSuite', 'Licence.txt', 'ReadMe.md', 'Tools/Bundle.py', 'Tools/Qualify.py', 'Tests/ReaderTerminal.py', 'Tests/LayoutTerminal.py', 'Tests/MarkupRobustness.py', 'Documentation/ThirdPartyNotices.txt'}.issubset(paths), 'Required package files are missing')
     require(next(item['sha256'] for item in files if item['path'] == metadata['binary']) == metadata['binarySha256'], 'Binary identity differs from inventory')
     return value
 
@@ -409,7 +409,7 @@ def create(args):
         metadata = binary_metadata(snapshot)
         snapshot.chmod(0o700)
         runtime_version = run([str(snapshot), '--version']).decode('ascii').strip()
-        require(runtime_version in ('HyperNetSuite 0.6.0', 'HyperNetSuite 0.7.0'), 'Binary version has no qualified compatibility profile')
+        require(runtime_version == 'HyperNetSuite 0.7.5', 'Binary does not match the current package contract')
         runtime_version = runtime_version.split()[1]
         files = {'Bin/HyperNetSuite': snapshot, 'Licence.txt': repository / 'Licence.txt', 'ReadMe.md': repository / 'ReadMe.md'}
         for folder in ('Tools', 'Documentation', 'Tests'):

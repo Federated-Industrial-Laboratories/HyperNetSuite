@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "hypernet-suite"
-version = "0.7.0"
+version = "0.7.5"
 dependencies = [
  "age",
  "anyhow",
