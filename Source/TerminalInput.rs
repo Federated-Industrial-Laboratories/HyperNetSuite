@@ -18,7 +18,8 @@ pub struct Input {
     bytes: VecDeque<u8>,
     sequence: Vec<u8>,
     escape_at: Option<Instant>,
-    paste: Option<String>,
+    paste: Option<Vec<u8>>,
+    utf8: Vec<u8>,
     paste_end: usize,
     rejected: bool,
     control_string: bool,
@@ -45,6 +46,10 @@ impl Input {
                 return Err(error.into());
             }
             if ready == 0 {
+                if !self.utf8.is_empty() {
+                    self.utf8.clear();
+                    return Ok(Some(Event::Rejected));
+                }
                 if self
                     .escape_at
                     .is_some_and(|at| at.elapsed() >= Duration::from_millis(100))
@@ -97,7 +102,10 @@ impl Input {
                 return Some(if std::mem::take(&mut self.rejected) {
                     Event::Rejected
                 } else {
-                    Event::Paste(value)
+                    match String::from_utf8(value) {
+                        Ok(value) => Event::Paste(value),
+                        Err(_) => Event::Rejected,
+                    }
                 });
             }
             return None;
@@ -110,10 +118,10 @@ impl Input {
             }
         }
         let value = self.paste.as_mut().unwrap();
-        if !(33..127).contains(&byte) || value.len() == 512 {
+        if (byte < 32 && byte != b'\n') || byte == 127 || value.len() == 2048 {
             self.rejected = true;
         } else if !self.rejected {
-            value.push(char::from(byte));
+            value.push(byte);
         }
         None
     }
@@ -146,7 +154,7 @@ impl Input {
             if self.sequence == b"\x1b[200~" {
                 self.sequence.clear();
                 self.escape_at = None;
-                self.paste = Some(String::new());
+                self.paste = Some(Vec::new());
                 self.rejected = false;
                 return None;
             }
@@ -179,6 +187,29 @@ impl Input {
             self.rejected = false;
             return Some(result);
         }
+        if !self.utf8.is_empty() || byte >= 128 {
+            if self.utf8.len() == 4 {
+                self.utf8.clear();
+                return Some(Event::Rejected);
+            }
+            self.utf8.push(byte);
+            return match std::str::from_utf8(&self.utf8) {
+                Ok(value) => {
+                    let ch = value.chars().next().unwrap();
+                    self.utf8.clear();
+                    Some(if ch.is_control() {
+                        Event::Rejected
+                    } else {
+                        key(KeyCode::Char(ch))
+                    })
+                }
+                Err(error) if error.error_len().is_none() => None,
+                Err(_) => {
+                    self.utf8.clear();
+                    Some(Event::Rejected)
+                }
+            };
+        }
         Some(match byte {
             27 => {
                 self.sequence.push(byte);
@@ -188,6 +219,8 @@ impl Input {
             b'\r' | b'\n' => key(KeyCode::Enter),
             b'\t' => key(KeyCode::Tab),
             8 | 127 => key(KeyCode::Backspace),
+            14 => Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+            4 => Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
             21 => Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
             3 => Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             32..=126 => key(KeyCode::Char(char::from(byte))),
@@ -214,7 +247,7 @@ mod tests {
         ] {
             assert!(feed(&mut input, b"\x1b[200~").is_empty());
             assert!(feed(&mut input, &payload).is_empty());
-            assert!(input.paste.as_ref().unwrap().len() <= 512);
+            assert!(input.paste.as_ref().unwrap().len() <= 2048);
             assert!(matches!(
                 &feed(&mut input, b"\x1b[201~")[..],
                 [Event::Rejected]
@@ -222,6 +255,16 @@ mod tests {
         }
         assert!(
             matches!(&feed(&mut input, b"q")[..], [Event::Key(key)] if key.code == KeyCode::Char('q'))
+        );
+    }
+    #[test]
+    fn unicode_and_multiline_paste_remain_inert_data() {
+        let mut input = Input::default();
+        let events = feed(&mut input, "\x1b[200~q\n世界 text\x1b[201~".as_bytes());
+        assert!(matches!(&events[..],[Event::Paste(value)] if value=="q\n世界 text"));
+        let events = feed(&mut input, "世界".as_bytes());
+        assert!(
+            matches!(&events[..],[Event::Key(a), Event::Key(b)] if a.code==KeyCode::Char('世') && b.code==KeyCode::Char('界'))
         );
     }
     #[test]

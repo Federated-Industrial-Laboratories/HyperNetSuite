@@ -41,8 +41,8 @@ resize, and do no animation or background refresh.
 
 | Key | Reader operation |
 | --- | --- |
-| Tab / Shift-Tab | Move through scrollboxes and buttons in document order |
-| Enter | Activate the selected button; a selected scrollbox needs no activation |
+| Tab / Shift-Tab | Move through scrollboxes, fields and buttons in document order |
+| Enter | Edit the selected field or activate the selected button |
 | Arrows or j/k | Scroll the selected scrollbox or the button's nearest scrollbox |
 | Page Up / Page Down | Scroll by that viewport's height |
 | Home / End or g/G | Move to the selected viewport's start or end |
@@ -59,6 +59,11 @@ control and clamps offsets to the new layout. Scrolling can subsequently move
 that control out of view; Tab reveals the next control. A local Scroll button
 changes its named viewport without implicitly moving focus. Global reader keys
 remain available in every control.
+
+A native form field opens a separate local editor. Its input cannot become
+browser shortcuts. Submit opens the trusted confirmation screen described in
+[Forms](Forms.md); it never sends directly from page content. Draft previews
+and foreign pages display form fields without accepting input.
 
 The `i` view is reader-owned. It shows all retained approval, network, identity
 and source metadata, plus the selected action and its complete wrapped destination.

@@ -28,6 +28,7 @@ pub enum Action {
     Catalogue,
     Next,
     Previous,
+    Submit(String),
 }
 
 struct Terminal {
@@ -180,6 +181,9 @@ fn selected_label(
     };
     let label = text(&control.label, ascii);
     match &control.kind {
+        ControlKind::Field { .. } => {
+            format!("Field: {label} | Enter edits; values remain local until confirmation")
+        }
         ControlKind::ScrollBox => {
             let info = &layout.scrolls[&control.key];
             format!(
@@ -193,6 +197,9 @@ fn selected_label(
             .get(*link)
             .map(|link| format!("Navigate: {label} -> {}", text(&link.target, true)))
             .unwrap_or_else(|| "Invalid navigation control".into()),
+        ControlKind::Action(PageAction::Submit { form }) => {
+            format!("Review form: {label} | form {form}")
+        }
         ControlKind::Action(PageAction::Focus { target }) => {
             format!("Focus: {label} -> {}", text(target, ascii))
         }
@@ -205,6 +212,7 @@ fn selected_label(
 pub enum Mode {
     Preview,
     Page,
+    Foreign,
     Catalogue,
 }
 
@@ -248,6 +256,37 @@ pub(crate) fn preflight_at(
     Ok(())
 }
 
+fn save_field_value(
+    document: &Document,
+    view: &mut crate::page_view::View,
+    editor: &crate::form_ui::Editor,
+    value: Option<serde_json::Value>,
+    dimensions: (u16, u16),
+    ascii: bool,
+) -> Result<()> {
+    ensure!(
+        dimensions.0 >= 20 && dimensions.1 >= 8,
+        "Resize before saving this field"
+    );
+    let mut candidate = view.clone();
+    let values = candidate
+        .form_values
+        .entry(editor.form.clone())
+        .or_default();
+    if let Some(value) = value {
+        values.insert(editor.field.id.clone(), value);
+    } else {
+        values.remove(&editor.field.id);
+    }
+    ensure!(
+        serde_json::to_vec(values)?.len() <= crate::markup::forms::MAX_VALUES_BYTES,
+        "Combined values exceed the form byte limit"
+    );
+    preflight_at(document, &candidate, dimensions, ascii)?;
+    *view = candidate;
+    Ok(())
+}
+
 pub struct Session {
     terminal: Option<Terminal>,
     ascii: bool,
@@ -256,6 +295,118 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn confirm_form(&self, review: &crate::forms::Review) -> Result<Option<bool>> {
+        ensure!(
+            self.interactive(),
+            "form confirmation requires an interactive terminal"
+        );
+        let value = serde_json::to_string_pretty(review)?;
+        ensure!(
+            value.len() <= 32768,
+            "form review exceeds the display bound"
+        );
+        let mut offset = 0usize;
+        let mut seen_end = false;
+        let mut confirmation = String::new();
+        let mut dimensions = None;
+        let mut dirty = true;
+        let mut rows = Vec::new();
+        let mut available = 1;
+        loop {
+            if INTERRUPTED.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            let size = terminal::size()?;
+            if dimensions != Some(size) {
+                dimensions = Some(size);
+                dirty = true;
+            }
+            if dirty {
+                let width =
+                    usize::from(size.0.saturating_sub(1)).clamp(1, crate::page_layout::MAX_COLUMNS);
+                let height = usize::from(size.1).clamp(1, crate::page_layout::MAX_ROWS);
+                let mut out = io::stdout();
+                queue!(
+                    out,
+                    SetAttribute(Attribute::Reset),
+                    ResetColor,
+                    Clear(ClearType::All),
+                    MoveTo(0, 0)
+                )?;
+                if size.0 < 20 || size.1 < 8 {
+                    chrome(&mut out, 0, 0, "Resize to review; Esc cancels", width)?;
+                } else {
+                    available = height - 4;
+                    rows = value
+                        .lines()
+                        .flat_map(|line| crate::page_layout::wrap(&text(line, self.ascii), width))
+                        .collect();
+                    offset = offset.min(rows.len().saturating_sub(available));
+                    seen_end |= offset + available >= rows.len();
+                    chrome(&mut out, 0, 0, "Trusted form review | nothing sent", width)?;
+                    chrome(
+                        &mut out,
+                        0,
+                        1,
+                        "Review every value and delivery policy. Esc cancels.",
+                        width,
+                    )?;
+                    for (index, line) in rows.iter().skip(offset).take(available).enumerate() {
+                        chrome(&mut out, 0, (index + 2) as u16, line, width)?;
+                    }
+                    chrome(
+                        &mut out,
+                        0,
+                        (height - 2) as u16,
+                        "Arrows/PgUp/PgDn/Home/End scroll; Ctrl-C quits",
+                        width,
+                    )?;
+                    let prompt = if seen_end {
+                        format!("Type SEND then Enter to confirm: {confirmation}")
+                    } else {
+                        "Read to the end before confirming".into()
+                    };
+                    chrome(&mut out, 0, (height - 1) as u16, &prompt, width)?;
+                }
+                out.flush()?;
+                dirty = false;
+            }
+            let Some(event) = self.event()? else { continue };
+            let Event::Key(key) = event else {
+                confirmation.clear();
+                dirty = true;
+                continue;
+            };
+            match key.code {
+                KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => return Ok(None),
+                KeyCode::Esc | KeyCode::Char('q') => return Ok(Some(false)),
+                KeyCode::Down => offset = offset.saturating_add(1),
+                KeyCode::Up => offset = offset.saturating_sub(1),
+                KeyCode::PageDown => offset = offset.saturating_add(available),
+                KeyCode::PageUp => offset = offset.saturating_sub(available),
+                KeyCode::Home => offset = 0,
+                KeyCode::End => offset = rows.len().saturating_sub(available),
+                KeyCode::Backspace => {
+                    confirmation.pop();
+                }
+                KeyCode::Enter
+                    if seen_end && confirmation == "SEND" && size.0 >= 20 && size.1 >= 8 =>
+                {
+                    return Ok(Some(true));
+                }
+                KeyCode::Char(ch)
+                    if seen_end
+                        && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+                        && confirmation.len() < 4 =>
+                {
+                    confirmation.push(ch);
+                }
+                _ => {}
+            }
+            dirty = true;
+        }
+    }
+
     pub fn new(tui: bool, ascii: bool) -> Result<Self> {
         let interactive = tui
             && io::stdin().is_terminal()
@@ -310,7 +461,7 @@ impl Session {
                     return result.map(Some);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    anyhow::bail!("page request stopped unexpectedly");
+                    anyhow::bail!("network operation stopped unexpectedly");
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -397,6 +548,7 @@ impl Session {
         let mut detail_rows = Vec::new();
         let mut dimensions = None;
         let mut editor: Option<AddressEditor> = None;
+        let mut field_editor: Option<crate::form_ui::Editor> = None;
         let mut help = false;
         let mut input_status = String::new();
         let mut layout_error = None;
@@ -424,7 +576,7 @@ impl Session {
                     MoveTo(0, 0)
                 )?;
                 if columns < 20 || rows < 8 {
-                    chrome(&mut out, 0, 0, "Resize terminal; q exits", width)?;
+                    chrome(&mut out, 0, 0, "Resize terminal; Ctrl-C exits", width)?;
                 } else {
                     body_rows = height - 6;
                     let content_width = width - 4;
@@ -480,7 +632,15 @@ impl Session {
                             .flat_map(|line| crate::page_layout::wrap(line, content_width))
                         })
                         .collect();
-                    if help {
+                    if let Some(active) = &mut field_editor {
+                        detail_rows = [crate::markup::forms::field_description(&active.field),
+                            "Enter saves locally; Esc cancels; Ctrl-U clears; Ctrl-N inserts a newline; Ctrl-D omits an optional field; PgUp/PgDn scroll".into(),
+                            format!("Value: {}", serde_json::to_string(&active.text)?), active.error.clone()]
+                            .iter().flat_map(|line| crate::page_layout::wrap(&text(line, ascii), content_width)).collect();
+                        active.scroll = active
+                            .scroll
+                            .min(detail_rows.len().saturating_sub(body_rows));
+                    } else if help {
                         detail_rows = HELP
                             .iter()
                             .flat_map(|line| crate::page_layout::wrap(line, content_width))
@@ -525,7 +685,9 @@ impl Session {
                         2,
                         &format!(
                             "--- {} | {colour_mode} ---",
-                            if help {
+                            if field_editor.is_some() {
+                                "Edit form field"
+                            } else if help {
                                 "Trusted browser help"
                             } else if view.details {
                                 "Trusted publication details"
@@ -542,7 +704,11 @@ impl Session {
                     for y in 0..body_rows {
                         let row = (y + 3) as u16;
                         chrome(&mut out, 0, row, "| ", 2)?;
-                        if view.details || help {
+                        if let Some(active) = &field_editor {
+                            if let Some(line) = detail_rows.get(active.scroll + y) {
+                                chrome(&mut out, 2, row, line, content_width)?;
+                            }
+                        } else if view.details || help {
                             if let Some(line) = detail_rows.get(view.details_offset + y) {
                                 chrome(&mut out, 2, row, line, content_width)?;
                             }
@@ -556,7 +722,9 @@ impl Session {
                         }
                         chrome(&mut out, (width - 2) as u16, row, " |", 2)?;
                     }
-                    let control = if help {
+                    let control = if let Some(active) = &field_editor {
+                        format!("Editing field: {}", text(&active.field.label, ascii))
+                    } else if help {
                         "Trusted help | ? returns".into()
                     } else if view.details {
                         "Trusted metadata | i returns to the page".into()
@@ -580,7 +748,13 @@ impl Session {
                         width,
                     )?;
                 }
-                let footer = if let Some(editor) = &editor {
+                let footer = if let Some(active) = &field_editor {
+                    if active.error.is_empty() {
+                        "Field input is local; Enter saves, Escape cancels, Ctrl-C quits".into()
+                    } else {
+                        text(&active.error, ascii)
+                    }
+                } else if let Some(editor) = &editor {
                     let visible = width.saturating_sub(11);
                     let start = editor.value.len().saturating_sub(visible);
                     chrome(
@@ -610,6 +784,30 @@ impl Session {
             let Some(event) = self.event()? else {
                 continue;
             };
+            if let Some(active) = &mut field_editor {
+                match active.input(&event) {
+                    crate::form_ui::Edit::Quit => return Ok(Action::Quit),
+                    crate::form_ui::Edit::Cancel => {
+                        field_editor = None;
+                    }
+                    crate::form_ui::Edit::Save(value) => {
+                        match save_field_value(document, view, active, value, current_size, ascii) {
+                            Ok(()) => {
+                                field_editor = None;
+                                input_status = "Field saved locally; no submission sent".into();
+                            }
+                            Err(error) => {
+                                active.error = bounded_status(&format!(
+                                    "Field not saved: {error}; shorten the value or resize"
+                                ))
+                            }
+                        }
+                    }
+                    crate::form_ui::Edit::Continue => {}
+                }
+                dirty = true;
+                continue;
+            }
             if let Some(active) = &mut editor {
                 match active.input(&event) {
                 Edit::Submit => return Ok(Action::Address(active.value.clone())),
@@ -683,6 +881,43 @@ impl Session {
                             reveal = true;
                         }
                         KeyCode::Enter if !view.details && !help && layout_error.is_none() => {
+                            if let Some(control) = view.selected(&layout) {
+                                if let crate::page_layout::ControlKind::Field { form, field } =
+                                    &control.kind
+                                {
+                                    if mode != Mode::Page {
+                                        input_status = "Form input requires an approved page on its native network".into();
+                                    } else if let Some(spec) = document
+                                        .forms
+                                        .iter()
+                                        .find(|value| &value.id == form)
+                                        .and_then(|value| {
+                                            value.fields.iter().find(|value| &value.id == field)
+                                        })
+                                    {
+                                        field_editor = Some(crate::form_ui::Editor::new(
+                                            form.clone(),
+                                            spec.clone(),
+                                            view.form_values
+                                                .get(form)
+                                                .and_then(|values| values.get(field)),
+                                        ));
+                                    }
+                                    dirty = true;
+                                    continue;
+                                }
+                                if let crate::page_layout::ControlKind::Action(
+                                    crate::markup::PageAction::Submit { form },
+                                ) = &control.kind
+                                {
+                                    if mode == Mode::Page {
+                                        return Ok(Action::Submit(form.clone()));
+                                    }
+                                    input_status = "Form sending requires an approved page on its native network".into();
+                                    dirty = true;
+                                    continue;
+                                }
+                            }
                             let previous = view.focused;
                             if let Some(link) = view.activate(&layout)? {
                                 ensure!(
@@ -749,8 +984,11 @@ const HELP: &[&str] = &[
     "i shows complete trusted metadata, address, selected destination and status. Arrows scroll these details.",
     "m toggles monochrome; NO_COLOR always applies. ? closes help. q or Escape quits.",
     "Address editor: visible ASCII only, at most 512 characters. Enter opens; Escape cancels.",
+    "Forms: Enter edits a field. Ctrl-U clears; Ctrl-N inserts a multiline newline; Ctrl-D omits an optional value.",
+    "Submit prepares a separate trusted review. Read to its end, then type SEND and Enter to confirm.",
     "Only configured native or explicitly agreed federated pages can be fetched. HTTPS is displayed only.",
     "While Loading, q, Escape or Ctrl-C quits. Other input is discarded; no actions are queued.",
+    "Quitting after explicit send confirmation cannot recall mail; inspect the encrypted outbox before retrying.",
     "Retained content is approved at fetch. Idle views never refresh authority or issue requests.",
     "Draft previews are unapproved and cannot navigate or send data.",
 ];
@@ -825,6 +1063,62 @@ pub fn show(document: &Document, metadata: &[String], tui: bool, ascii: bool) ->
 mod tests {
     use super::*;
     use unicode_width::UnicodeWidthStr;
+    #[test]
+    fn oversized_field_save_preserves_the_view_and_editable_value() {
+        let mut source = String::from("HyperNetPage/2\n# Forms\n");
+        source.push_str(&"@Panel {\"label\":\"Panel\",\"padding\":4}\n".repeat(6));
+        for index in 0..4 {
+            source.push_str(&format!("@Form {{\"id\":\"F{index}\",\"label\":\"Form\",\"profile\":\"HyperNetFormMail/1\",\"recipient\":\"{}\",\"owner\":\"{}\"}}\n", "01".repeat(32), "02".repeat(32)));
+            for field in 0..4 {
+                source.push_str(&format!("@Field {{\"id\":\"T{field}\",\"label\":\"Text\",\"kind\":\"Text\",\"maxBytes\":2048}}\n"));
+            }
+            source.push_str("@Submit {\"label\":\"Review\"}\n@End\n");
+        }
+        source.push_str(&"@End\n".repeat(6));
+        let document = crate::markup::parse(&source).unwrap();
+        let mut view = crate::page_view::View::new();
+        let long = serde_json::json!("x".repeat(2000));
+        preflight_at(&document, &view, (80, 30), false).unwrap();
+        let mut refused = false;
+        'fields: for form in &document.forms {
+            for field in &form.fields {
+                let editor =
+                    crate::form_ui::Editor::new(form.id.clone(), field.clone(), Some(&long));
+                let previous = view.form_values.clone();
+                if save_field_value(
+                    &document,
+                    &mut view,
+                    &editor,
+                    Some(long.clone()),
+                    (80, 30),
+                    false,
+                )
+                .is_err()
+                {
+                    refused = true;
+                    assert_eq!(view.form_values, previous);
+                    assert_eq!(editor.text.len(), 2000);
+                    preflight_at(&document, &view, (80, 30), false).unwrap();
+                    save_field_value(
+                        &document,
+                        &mut view,
+                        &editor,
+                        Some(serde_json::json!("Short")),
+                        (80, 30),
+                        false,
+                    )
+                    .unwrap();
+                    assert_eq!(view.form_values[&form.id][&field.id], "Short");
+                    break 'fields;
+                }
+                crate::markup::forms::validate_values(form, &view.form_values[&form.id]).unwrap();
+            }
+        }
+        assert!(
+            refused,
+            "the fixture must reach the layout budget before the byte limit"
+        );
+    }
     #[test]
     fn resize_refusal_preserves_view_until_a_bounded_layout_can_resume() {
         let source = format!(

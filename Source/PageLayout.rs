@@ -35,6 +35,7 @@ pub struct Ancestor {
 #[derive(Clone)]
 pub enum ControlKind {
     ScrollBox,
+    Field { form: String, field: String },
     Action(PageAction),
 }
 #[derive(Clone)]
@@ -62,6 +63,7 @@ pub struct Layout {
 struct Builder<'a> {
     budget: Rc<Count<usize>>,
     offsets: &'a BTreeMap<usize, usize>,
+    values: &'a BTreeMap<String, BTreeMap<String, serde_json::Value>>,
     ascii: bool,
 }
 pub fn safe_text(value: &str, ascii: bool) -> String {
@@ -438,6 +440,42 @@ impl Builder<'_> {
                 usize::from(*min_child_columns),
                 usize::from(*gap),
             ),
+            Kind::Form { label, .. } => self.panel(node, label, 0, width, style, None),
+            Kind::Field { form, field } => {
+                let value = self
+                    .values
+                    .get(form)
+                    .and_then(|values| values.get(&field.id));
+                let display = value
+                    .map(|value| match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        _ => value.to_string(),
+                    })
+                    .unwrap_or_else(|| "[unset]".into());
+                let mut block = self.text(
+                    &format!(
+                        "{}{}: {}",
+                        field.label,
+                        if field.required { " *" } else { "" },
+                        display
+                    ),
+                    width,
+                    style,
+                    Some(node.key),
+                )?;
+                block.controls.push(Control {
+                    key: node.key,
+                    label: field.label.clone(),
+                    kind: ControlKind::Field {
+                        form: form.clone(),
+                        field: field.id.clone(),
+                    },
+                    x: 0,
+                    y: 0,
+                    ancestors: Vec::new(),
+                });
+                Ok(block)
+            }
             Kind::Panel { label, padding } => {
                 self.panel(node, label, usize::from(*padding), width, style, None)
             }
@@ -490,11 +528,21 @@ impl Builder<'_> {
         }
     }
 }
+#[cfg(test)]
 pub fn build(
     document: &Document,
     columns: usize,
     offsets: &BTreeMap<usize, usize>,
     ascii: bool,
+) -> Result<Layout> {
+    build_with_values(document, columns, offsets, ascii, &BTreeMap::new())
+}
+pub fn build_with_values(
+    document: &Document,
+    columns: usize,
+    offsets: &BTreeMap<usize, usize>,
+    ascii: bool,
+    values: &BTreeMap<String, BTreeMap<String, serde_json::Value>>,
 ) -> Result<Layout> {
     ensure!(
         (1..=MAX_COLUMNS).contains(&columns),
@@ -503,6 +551,7 @@ pub fn build(
     let builder = Builder {
         budget: Rc::new(Count::new(0)),
         offsets,
+        values,
         ascii,
     };
     let mut result = builder.flow(

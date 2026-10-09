@@ -89,7 +89,9 @@ display from permission checked at fetch.
 Only one explicitly requested network operation is pending at a time. The browser
 remains responsive to quit and termination signals while that operation waits.
 Leaving the browser restores terminal attributes, cursor and alternate screen;
-it does not revoke a read request already sent to the authority. Transport calls
+it does not revoke a request already sent to the authority. Confirmed form mail
+may already be queued or delivered; inspect the encrypted outbox before retrying.
+Transport calls
 remain bounded by the existing connection and request deadlines.
 
 Pipes and `TERM=dumb` produce complete plain output and exit. With an address,
@@ -101,3 +103,8 @@ has no terminal styling, automatic navigation or page actions.
 `pages read --tui` and `federation read --tui` share the same browser session and
 recoverable navigation. Local preview and moderation remain explicitly
 unapproved; they do not gain network navigation from page content.
+
+Native forms support local field editing and a separate trusted send review.
+See [Forms](Forms.md) for explicit mailbox selection, keyboard controls,
+confirmation and recovery. Pages cannot choose local credentials, autofill
+values or submit automatically.

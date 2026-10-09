@@ -193,6 +193,12 @@ pub fn verify(network: &str, descriptor: &Descriptor, bundle: &Bundle) -> Result
             && approval.expected_version.checked_add(1) == Some(descriptor.publication_version),
         "page approval does not bind this publication"
     );
+    let document = markup::parse(&source.body).map_err(anyhow::Error::msg)?;
+    ensure!(
+        document.forms.is_empty()
+            || serde_json::to_vec(bundle)?.len() <= markup::forms::MAX_BUNDLE_BYTES,
+        "form page bundle exceeds 20 KiB"
+    );
     Ok(source.body)
 }
 

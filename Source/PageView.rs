@@ -15,6 +15,7 @@ pub struct View {
     pub monochrome: bool,
     pub details: bool,
     pub details_offset: usize,
+    pub form_values: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
 }
 impl View {
     pub fn new() -> Self {
@@ -25,6 +26,7 @@ impl View {
             monochrome: std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
             details: false,
             details_offset: 0,
+            form_values: BTreeMap::new(),
         }
     }
     pub fn selected<'a>(&self, layout: &'a Layout) -> Option<&'a Control> {
@@ -38,7 +40,13 @@ impl View {
         rows: usize,
         ascii: bool,
     ) -> Result<Layout> {
-        let layout = page_layout::build(document, columns, &self.scrolls, ascii)?;
+        let layout = page_layout::build_with_values(
+            document,
+            columns,
+            &self.scrolls,
+            ascii,
+            &self.form_values,
+        )?;
         for (key, info) in &layout.scrolls {
             self.scrolls.insert(*key, info.offset);
         }
@@ -124,7 +132,9 @@ impl View {
             .selected(layout)
             .and_then(|control| match &control.kind {
                 ControlKind::ScrollBox => Some(control.key),
-                ControlKind::Action(_) => control.ancestors.first().map(|a| a.key),
+                ControlKind::Action(_) | ControlKind::Field { .. } => {
+                    control.ancestors.first().map(|a| a.key)
+                }
             });
         if let Some(key) = target {
             self.scroll_box(layout, key, direction, amount);
@@ -153,7 +163,7 @@ impl View {
         self.selected(layout)
             .and_then(|control| match &control.kind {
                 ControlKind::ScrollBox => layout.scrolls.get(&control.key),
-                ControlKind::Action(_) => control
+                ControlKind::Action(_) | ControlKind::Field { .. } => control
                     .ancestors
                     .first()
                     .and_then(|a| layout.scrolls.get(&a.key)),
@@ -170,6 +180,7 @@ impl View {
         };
         match action {
             PageAction::Navigate { link } => Ok(Some(*link)),
+            PageAction::Submit { .. } => Ok(None),
             PageAction::Focus { target } => {
                 self.focused = Some(*layout.ids.get(target).context("missing focus target")?);
                 Ok(None)
@@ -190,6 +201,19 @@ pub fn shift(value: usize, maximum: usize, direction: ScrollDirection, amount: u
         ScrollDirection::End => maximum,
     }
 }
+
+impl Drop for View {
+    fn drop(&mut self) {
+        for values in self.form_values.values_mut() {
+            for value in values.values_mut() {
+                if let serde_json::Value::String(text) = value {
+                    zeroize::Zeroize::zeroize(text);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

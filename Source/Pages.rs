@@ -6,6 +6,7 @@ use crate::{
     protocol, reader,
 };
 use anyhow::{Context, Result, bail, ensure};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -109,6 +110,36 @@ fn body(path: &Path) -> Result<String> {
         .context("page must be strict UTF-8")?;
     markup::validate(&text).map_err(anyhow::Error::msg)?;
     Ok(text)
+}
+
+fn form_bundle_preflight(source: &str, submission: &Value) -> Result<()> {
+    if markup::parse(source)
+        .map_err(anyhow::Error::msg)?
+        .forms
+        .is_empty()
+    {
+        return Ok(());
+    }
+    // Reserve the complete largest accepted approval envelope, including application metadata.
+    let bound =
+        serde_json::to_vec(&json!({"submission":submission,"approval":null}))?.len() - 4 + 4096;
+    ensure!(
+        bound <= markup::forms::MAX_BUNDLE_BYTES,
+        "form page exceeds the 20 KiB bundle limit with the maximum approval; shorten the draft"
+    );
+    Ok(())
+}
+
+fn preview_form_bound(source: &str) -> Result<()> {
+    let command = json!({"type":"PageSubmit","pageId":"0".repeat(32),"expectedVersion":u64::MAX,
+        "namespace":"N".repeat(32),"audience":"Members","profile":markup::PROFILE,
+        "digest":"0".repeat(64),"body":source});
+    let payload = serde_json::to_vec(
+        &json!({"version":1,"requestId":"0".repeat(32),"issuedAt":u64::MAX,"command":command}),
+    )?;
+    let submission = json!({"network":"0".repeat(64),"publicKey":"0".repeat(64),
+        "payload":URL_SAFE_NO_PAD.encode(payload),"signature":"0".repeat(128)});
+    form_bundle_preflight(source, &submission)
 }
 
 fn listing(
@@ -331,6 +362,7 @@ pub(crate) fn read(
 pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
     if let Command::Preview { file, tui, ascii } = command {
         let source = body(&file)?;
+        preview_form_bound(&source)?;
         let document = markup::parse(&source).map_err(anyhow::Error::msg)?;
         reader::show(
             &document,
@@ -381,9 +413,11 @@ pub fn run(config_path: Option<&Path>, command: Command) -> Result<()> {
                     json!({"type":"PageSubmit","pageId":page_id,"expectedVersion":expected_version,
                         "namespace":namespace,"audience":"Members","profile":markup::PROFILE,"digest":digest,"body":body}),
                 )?;
+                form_bundle_preflight(&body, &value)?;
                 files::write_new(&output, &serde_json::to_vec_pretty(&value)?)?;
                 value
             };
+            form_bundle_preflight(&body, &request)?;
             let proof: Envelope = serde_json::from_value(request.clone())?;
             let (source, _) = page_proof::submission(&config.network, &proof)?;
             eprintln!(
@@ -532,5 +566,19 @@ mod catalogue_tests {
         bad["validUntil"] = json!(crate::now().unwrap() - 1);
         assert!(catalogue_result(&bad, None, None).is_err());
         assert!(catalogue_result(&result(0), None, None).is_ok());
+    }
+    #[test]
+    fn author_lint_reserves_complete_approval_only_for_form_pages() {
+        let form = format!(
+            "@Form {{\"id\":\"Reply\",\"label\":\"Reply\",\"profile\":\"HyperNetFormMail/1\",\"recipient\":\"{}\",\"owner\":\"{}\"}}\n@Field {{\"id\":\"Answer\",\"label\":\"Answer\",\"kind\":\"Text\",\"maxBytes\":128}}\n@Submit {{\"label\":\"Review\"}}\n@End\n",
+            "01".repeat(32),
+            "02".repeat(32)
+        );
+        let large = format!(": {}\n", "x".repeat(490)).repeat(29);
+        assert!(preview_form_bound(&format!("{}\n# Form\n{form}", markup::PROFILE)).is_ok());
+        assert!(
+            preview_form_bound(&format!("{}\n# Form\n{form}{large}", markup::PROFILE)).is_err()
+        );
+        assert!(preview_form_bound(&format!("{}\n# Ordinary\n{large}", markup::PROFILE)).is_ok());
     }
 }
