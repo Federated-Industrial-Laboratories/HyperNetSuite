@@ -2,6 +2,11 @@
 
 See [Installation](Installation.md) for signed offline packages and
 [Upgrade and recovery](UpgradeRecovery.md) for safe version changes.
+Use [offline network preparation](Networks.md) for replacement-network trust,
+policy inspection and separately signed recovery acceptance. Those profiles are
+client-only and cannot connect until the approved privacy connector is available.
+The `configure`, `redeem` and `--config` examples below address the existing
+network contract; they cannot activate an offline replacement profile.
 Build from source with Rust and Cargo. No HyperNet source checkout is required:
 
 ```sh

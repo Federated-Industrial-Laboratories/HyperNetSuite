@@ -48,6 +48,8 @@ mod media_worker;
 mod motion;
 #[path = "Navigation.rs"]
 mod navigation;
+#[path = "Networks.rs"]
+mod networks;
 #[path = "PageLayout.rs"]
 mod page_layout;
 #[path = "PageProof.rs"]
@@ -80,6 +82,10 @@ mod transfer_protocol;
 mod transfer_vault;
 #[path = "Transfers.rs"]
 mod transfers;
+#[path = "TrustBootstrap.rs"]
+mod trust_bootstrap;
+#[path = "TrustWire.rs"]
+mod trust_wire;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -109,6 +115,9 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare and inspect independently authenticated offline network trust.
+    #[command(subcommand)]
+    Network(networks::Command),
     /// Browse the configured network catalogue or a verified page address.
     Browse {
         #[arg(conflicts_with = "after")]
@@ -364,6 +373,13 @@ fn run() -> Result<()> {
         }
     };
     match options.command {
+        Command::Network(command) => {
+            anyhow::ensure!(
+                options.config.is_none(),
+                "network preparation does not accept an online --config profile"
+            );
+            return networks::run(command);
+        }
         Command::Browse {
             uri,
             namespace,
@@ -624,6 +640,7 @@ fn run() -> Result<()> {
                     json!({"type":"Heartbeat","profile":profile})
                 }
                 Command::Keygen { .. }
+                | Command::Network(_)
                 | Command::Configure { .. }
                 | Command::Media(_)
                 | Command::Browse { .. }

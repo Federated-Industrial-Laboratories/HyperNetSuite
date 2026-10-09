@@ -4,6 +4,9 @@ HyperNetSuite has an independent source tree, binary and package. It does not
 require a HyperNet checkout. Installation never starts a service or creates an
 identity. Keep profiles, keys, vaults, downloads and backups outside the software
 prefix. See [Supported platforms](SupportedPlatforms.md) for runtime requirements.
+The native [offline network commands](Networks.md) require no hosting runtime,
+service, inbound listener or external command. They prepare complete authenticated
+bootstrap material and private client profiles without making a connection.
 
 ## Signed offline package
 
@@ -44,6 +47,11 @@ terminal restoration, bounded markup, isolated media import and local motion.
 It also prepares and validates the five supplied fictional business examples.
 Its pseudoterminal checks do not establish native graphics support. It makes no network requests
 and does not qualify a remote service or an entire deployment.
+Qualification also exercises native governance drafting, independent recovery
+acceptance, offline profile creation, privacy-policy refusals and safe removal.
+When `strace` is available, the provisioning check observes network system calls
+under an empty PATH and hostile proxy variables. Its report states whether this
+additional observation was available; `strace` is not a client runtime dependency.
 
 `VerifyInstalled` reauthenticates the retained signed archive and checks every
 installed file, directory, mode and digest. It is useful before execution and

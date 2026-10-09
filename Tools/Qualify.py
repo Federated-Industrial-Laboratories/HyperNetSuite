@@ -14,11 +14,29 @@ import sys
 import tempfile
 
 
+def diagnostic(data):
+    text = data[:1024 * 1024].decode('utf-8', errors='replace')
+    text = re.sub(r'-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|\Z)', '<RedactedPrivateKey>', text, flags=re.S)
+    text = re.sub(r'(?i)\b(?:https?|file)://\S+', '<RedactedUrl>', text)
+    text = '\n'.join('<RedactedSensitiveLine>' if re.search(r'(?i)\b(secret(?:key)?|privatekey|password|token|invitation)\b', line) else line for line in text.splitlines())
+    text = re.sub(r'(?<![A-Za-z0-9])[A-Fa-f0-9]{32,}(?![A-Za-z0-9])', '<RedactedHex>', text)
+    text = re.sub(r'(?<![A-Za-z0-9])/(?:[^\s\'\"<>:]+)', '<RedactedPath>', text)
+    return text[-2048:].encode('unicode_escape').decode('ascii')[:4096]
+
+
 def run(arguments, timeout=45):
-    result = subprocess.run(arguments, stdin=subprocess.DEVNULL, capture_output=True,
-                            timeout=timeout, env={**os.environ, 'LC_ALL': 'C'})
-    if result.returncode != 0 or len(result.stdout) + len(result.stderr) > 1024 * 1024:
-        raise ValueError('Qualification command failed: ' + Path(arguments[0]).name)
+    name = Path(arguments[0]).name
+    if arguments[0] == sys.executable and len(arguments) > 1 and str(arguments[1]).endswith('.py'):
+        name = Path(arguments[1]).name
+    try:
+        result = subprocess.run(arguments, stdin=subprocess.DEVNULL, capture_output=True,
+                                timeout=timeout, env={**os.environ, 'LC_ALL': 'C'})
+    except subprocess.TimeoutExpired as error:
+        raise ValueError('Qualification command timed out: ' + name + ': ' + diagnostic(error.stderr or b'')) from None
+    if len(result.stdout) + len(result.stderr) > 1024 * 1024:
+        raise ValueError('Qualification output exceeded its limit: ' + name)
+    if result.returncode != 0:
+        raise ValueError('Qualification command failed: ' + name + ' (exit ' + str(result.returncode) + '): ' + diagnostic(result.stderr))
     return result.stdout
 
 
@@ -55,6 +73,8 @@ def main():
         if duplicate.returncode == 0 or key.read_bytes() != original:
             raise ValueError('Identity overwrite protection failed')
         report['checks'].append('Private identity generation and overwrite refusal')
+        report['offlineNetworks'] = json.loads(run([sys.executable, str(prefix / 'Tests/NetworkProvisioning.py'), str(binary)], timeout=180))
+        report['checks'].append('Offline native governance, custody acceptance, private client profiles and exact removal')
         page = private / 'Page.txt'
         page.write_text('HyperNetPage/2\n# Qualification\n: Safe plain text.\n=> https://example.com/ Inert reference\n')
         preview = run([str(binary), 'pages', 'preview', str(page), '--ascii'])
