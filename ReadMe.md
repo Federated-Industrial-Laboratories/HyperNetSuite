@@ -41,6 +41,10 @@ credentials, explicit review data exchange and selected-letter disclosure.
 It does not yet constitute a qualified production Internet deployment.
 See [Requirements](Documentation/Requirements.md) for the wider product scope.
 
+[Replacement network contracts](Documentation/Contracts.md) specify the 0.8.0
+authority, policy and runtime boundaries. They do not change the current
+executable capabilities or qualification claims.
+
 Licensed under the [MIT License](Licence.txt).
 
 Private mail provides owner-controlled addresses, scoped devices, explicit encrypted
