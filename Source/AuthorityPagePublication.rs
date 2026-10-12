@@ -59,7 +59,8 @@ pub(crate) struct Publication {
     pub height: u64,
 }
 pub(crate) fn fetch(c: &mut Client, grant: &VersionRef, page_id: [u8; 16]) -> Result<Publication> {
-    let (result, objects) = c.action(
+    content_cli::resume_source(c, grant, page::content::Effect::Read)?;
+    let (result, _) = c.action(
         Action::Read { page: page_id },
         Some(grant.clone()),
         Resolved::default(),
@@ -80,12 +81,18 @@ pub(crate) fn fetch(c: &mut Client, grant: &VersionRef, page_id: [u8; 16]) -> Re
         .bundle
         .as_ref()
         .context("approved Page bundle is absent")?;
-    let bundle = Bundle::parse(objects.get(object)?, scope.network, scope.incarnation)?;
+
     let revision = result
         .cache
         .state
         .record(141, review.statement.revision.id)?;
     let source = page::Revision::parse(&revision.payload, scope.network, scope.incarnation)?;
+    let placement = content_cli::selected_placement(&result.cache.state, &source)?;
+    let bytes = content_cli::fetch_source(c, grant, &placement, page::content::Effect::Read)?;
+    source.verify_source(&bytes)?;
+    let encoded = Bundle::encode(&bytes, &source.author.bytes, &review.statement.bytes)?;
+    object.verify(&encoded)?;
+    let bundle = Bundle::parse(&encoded, scope.network, scope.incarnation)?;
     ensure!(
         revision.reference == review.statement.revision
             && bundle.author.raw_page == page_id

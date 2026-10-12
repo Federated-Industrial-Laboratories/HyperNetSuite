@@ -32,8 +32,15 @@ fn inspection() -> pages::Inspection {
     let sr = Reference::for_bytes(Class::PageSource, source.as_bytes()).unwrap();
     let raw = [71; 16];
     let pageid = page::page_id(&raw).unwrap();
-    let parameters =
-        page::objects::Author::parameters(raw, "Books", &sr, &grant, None, now + 600000).unwrap();
+    let parameters = page::objects::Author::parameters(
+        raw,
+        "Books",
+        source.as_bytes(),
+        &grant,
+        None,
+        now + 600000,
+    )
+    .unwrap();
     let author = page::objects::Author::parse(
         &fixture::signed(
             &fixture::key(5),

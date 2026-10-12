@@ -44,6 +44,11 @@ impl Location {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Manage recipient roots, devices, contact trust and publication audiences.
+    Recipients {
+        #[command(subcommand)]
+        command: sealed_cli::Command,
+    },
     /// Nominate a fresh committee, collect its quorums and adopt its exact successor.
     Epoch {
         #[command(subcommand)]
@@ -187,6 +192,7 @@ pub(crate) fn signer(path: &std::path::Path) -> Result<SigningKey> {
 }
 pub fn run(command: Command) -> Result<()> {
     match command {
+        Command::Recipients { command } => sealed_cli::run(command),
         Command::Epoch { command } => epoch_cli::run(command),
         Command::Ssh { command } => domain_cli::run(command),
         Command::Deployments { command } => deployment_cli::run(command),
@@ -378,3 +384,6 @@ pub(crate) mod domain_cli;
 
 #[path = "AuthorityEpochCli.rs"]
 mod epoch_cli;
+
+#[path = "AuthoritySealedIdentityCli.rs"]
+pub(crate) mod sealed_cli;

@@ -43,6 +43,7 @@ openmls_basic_credential = { version = "=0.6.0", default-features = false }
 tls_codec = "=0.5.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 age = { version = "=0.11.5", default-features = false }
+x25519-dalek = { version = "=2.0.1", default-features = false }
 
 [profile.release]
 lto = "thin"

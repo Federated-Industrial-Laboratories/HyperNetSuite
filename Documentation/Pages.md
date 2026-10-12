@@ -5,6 +5,8 @@ code, interpret HTML or fetch external links. Images have exact manifests and
 require explicit reveal. Effects run on the viewer; animation frames are not
 sent through the network. [HyperPage](HyperPage.md) defines the markup and its
 rendering bounds. [Media](Media.md) describes canonical image and vector import.
+For private encrypted authoring, manual approval and device-owned reads, use
+[Sealed Pages](SealedPages.md).
 
 Use separate reader, author, reviewer and host identities. Hosting consent does
 not grant ordinary membership or publication rights. Every online Page command
@@ -49,6 +51,42 @@ Page starts at revision one. Updates use the same author and namespace and the
 next revision. The author signs the exact source hash, revision, capability and
 application policy, if applicable. A pending replacement preserves the previous
 approved publication. Retain the statement and exact source for retries.
+
+Submission commits the author's exact metadata. Before inspection, place the source
+on explicitly selected durable hosts and complete the required copies:
+
+```sh
+HyperNetSuite pages content place [online options] --grant GRANT \
+  --revision REVISION_ID --revision-generation N --revision-digest REVISION_DIGEST \
+  --host-version HOST_A:GENERATION:DIGEST --host-version HOST_B:GENERATION:DIGEST \
+  --copies 2 --failure-domains 2 --expires-ms EXPIRY
+HyperNetSuite pages content upload [online options] --grant GRANT \
+  --placement PLACEMENT_ID --placement-generation N --placement-digest DIGEST \
+  --host HOST_A --service-socket /Private/HostA/Control.sock \
+  --progress-directory /Private/UploadA --input Draft.txt
+```
+
+Repeat upload for each required host, with its own progress directory. Revision
+and placement references come from the exact committed command output. The host
+version comes from `pages host get`. Hosts must explicitly consent to the namespace,
+object extent, durable partition and retention. A deliberate one-copy placement
+is supported with one failure domain; its single-host availability is limited.
+
+Each author, reviewer or reader retains its own explicit content routes:
+
+```sh
+HyperNetSuite pages content route --directory /Private/RequesterFloor \
+  --host HOST_A --service-socket /Private/HostA/Control.sock
+```
+
+For an installed service under the same operator, use `--service-directory` and
+an explicit `--core` executable instead of the socket. Route configuration binds
+a host identity to a local transport; it grants no membership or content access.
+Inspect/read reconstruct content only after current authority and digest checks.
+Retain private progress directories for exact retries across restart. Repair uses
+`pages content repair` with the exact original bytes and selected placement.
+`pages content withdraw` stops serving that placement; `pages content purge`
+performs explicit bounded cleanup after its tombstone is committed.
 
 A reviewer uses an independent identity and review capability:
 
@@ -106,11 +144,15 @@ retain a 1,250-millisecond margin before the ticket's absolute expiry.
 
 Use the returned kind146 reference with `pages replica-result [online options]
 --ticket ID --ticket-generation GENERATION --ticket-digest DIGEST --output Bundle.cbor`.
-A finite response says `PageReplicaPending` or `PageReplicaDelivered`. Pending
-results verify their current metadata without requiring bundle bytes. Only an
-exact verified delivered bundle creates the output file; missing or substituted
-bytes refuse completion. There is no implicit origin
-fallback. The host's own service supplies the approved bytes through the ticket.
+A new ticket requires the exact author-selected kind159 host and its signed
+kind160 durable acknowledgement. It can resolve immediately to that existing
+acknowledgement; this does not establish recent retrievability. Authority returns
+metadata only. Bind the ticket host with `pages content route` before reading.
+The Suite fetches from that exact host, verifies the source hash and signed
+asset/form declarations, and rebuilds the author/reviewer bundle. Successful
+fetches report `PageReplicaRetrieved`; a pending historical ticket can report
+`PageReplicaPending`. Missing, damaged, withdrawn or substituted content refuses
+completion and creates no output file. There is no implicit origin fallback.
 
 The screen distinguishes approval at fetch from current permission. `r` fetches
 fresh authority state; retained history remains labelled as previously verified.
@@ -132,6 +174,14 @@ operator. Select `--role pages` or `--role media`, the exact `--volume`, repeate
 Supply the accepted bootstrap and desired `--profile-digest`. The profile has no
 direct network endpoints and cannot exceed the manifest's role or volume limits.
 Physical storage admission includes both crash-safe banks and their metadata.
+
+For durable Page source or sealed ciphertext, add `--content-policy ContentPolicy.json`
+to the role1 profile. The JSON fields are `metadataBytes`, `dataBytes`,
+`stagingBytes`, `quarantineBytes`, `maximumObjects`, `opaque`, `failureDomain`
+and `reviewerKeys`. IDs and keys are canonical hexadecimal; reviewer keys are
+sorted and unique. Opaque hosting must also be permitted by the deployment
+manifest. Partition admission includes both metadata banks and per-object file
+overhead, within `--state-bytes`; a media-only profile omits this option.
 
 A manager registers that retained profile with `pages host register`, requiring
 both deployment-management and hosting capabilities. Deployment registration

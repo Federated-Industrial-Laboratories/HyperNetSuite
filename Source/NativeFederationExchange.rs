@@ -84,7 +84,6 @@ pub(super) fn sync(
         "currentReaderPermission":false,"localReviewRequired":true}),
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub(super) fn lease(
     c: &Client,
     route: &cli::Route,
@@ -93,6 +92,46 @@ pub(super) fn lease(
     revision: Option<VersionRef>,
     after: Option<Digest>,
 ) -> Result<fed::ForeignProof> {
+    Ok(lease_exchange(c, route, agreement, page, revision, after, false)?.0)
+}
+pub(super) fn body(
+    c: &Client,
+    route: &cli::Route,
+    revision: &fed::ForeignRevision,
+) -> Result<Resolved> {
+    let (proof, objects) = lease_exchange(
+        c,
+        route,
+        revision.agreement,
+        Some(revision.metadata.author.raw_page),
+        Some(revision.native.clone()),
+        None,
+        true,
+    )?;
+    let (share, metadata) = proof.exported_share_metadata()?;
+    ensure!(
+        share == revision.share && metadata.value() == revision.metadata.value(),
+        "direct body lease differs from locally authorised foreign revision"
+    );
+    let bytes = objects.get(&revision.bundle)?;
+    let bundle =
+        page::objects::Bundle::parse(bytes, revision.source.network, revision.source.incarnation)?;
+    ensure!(
+        proof.rebuild_bundle(&bundle.source)?.bytes == bundle.bytes,
+        "Bridge body differs from exact signed publication"
+    );
+    Ok(objects)
+}
+#[allow(clippy::too_many_arguments)]
+fn lease_exchange(
+    c: &Client,
+    route: &cli::Route,
+    agreement: Digest,
+    page: Option<[u8; 16]>,
+    revision: Option<VersionRef>,
+    after: Option<Digest>,
+    include_body: bool,
+) -> Result<(fed::ForeignProof, Resolved)> {
     let cache = c.cache()?;
     let (n, i) = c.scope();
     let agreement_record = cache.state.record(151, agreement)?;
@@ -115,10 +154,10 @@ pub(super) fn lease(
         after.map_or(V::Null, |p| V::Bytes(p.to_vec())),
         V::Bytes(trust.bytes.clone()),
         V::Bytes(floor.bytes.clone()),
-        V::Bool(false),
+        V::Bool(include_body),
     ]))?;
     let bytes = exchange(route, &c.directory, &packet)?;
-    parse_lease(
+    let proof = parse_lease_mode(
         &bytes,
         trust,
         floor,
@@ -126,9 +165,32 @@ pub(super) fn lease(
         page,
         revision.as_ref(),
         after,
-    )
+        include_body,
+    )?;
+    let refs = if include_body {
+        vec![
+            proof
+                .exported_publication()?
+                .1
+                .bundle
+                .context("source approval has no bundle")?,
+        ]
+    } else {
+        vec![]
+    };
+    let value = wire::decode_state(&bytes)?;
+    let objects = Resolved::parse(&refs, &value.array(5)?[4])?;
+    proof.verify(
+        &cache.state,
+        &accepted.treaty,
+        c.clock.health()?.observe()?.wall_ms,
+        &Resolved::default(),
+        false,
+    )?;
+    Ok((proof, objects))
 }
-pub(super) fn parse_lease(
+#[allow(clippy::too_many_arguments)]
+fn parse_lease_mode(
     bytes: &[u8],
     trust: &domain::Record,
     floor: &domain::Record,
@@ -136,6 +198,7 @@ pub(super) fn parse_lease(
     page: Option<[u8; 16]>,
     revision: Option<&VersionRef>,
     after: Option<Digest>,
+    include_body: bool,
 ) -> Result<fed::ForeignProof> {
     let value = wire::decode_state(bytes)?;
     let f = value.array(5)?;
@@ -153,7 +216,7 @@ pub(super) fn parse_lease(
     let Action::Export {
         agreement,
         admission,
-        include_bundle: false,
+        include_bundle,
         ..
     } = proof.command()?
     else {
@@ -170,7 +233,8 @@ pub(super) fn parse_lease(
         anyhow::bail!("bridge lease lacks matched Admission")
     };
     ensure!(
-        agreement.id == treaty.id
+        include_bundle == include_body
+            && agreement.id == treaty.id
             && destination.id == treaty.id
             && p == page
             && r.as_ref() == revision
@@ -182,7 +246,8 @@ pub(super) fn parse_lease(
         treaty.source.matches(intent.network, intent.incarnation),
         "bridge Export belongs to another source network"
     );
-    // Metadata leases never deliver Page bytes. The local authorised operation returns its exact sidecar.
-    Resolved::parse(&[], &f[4])?;
+    if !include_body {
+        Resolved::parse(&[], &f[4])?;
+    }
     Ok(proof)
 }
