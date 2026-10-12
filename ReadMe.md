@@ -1,59 +1,62 @@
 # HyperNetSuite
 
-HyperNetSuite is an independent command-line client for
+HyperNetSuite is the independent terminal client for
 [HyperNet](https://github.com/Federated-Industrial-Laboratories/HyperNet).
-It generates device identities, issues and redeems invitations, manages network
-grants, signs bounded hosting consent and provides an independent Pages CLI/TUI. The client uses the same versioned
-HTTPS interface available to other applications.
+It provides inert HyperPages, explicit media reveal, encrypted Mail, reviewed
+Forms, recipient-approved file transfers and separately consented OpenSSH services.
+The client and infrastructure have separate repositories, builds and packages.
 
-Build with `cargo build --locked --release`. See
-[Installation](Documentation/Installation.md) for signed offline packages and
-[Usage](Documentation/Usage.md) for enrolment and administration.
-The node and client have separate source, build and package lifecycles.
+Current authority results require an independently accepted bootstrap, a verified
+three-of-four executed-result certificate, exact capability references and durable
+requester floors. Serving effects additionally require the selected service's
+separate recipient journal. Applications receive separately scoped authority. Membership
+alone never grants hosting, review, voting or confidential-content access.
 
-[Offline networks](Documentation/Networks.md) prepares independently authenticated
-replacement-network trust and separate client keys without any host tooling or
-network connection. Prepared profiles confer no membership; online joining
-requires the approved relay connector and is currently unavailable.
+Build with Rust 1.91 or newer:
 
-[Browser](Documentation/Browser.md) provides a trusted paginated catalogue, explicit
-address navigation, retained page state and recoverable errors in one terminal
-session.
+```sh
+cargo build --locked --release
+bash Tools/Check.sh
+```
 
-[Forms](Documentation/Forms.md) adds bounded typed fields, explicit browser and
-CLI confirmation, encrypted mail delivery and independently accepted typed intake.
+The test gate uses a private persistent directory under the user's state home.
+Set `HYPERNET_TEST_DIRECTORY` to another private persistent directory when needed.
+See [Installation](Documentation/Installation.md) for signed offline packages and
+[Usage](Documentation/Usage.md) for identity creation and operator workflows.
 
-[Pages](Documentation/Pages.md) supports responsive inert components, exact-content manual review,
-verified publication and reads from explicitly consenting replicas.
-[HyperPage](Documentation/HyperPage.md) defines panels, rows, scroll boxes, colours
-and explicit local controls. The reader adapts to terminal width and has a complete
-plain-text fallback.
-[Media](Documentation/Media.md) provides separately consented storage, explicit
-asset upload and inspection, isolated bitmap/SVG import, terminal graphics and
-bounded client-side motion. Graphical clients can consume the same canonical
-geometry or export it as static SVG.
-[Examples](Examples/ReadMe.md) provides a linked fictional market square, cafe,
-bookshop and plant studio, with colours, images, local effects and a typed form.
-[Federation](Documentation/Federation.md) adds bilateral agreements, explicit
-author sharing, destination review and independently verified foreign reads.
-[Transfers and services](Documentation/TransfersAndServices.md) adds encrypted,
-recipient-approved resumable file exchange and separately consented OpenSSH services.
-[Applications and adapters](Documentation/Adapters.md) provides separate Pages
-credentials, explicit review data exchange and selected-letter disclosure.
-[Upgrade and recovery](Documentation/UpgradeRecovery.md),
-[supported platforms](Documentation/SupportedPlatforms.md) and
-[security boundaries](Documentation/Security.md) describe package operation.
-It does not yet constitute a qualified production Internet deployment.
-See [Requirements](Documentation/Requirements.md) for the wider product scope.
+[Offline networks](Documentation/Networks.md) prepares authenticated trust and
+separate client keys. Preparation confers no membership. Online reader joining
+requires the approved privacy connector and remains unavailable. Current operator
+workflows use explicitly selected private control sockets; they do not bypass a
+reader's minimum relay requirement.
 
-[Replacement network contracts](Documentation/Contracts.md) specify the 0.8.0
-authority, policy and runtime boundaries. The offline bootstrap subset is
-implemented; current authority, Byzantine consensus and complete relay coverage
-require their separate runtime integration and qualification.
+[Pages](Documentation/Pages.md) covers authoring, exact-content review and verified
+publication. [HyperPage](Documentation/HyperPage.md) defines responsive panels,
+rows, scroll boxes, borders, colours and explicit local controls without scripts.
+[Browser](Documentation/Browser.md) covers terminal navigation and recoverable
+errors. [Media](Documentation/Media.md) adds isolated bitmap/SVG import, explicit
+asset inspection, terminal graphics and bounded client-side motion.
+[Examples](Examples/ReadMe.md) contains fictional businesses for local preview.
 
-Licensed under the [MIT License](Licence.txt).
+[Private Mail](Documentation/PrivateMail.md) provides owner-controlled addresses,
+scoped devices, explicit encrypted storage and protected history transfer.
+[Forms](Documentation/Forms.md) adds typed input, explicit confirmation and
+independently accepted intake. Foreign Forms cannot target a local mailbox through
+Federation. [Transfers and services](Documentation/TransfersAndServices.md)
+uses exact recipient acceptance and separate service consent.
+[Federation](Documentation/Federation.md) defines bilateral agreements, original
+author sharing and destination review without merging network membership.
 
-Private mail provides owner-controlled addresses, scoped devices, explicit encrypted
-store placement, offline delivery and separate encrypted history transfer. See
-[PrivateMail](Documentation/PrivateMail.md) for setup, recovery and security limits.
-Build with Rust 1.91 or newer.
+[Application access](Documentation/ApplicationAccess.md) and
+[Adapters](Documentation/Adapters.md) cover separately consented credentials and
+explicit data disclosure. Model recommendations remain inert data.
+[Authority inspection](Documentation/AuthorityInspection.md),
+[committee replacement](Documentation/AuthorityEpochs.md) and
+[network recovery](Documentation/NetworkRecovery.md) describe installed control
+workflows and independently authenticated recovery.
+
+[Security](Documentation/Security.md), [supported platforms](Documentation/SupportedPlatforms.md)
+and [runtime contracts](Documentation/Contracts.md) state the boundaries and
+remaining qualification. Complete relay coverage, sealed publication and native
+ARM qualification remain pending. This prerelease is not a qualified production
+Internet deployment. Licensed under the [MIT License](Licence.txt).

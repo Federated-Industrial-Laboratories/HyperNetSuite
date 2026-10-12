@@ -71,6 +71,18 @@ pub fn read_single(path: &Path, maximum: usize, private: bool) -> Result<Vec<u8>
     let (parent, value) = parent(path)?;
     read_file(&parent, value, maximum, private, true)
 }
+/// Public signed inputs may be readable by others, but must not be writable by them.
+pub fn read_public_single(path: &Path, maximum: usize) -> Result<Vec<u8>> {
+    let (parent, value) = parent(path)?;
+    let file = open_at(&parent, value, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        (metadata.uid() == 0 || metadata.uid() == unsafe { libc::geteuid() })
+            && metadata.mode() & 0o022 == 0,
+        "public input must be owned by this user or root and not writable by other users"
+    );
+    read_opened(file, maximum, false, true)
+}
 pub fn read_at(parent: &File, value: &OsStr, maximum: usize, private: bool) -> Result<Vec<u8>> {
     read_file(parent, value, maximum, private, private)
 }
@@ -82,6 +94,9 @@ fn read_file(
     single: bool,
 ) -> Result<Vec<u8>> {
     let f = open_at(parent, value, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
+    read_opened(f, maximum, private, single)
+}
+fn read_opened(f: File, maximum: usize, private: bool, single: bool) -> Result<Vec<u8>> {
     let m = f.metadata()?;
     ensure!(!single || m.nlink() == 1, "input must have one hard link");
     ensure!(

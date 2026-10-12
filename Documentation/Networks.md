@@ -1,10 +1,10 @@
 # Offline network preparation
 
 The installed `HyperNetSuite network` commands prepare authenticated trust for
-the replacement network contract. They do not join a running network, redeem
-an invitation or connect to an endpoint. Their profiles cannot be used by the
-existing `--config` commands. Online joining remains unavailable until the
-approved privacy connector and current authority verification are implemented.
+the current network contract. They do not join a running network, redeem
+an invitation or connect to an endpoint. These profiles express client trust and minimum route requirements. Online
+joining remains unavailable until the approved privacy connector is implemented.
+Local operator commands use separately provisioned control sockets and authority floors.
 
 Client preparation needs only the installed binary and its declared Linux
 libraries. It needs no Core installation, container runtime, authority service,

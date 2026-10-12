@@ -208,6 +208,7 @@ impl Drop for Temporary {
     }
 }
 pub fn generate(
+    work_directory: &Path,
     binary: &Path,
     identity: &Path,
     network: &str,
@@ -221,7 +222,8 @@ pub fn generate(
         .join("ssh-keygen");
     executable(&keygen)?;
     let public = public(key)?;
-    let root = Path::new("/tmp").join(format!("HyperNetSshProof{}", crate::random_hex::<16>()));
+    let _parent = files::private_directory(work_directory)?;
+    let root = work_directory.join(format!("SshProof{}", crate::random_hex::<16>()));
     files::create_directory(&root)?;
     let root = Temporary(root);
     let path = root.0.join("Identity");

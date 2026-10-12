@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Strict bounded data files and private disclosure records; no executable adapter surface.
-use crate::{Config, Identity, mail_protocol as wire, transfer_files};
+use crate::transfer_files;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::Path;
@@ -10,14 +10,6 @@ pub const MAX_FILE: usize = 131072;
 pub fn read<T: DeserializeOwned>(path: &Path, maximum: usize) -> Result<T> {
     let raw = zeroize::Zeroizing::new(transfer_files::read(path, maximum, true)?);
     Ok(serde_json::from_slice(&raw)?)
-}
-pub fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let bytes = zeroize::Zeroizing::new(serde_json::to_vec_pretty(value)?);
-    ensure!(
-        bytes.len() <= MAX_FILE,
-        "adapter file exceeds its size bound"
-    );
-    transfer_files::Destination::open(path)?.publish(&bytes)
 }
 pub fn label(value: &str) -> Result<()> {
     ensure!(
@@ -56,36 +48,4 @@ pub struct DisclosureReceipt<T> {
     pub signer: String,
     pub job_digest: String,
     pub disclosure: T,
-}
-pub fn sign<T: Serialize>(c: &Config, key: &Identity, job: &T) -> Result<wire::Signed> {
-    let bytes = zeroize::Zeroizing::new(serde_json::to_vec(job)?);
-    wire::sign(
-        RECEIPT_DOMAIN,
-        &c.network,
-        key,
-        &DisclosureReceipt {
-            version: 1,
-            network: c.network.clone(),
-            signer: key.public_key.clone(),
-            job_digest: wire::digest(&bytes),
-            disclosure: job,
-        },
-    )
-}
-pub fn verify<T: DeserializeOwned + Serialize>(
-    c: &Config,
-    key: &Identity,
-    proof: &wire::Signed,
-) -> Result<DisclosureReceipt<T>> {
-    let value: DisclosureReceipt<T> =
-        wire::verify(RECEIPT_DOMAIN, &c.network, &key.public_key, proof)?;
-    ensure!(
-        value.version == 1 && value.network == c.network && value.signer == key.public_key,
-        "disclosure receipt identity differs from this profile"
-    );
-    ensure!(
-        value.job_digest == wire::digest(&serde_json::to_vec(&value.disclosure)?),
-        "disclosure digest mismatch"
-    );
-    Ok(value)
 }

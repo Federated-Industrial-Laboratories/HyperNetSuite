@@ -226,7 +226,6 @@ fn selected_label(
 pub enum Mode {
     Preview,
     Page,
-    Foreign,
     Catalogue,
 }
 
@@ -471,7 +470,7 @@ impl Session {
         }
         Ok(())
     }
-    pub fn confirm_form(&self, review: &crate::forms::Review) -> Result<Option<bool>> {
+    pub fn confirm_form(&self, review: &impl serde::Serialize) -> Result<Option<bool>> {
         ensure!(
             self.interactive(),
             "form confirmation requires an interactive terminal"

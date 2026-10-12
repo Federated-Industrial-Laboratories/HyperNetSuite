@@ -28,7 +28,8 @@ python3 Tools/Bundle.py Install --archive HyperNetSuite.tar \
   --prefix /Chosen/HyperNetSuiteCurrent
 python3 Tools/Bundle.py VerifyInstalled \
   --prefix /Chosen/HyperNetSuiteCurrent --public-key Publisher.pub
-python3 Tools/Qualify.py --prefix /Chosen/HyperNetSuiteCurrent \
+python3 Tools/Qualify.py --work-directory /Private/QualificationWork \
+  --prefix /Chosen/HyperNetSuiteCurrent \
   --public-key Publisher.pub
 ```
 

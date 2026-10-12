@@ -1,424 +1,598 @@
 // SPDX-License-Identifier: MIT
-// Possession-bound application grants over the independent signed Pages interface.
+// Independent application keys use explicit grants and quorum-certified lifecycle operations.
 use crate::{
-    Config, Identity, adapter_files as files, markup,
-    page_proof::{self, Envelope},
-    protocol,
+    authority_challenge::Session,
+    authority_floor::Store,
+    authority_inspection::{
+        application_client::{self as client, DelegationContext, Request, Selection},
+        application_offer::{self as offers, Offer},
+    },
+    authority_inspection_cli::{Location, bootstrap, clock, diagnostic, signer},
+    transfer_files as files, trust_bootstrap,
+    trust_wire::{self as wire, Value as V},
 };
-use anyhow::{Context, Result, ensure};
-use clap::{Subcommand, ValueEnum};
-use serde::{Deserialize, Serialize};
+use anyhow::{Context, Result, bail, ensure};
+use clap::{Args, Subcommand};
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
-#[derive(Clone, ValueEnum)]
-pub enum ReviewMode {
-    Manual,
-    Automatic,
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
+
+#[derive(Args)]
+pub struct Online {
+    #[command(flatten)]
+    location: Location,
+    #[arg(long)]
+    key: PathBuf,
+    #[arg(long)]
+    socket: PathBuf,
+}
+#[derive(Args)]
+pub struct Scope {
+    #[arg(long)]
+    parent: String,
+    #[arg(long)]
+    tier: String,
+}
+impl Scope {
+    fn selection(&self, child: Option<[u8; 32]>) -> Result<Selection> {
+        Ok(Selection {
+            parent: id(&self.parent)?,
+            tier: id(&self.tier)?,
+            child,
+        })
+    }
+}
+#[derive(Args)]
+pub struct Offline {
+    #[arg(long)]
+    bootstrap: PathBuf,
+    /// SHA256 independently verified for the complete accepted bootstrap.
+    #[arg(long)]
+    bootstrap_digest: String,
 }
 #[derive(Subcommand)]
 pub enum Command {
-    /// Sign this fresh application's exact requested scope without contacting the network.
-    Consent {
+    /// Discover only the exact owner delegation closure; InspectAudit is not required.
+    Context {
+        #[command(flatten)]
+        online: Online,
+        #[command(flatten)]
+        scope: Scope,
         #[arg(long)]
-        owner_key: String,
+        child: Option<String>,
+    },
+    /// Create a non-delegating child grant without admitting its application key.
+    Delegate {
+        #[command(flatten)]
+        online: Online,
+        #[command(flatten)]
+        scope: Scope,
         #[arg(long)]
-        expires: u64,
-        #[arg(long = "namespace", required = true)]
-        namespaces: Vec<String>,
-        #[arg(long = "page-id")]
-        page_ids: Vec<String>,
-        #[arg(long = "permission", required = true)]
-        permissions: Vec<String>,
+        id: String,
         #[arg(long)]
-        review_policy_digest: Option<String>,
-        #[arg(long, value_enum)]
-        review_mode: Option<ReviewMode>,
+        subject: String,
+        #[arg(long, value_delimiter = ',', default_value = "0")]
+        actions: Vec<u64>,
+        /// Sorted kind:identifier pairs; defaults to this network.
+        #[arg(long, value_delimiter = ',')]
+        scopes: Vec<String>,
+        #[arg(long)]
+        not_before_ms: u64,
+        #[arg(long)]
+        expires_ms: u64,
+        #[arg(long, value_delimiter = ',', num_args = 4, default_value = "0,1,0,1")]
+        limits: Vec<u64>,
+    },
+    /// Write an owner-signed immutable offer containing only its exact child grant.
+    Offer {
+        #[command(flatten)]
+        location: Location,
+        #[arg(long)]
+        key: PathBuf,
+        #[command(flatten)]
+        scope: Scope,
+        #[arg(long)]
+        grant: String,
+        #[arg(long)]
+        not_before_ms: u64,
+        #[arg(long)]
+        expires_ms: u64,
+        #[arg(long, default_value_t = 3_600_000)]
+        acceptance_ms: u64,
         #[arg(long)]
         output: PathBuf,
     },
-    /// Approve an application's exact signed consent using its separate owner profile.
-    Grant {
+    InspectOffer {
+        #[command(flatten)]
+        trust: Offline,
         #[arg(long)]
-        consent: PathBuf,
+        offer: PathBuf,
+        #[arg(long)]
+        owner_key: Option<String>,
     },
+    /// Sign after independently authenticating bootstrap and owner identity.
+    Accept {
+        #[command(flatten)]
+        trust: Offline,
+        #[arg(long)]
+        offer: PathBuf,
+        #[arg(long)]
+        owner_key: Option<String>,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Register exact dual consent and save historical confirmation before completing locally.
+    Register {
+        #[command(flatten)]
+        online: Online,
+        #[command(flatten)]
+        scope: Scope,
+        #[arg(long)]
+        accepted: PathBuf,
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+    Confirm {
+        #[command(flatten)]
+        trust: Offline,
+        #[arg(long)]
+        accepted: PathBuf,
+        #[arg(long)]
+        receipt: PathBuf,
+        /// Verified epoch activations from the independently accepted initial network.
+        #[arg(long)]
+        prior_epochs: Option<PathBuf>,
+    },
+    /// Read lifecycle metadata as its recorded owner or application, without domain authority.
     Get {
+        #[command(flatten)]
+        online: Online,
         #[arg(long)]
         application_key: String,
     },
+    /// Return this owner's complete bounded application metadata set.
     List {
-        #[arg(long)]
-        after: Option<String>,
+        #[command(flatten)]
+        online: Online,
     },
-    Revoke {
+    /// Permanently withdraw as owner or application, including after grant expiry or revocation.
+    Withdraw {
+        #[command(flatten)]
+        online: Online,
         #[arg(long)]
         application_key: String,
     },
 }
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Consent {
-    #[serde(rename = "type")]
-    kind: String,
-    owner_key: String,
-    expires: u64,
-    namespaces: Vec<String>,
-    page_ids: Option<Vec<String>>,
-    permissions: Vec<String>,
-    review_policy_digest: Option<String>,
-    review_mode: Option<String>,
+fn id(value: &str) -> Result<[u8; 32]> {
+    trust_bootstrap::hex32(value)
 }
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Create {
-    #[serde(rename = "type")]
-    kind: String,
-    consent: Envelope,
+fn b(bytes: &[u8]) -> V {
+    V::Bytes(bytes.to_vec())
 }
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Record {
-    pub owner_key: String,
-    pub application_key: String,
-    pub grant: Envelope,
-    pub grant_digest: String,
-    pub expires: u64,
-    pub namespaces: Vec<String>,
-    pub page_ids: Option<Vec<String>>,
-    pub permissions: Vec<String>,
-    pub review_policy_digest: Option<String>,
-    pub review_mode: Option<String>,
-    pub revoked: bool,
+fn a(values: Vec<V>) -> V {
+    V::Array(values)
 }
-fn sorted(values: &[String], maximum: usize) -> bool {
-    !values.is_empty() && values.len() <= maximum && values.windows(2).all(|p| p[0] < p[1])
+fn reference(r: &crate::authority_proof::VersionRef) -> V {
+    a(vec![
+        V::Uint(r.kind),
+        b(&r.id),
+        V::Uint(r.generation),
+        b(&r.digest),
+    ])
 }
-fn validate(value: &Consent) -> Result<()> {
-    protocol::hex_bytes::<32>(&value.owner_key)?;
+fn offline(trust: &Offline) -> Result<trust_bootstrap::Verified> {
+    let bytes = files::read_single(&trust.bootstrap, wire::MAXIMUM, true)?;
     ensure!(
-        value.kind == "ApplicationConsent"
-            && sorted(&value.namespaces, 8)
-            && value.namespaces.iter().all(|v| markup::namespace(v)),
-        "invalid application namespaces"
+        Sha256::digest(&bytes).as_slice() == id(&trust.bootstrap_digest)?,
+        "bootstrap differs from independently verified digest"
     );
-    if let Some(ids) = &value.page_ids {
-        ensure!(sorted(ids, 16), "invalid application page allowlist");
-        for id in ids {
-            protocol::hex_bytes::<16>(id)?;
+    trust_bootstrap::inspect(&bytes, true)
+}
+fn offer_output(status: &str, offer: &Offer) -> Result<()> {
+    let consent = &offer.acceptance;
+    crate::print_value(
+        &json!({"status":status,"application":hex::encode(consent.application),"owner":hex::encode(consent.owner),"grant":hex::encode(consent.grant.id),"applicationValidity":consent.validity,"acceptanceValidity":consent.acceptance_validity,"record":diagnostic(wire::decode(&offer.grant)?)}),
+    )
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep protocol inputs, state and validation callbacks explicit."
+)]
+fn context(
+    verified: &trust_bootstrap::Verified,
+    online: &Online,
+    selection: Selection,
+    pending_action: Option<&str>,
+    signer: &ed25519_dalek::SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    source: &crate::authority_clock::Source,
+) -> Result<DelegationContext> {
+    crate::authority_inspection::stream_client::resolve_refusal_local(
+        &store.descriptor().clone(),
+        &online.socket,
+        signer,
+        store,
+        session,
+        || source.health(),
+    )?;
+    if let Some(pending) = store.resume_ordinary()? {
+        let intent = crate::authority_proof::Intent::from_signed(pending.signed())?;
+        if intent.action != "AuthorityDelegationContext" {
+            ensure!(
+                pending_action == Some(intent.action.as_str()),
+                "another exact request remains unresolved; resume it or explicitly fence its generation"
+            );
+            return DelegationContext::load(verified, store, selection);
         }
     }
-    ensure!(
-        sorted(&value.permissions, 7)
-            && value.permissions.iter().all(|p| matches!(
-                p.as_str(),
-                "PagesRead"
-                    | "PagesSubmit"
-                    | "ReviewInspect"
-                    | "ReviewDecide"
-                    | "MediaRead"
-                    | "MediaSubmit"
-                    | "MediaInspect"
-            )),
-        "invalid application permissions"
-    );
-    if value.permissions.iter().any(|p| p == "ReviewDecide") {
-        ensure!(
-            value.permissions.iter().any(|p| p == "ReviewInspect"),
-            "ReviewDecide requires ReviewInspect"
-        );
-        protocol::hex_bytes::<32>(
-            value
-                .review_policy_digest
-                .as_deref()
-                .context("review policy digest required")?,
-        )?;
-        ensure!(
-            matches!(value.review_mode.as_deref(), Some("Manual" | "Automatic")),
-            "review mode required"
-        );
+    DelegationContext::refresh_local(
+        verified,
+        selection,
+        &online.socket,
+        signer,
+        store,
+        session,
+        || source.health(),
+    )
+}
+fn mutation_output(status: &str, result: &client::ResultState) -> Result<()> {
+    let f = result.value.array(5)?;
+    let bytes = f[4].bytes()?;
+    let value = wire::decode(bytes)?;
+    let fields = value.list(17)?;
+    let kind = fields[0].uint()?;
+    let application = match kind {
+        102 => fields[8].fixed::<32>()?,
+        127 => fields[6].fixed()?,
+        128 => crate::authority_membership::version(&fields[6])?.id,
+        _ => bail!("unexpected application mutation record"),
+    };
+    let grant = if kind == 102 {
+        Some(hex::encode(fields[6].fixed::<32>()?))
+    } else if kind == 127 {
+        Some(hex::encode(
+            crate::authority_membership::version(&fields[8])?.id,
+        ))
     } else {
-        ensure!(
-            value.review_policy_digest.is_none() && value.review_mode.is_none(),
-            "review policy and mode require ReviewDecide"
-        );
-    }
-    Ok(())
+        None
+    };
+    crate::print_value(
+        &json!({"status":status,"application":hex::encode(application),"grant":grant,"recordDigest":hex::encode(wire::digest(bytes)),"committedHeight":result.prefix.height(),"record":diagnostic(value)}),
+    )
 }
-fn call(c: &Config, key: &Identity, command: Value) -> Result<Value> {
-    protocol::send(c, key, &crate::random_hex::<16>(), crate::now()?, command)
+fn state_output(result: &client::ResultState) -> Result<()> {
+    let f = result.value.array(7)?;
+    let admission = wire::decode(f[4].bytes()?)?;
+    let p = admission.array(11)?;
+    crate::print_value(
+        &json!({"status":"ApplicationState","application":hex::encode(p[6].fixed::<32>()?),"owner":hex::encode(p[7].fixed::<32>()?),"withdrawn":f[6] != V::Null,"admissionDigest":hex::encode(wire::digest(f[4].bytes()?)),"grantDigest":hex::encode(wire::digest(f[5].bytes()?)),"withdrawalDigest":if f[6] == V::Null { None } else { Some(hex::encode(wire::digest(f[6].bytes()?))) },"committedHeight":result.prefix.height(),"currentPermission":false,"record":diagnostic(result.value.clone())}),
+    )
 }
-fn proof(network: &str, record: &Record) -> Result<()> {
-    let (grant, digest) = page_proof::envelope::<Create>(network, &record.grant)?;
-    let (consent, _) = page_proof::envelope::<Consent>(network, &grant.command.consent)?;
-    let v = &consent.command;
-    validate(v)?;
-    ensure!(
-        grant.command.kind == "ApplicationGrantCreate"
-            && record.grant.public_key == v.owner_key
-            && grant.command.consent.public_key == record.application_key
-            && record.owner_key == v.owner_key
-            && record.grant_digest == digest
-            && record.expires == v.expires
-            && record.namespaces == v.namespaces
-            && record.page_ids == v.page_ids
-            && record.permissions == v.permissions
-            && record.review_policy_digest == v.review_policy_digest
-            && record.review_mode == v.review_mode,
-        "application grant metadata differs from signed consent"
-    );
-    Ok(())
+fn list_output(result: &client::ResultState) -> Result<()> {
+    let rows = result.value.array(5)?[4].list(63)?.iter().map(|row| {
+        let f = row.array(4)?;
+        let version = |v: &V| -> Result<Value> { let r = crate::authority_membership::version(v)?; Ok(json!({"kind":r.kind,"id":hex::encode(r.id),"generation":r.generation,"digest":hex::encode(r.digest)})) };
+        Ok(json!({"application":hex::encode(f[0].fixed::<32>()?),"admission":version(&f[1])?,"grant":version(&f[2])?,"withdrawal":if f[3] == V::Null { Value::Null } else { version(&f[3])? }}))
+    }).collect::<Result<Vec<_>>>()?;
+    crate::print_value(
+        &json!({"status":"ApplicationList","applications":rows,"complete":true,"currentPermission":false,"committedHeight":result.prefix.height()}),
+    )
 }
-pub fn current(c: &Config, key: &Identity) -> Result<Record> {
-    let reply = call(
-        c,
-        key,
-        json!({"type":"ApplicationGrantGet","applicationKey":key.public_key}),
-    )?;
-    let record: Record = serde_json::from_value(reply["result"]["application"].clone())?;
-    proof(&c.network, &record)?;
-    ensure!(
-        record.application_key == key.public_key
-            && !record.revoked
-            && record.expires > crate::now()?,
-        "application grant is not current"
-    );
-    Ok(record)
-}
-pub fn review_policy(
-    c: &Config,
-    key: &Identity,
-    automatic: bool,
-    digest: &str,
-    command: &mut Value,
-) -> Result<()> {
-    if !c.application {
-        ensure!(
-            !automatic,
-            "automatic apply requires an application profile and Automatic grant"
-        );
-        return Ok(());
-    }
-    let grant = current(c, key)?;
-    let mode = if automatic { "Automatic" } else { "Manual" };
-    ensure!(
-        grant.permissions.iter().any(|p| p == "ReviewDecide")
-            && grant.review_policy_digest.as_deref() == Some(digest)
-            && grant.review_mode.as_deref() == Some(mode),
-        "current application review policy or mode does not match"
-    );
-    command["applicationPolicyDigest"] = json!(digest);
-    command["applicationReviewMode"] = json!(mode);
-    Ok(())
-}
-pub fn manual_review(c: &Config, key: &Identity, command: &mut Value) -> Result<()> {
-    if c.application {
-        let grant = current(c, key)?;
-        ensure!(
-            grant.review_mode.as_deref() == Some("Manual")
-                && grant.permissions.iter().any(|p| p == "ReviewDecide"),
-            "manual page review requires a Manual ReviewDecide application grant"
-        );
-        command["applicationPolicyDigest"] = json!(grant.review_policy_digest);
-        command["applicationReviewMode"] = json!("Manual");
-        command["reviewExpires"] = json!(crate::now()?.saturating_add(300).min(grant.expires));
-    }
-    Ok(())
-}
-pub fn run(path: Option<&Path>, command: Command) -> Result<()> {
-    let c: Config = files::read(path.context("--config is required")?, files::MAX_FILE)?;
-    let key = crate::load_identity(&c.identity)?;
-    let body = match command {
-        Command::Consent {
+pub fn run(command: Command) -> Result<()> {
+    match command {
+        Command::InspectOffer {
+            trust,
+            offer,
             owner_key,
-            expires,
-            namespaces,
-            page_ids,
-            permissions,
-            review_policy_digest,
-            review_mode,
+        } => {
+            let verified = offline(&trust)?;
+            let bytes = files::read_single(&offer, offers::OFFER_LIMIT, true)?;
+            let offer = Offer::parse(&verified, &bytes, false)
+                .or_else(|_| Offer::parse(&verified, &bytes, true))?;
+            offer.authenticate_owner(&verified, owner_key.as_deref().map(id).transpose()?)?;
+            offer_output("ApplicationOfferInspected", &offer)
+        }
+        Command::Accept {
+            trust,
+            offer,
+            owner_key,
+            key,
             output,
         } => {
-            let now = crate::now()?;
-            ensure!(
-                expires > now && expires <= now.saturating_add(604800),
-                "application expiry must be within seven days"
-            );
-            ensure!(
-                owner_key != key.public_key,
-                "application and owner must use separate keys"
-            );
-            let namespaces = namespaces
-                .into_iter()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            let permissions = permissions
-                .into_iter()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            let page_ids = if page_ids.is_empty() {
-                None
-            } else {
-                Some(
-                    page_ids
-                        .into_iter()
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect(),
-                )
-            };
-            let consent = Consent {
-                kind: "ApplicationConsent".into(),
-                owner_key,
-                expires,
-                namespaces,
-                page_ids,
-                permissions,
-                review_policy_digest,
-                review_mode: review_mode.map(|m| match m {
-                    ReviewMode::Manual => "Manual".into(),
-                    ReviewMode::Automatic => "Automatic".into(),
-                }),
-            };
-            validate(&consent)?;
-            let envelope = protocol::signed(
-                &c,
-                &key,
-                &crate::random_hex::<16>(),
-                now,
-                serde_json::to_value(consent)?,
+            let verified = offline(&trust)?;
+            let bytes = files::read_single(&offer, offers::OFFER_LIMIT, true)?;
+            let offer = Offer::parse(&verified, &bytes, false)?;
+            let bytes = offer.accept(
+                &verified,
+                &signer(&key)?,
+                owner_key.as_deref().map(id).transpose()?,
             )?;
-            files::write(&output, &envelope)?;
-            return crate::print_value(
-                &json!({"applicationKey":key.public_key,"consent":output,"granted":false}),
-            );
-        }
-        Command::Grant { consent } => {
-            let envelope: Envelope = files::read(&consent, files::MAX_FILE)?;
-            let (request, _) = page_proof::envelope::<Consent>(&c.network, &envelope)?;
-            validate(&request.command)?;
-            ensure!(
-                request.command.owner_key == key.public_key
-                    && envelope.public_key != key.public_key,
-                "application consent belongs to another owner"
-            );
-            json!({"type":"ApplicationGrantCreate","consent":envelope})
-        }
-        Command::Get { application_key } => {
-            protocol::hex_bytes::<32>(&application_key)?;
-            json!({"type":"ApplicationGrantGet","applicationKey":application_key})
-        }
-        Command::List { after } => {
-            if let Some(value) = &after {
-                protocol::hex_bytes::<32>(value)?;
-            }
-            json!({"type":"ApplicationGrantList","after":after})
-        }
-        Command::Revoke { application_key } => {
-            protocol::hex_bytes::<32>(&application_key)?;
-            json!({"type":"ApplicationGrantRevoke","applicationKey":application_key})
-        }
-    };
-    let response = call(&c, &key, body)?;
-    if let Some(record) = response["result"].get("application") {
-        let record: Record = serde_json::from_value(record.clone())?;
-        proof(&c.network, &record)?;
-    }
-    crate::print_value(&response)
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn signed_grant_binds_distinct_owner_application_and_exact_scope() {
-        let owner = crate::mail_protocol::new_identity();
-        let app = crate::mail_protocol::new_identity();
-        let c = Config {
-            application: false,
-            network: "01".repeat(32),
-            endpoint: "https://example.test".into(),
-            ca_certificate: "Unused".into(),
-            identity: "Unused".into(),
-            client_certificate: None,
-            client_key: None,
-        };
-        let now = crate::now().unwrap();
-        let consent: Envelope = serde_json::from_value(
-            protocol::signed(
-                &c,
-                &app,
-                &"02".repeat(16),
-                now,
-                json!({"type":"ApplicationConsent","ownerKey":owner.public_key,"expires":now+300,
-                "namespaces":["News"],"pageIds":null,"permissions":["PagesRead"],
-                "reviewPolicyDigest":null,"reviewMode":null}),
+            files::write_new(&output, &bytes)?;
+            offer_output(
+                "ApplicationAccepted",
+                &Offer::parse(&verified, &bytes, true)?,
             )
-            .unwrap(),
-        )
-        .unwrap();
-        let grant: Envelope = serde_json::from_value(
-            protocol::signed(
-                &c,
-                &owner,
-                &"03".repeat(16),
-                now,
-                json!({"type":"ApplicationGrantCreate","consent":consent}),
+        }
+        Command::Confirm {
+            trust,
+            accepted,
+            receipt,
+            prior_epochs,
+        } => {
+            let verified = offline(&trust)?;
+            let accepted = files::read_single(&accepted, offers::OFFER_LIMIT, true)?;
+            let offer = Offer::parse(&verified, &accepted, true)?;
+            let receipt = files::read_single(&receipt, offers::RECEIPT_LIMIT, true)?;
+            let epochs = prior_epochs
+                .map(
+                    |path| -> Result<Vec<crate::authority_epoch::archive::Activated>> {
+                        Ok(serde_json::from_slice(&files::read_single(
+                            &path,
+                            crate::authority_epoch::archive::MAX_ARCHIVE_BYTES,
+                            true,
+                        )?)?)
+                    },
+                )
+                .transpose()?
+                .unwrap_or_default();
+            let height = offers::confirm(&verified, &offer, &receipt, &epochs)?;
+            crate::print_value(
+                &json!({"status":"HistoricalApplicationRegistration","application":hex::encode(offer.acceptance.application),"certifiedHeight":height,"currentPermission":false}),
             )
-            .unwrap(),
-        )
-        .unwrap();
-        let (_, digest) = page_proof::envelope::<Create>(&c.network, &grant).unwrap();
-        let mut record = Record {
-            owner_key: owner.public_key.clone(),
-            application_key: app.public_key.clone(),
+        }
+        Command::Offer {
+            location,
+            key,
+            scope,
             grant,
-            grant_digest: digest,
-            expires: now + 300,
-            namespaces: vec!["News".into()],
-            page_ids: None,
-            permissions: vec!["PagesRead".into()],
-            review_policy_digest: None,
-            review_mode: None,
-            revoked: false,
-        };
-        proof(&c.network, &record).unwrap();
-        record.permissions.push("PagesSubmit".into());
-        assert!(proof(&c.network, &record).is_err());
-        record.permissions.pop();
-        record.application_key = owner.public_key.clone();
-        assert!(proof(&c.network, &record).is_err());
-        record.application_key = app.public_key.clone();
-        assert!(proof(&"04".repeat(32), &record).is_err());
-    }
-    #[test]
-    fn scope_validation_preserves_role_and_resource_intersections() {
-        let mut consent = Consent {
-            kind: "ApplicationConsent".into(),
-            owner_key: "01".repeat(32),
-            expires: 42,
-            namespaces: vec!["News".into()],
-            page_ids: Some(vec!["02".repeat(16)]),
-            permissions: vec!["ReviewDecide".into(), "ReviewInspect".into()],
-            review_policy_digest: Some("03".repeat(32)),
-            review_mode: Some("Manual".into()),
-        };
-        validate(&consent).unwrap();
-        consent.permissions.pop();
-        assert!(validate(&consent).is_err());
-        consent.permissions = vec!["PagesRead".into()];
-        assert!(validate(&consent).is_err());
-        consent.review_policy_digest = None;
-        consent.review_mode = None;
-        validate(&consent).unwrap();
-        consent.namespaces.push("News".into());
-        assert!(validate(&consent).is_err());
-        consent.namespaces = vec!["*".into()];
-        assert!(validate(&consent).is_err());
-        consent.namespaces = vec!["News".into()];
-        consent.permissions = vec!["Administrator".into()];
-        assert!(validate(&consent).is_err());
+            not_before_ms,
+            expires_ms,
+            acceptance_ms,
+            output,
+        } => {
+            let verified = bootstrap(&location)?;
+            let store = Store::open(&location.directory, verified.descriptor().clone())?;
+            let source = clock(&location, store.descriptor().voters())?;
+            let grant = id(&grant)?;
+            let context =
+                DelegationContext::load(&verified, &store, scope.selection(Some(grant))?)?;
+            let bytes = offers::invite(
+                &verified,
+                &context,
+                &store,
+                offers::Invitation {
+                    grant,
+                    validity: (not_before_ms, expires_ms),
+                    acceptance_ms,
+                },
+                &signer(&key)?,
+                source.health()?,
+            )?;
+            files::write_new(&output, &bytes)?;
+            offer_output(
+                "ApplicationOffered",
+                &Offer::parse(&verified, &bytes, false)?,
+            )
+        }
+        Command::Context {
+            online,
+            scope,
+            child,
+        } => {
+            let verified = bootstrap(&online.location)?;
+            let signer = signer(&online.key)?;
+            let mut store = Store::open(&online.location.directory, verified.descriptor().clone())?;
+            let source = clock(&online.location, store.descriptor().voters())?;
+            let mut session = Session::new()?;
+            context(
+                &verified,
+                &online,
+                scope.selection(child.as_deref().map(id).transpose()?)?,
+                None,
+                &signer,
+                &mut store,
+                &mut session,
+                &source,
+            )?;
+            crate::print_value(
+                &json!({"status":"DelegationContextRefreshed","committedHeight":store.prefix().height()}),
+            )
+        }
+        Command::Delegate {
+            online,
+            scope,
+            id: grant,
+            subject,
+            actions,
+            scopes,
+            not_before_ms,
+            expires_ms,
+            limits,
+        } => {
+            let verified = bootstrap(&online.location)?;
+            let signer = signer(&online.key)?;
+            let mut store = Store::open(&online.location.directory, verified.descriptor().clone())?;
+            let source = clock(&online.location, store.descriptor().voters())?;
+            let mut session = Session::new()?;
+            let grant = id(&grant)?;
+            let selected = scope.selection(None)?;
+            let context = context(
+                &verified,
+                &online,
+                selected.clone(),
+                Some("AuthorityDelegateGrant"),
+                &signer,
+                &mut store,
+                &mut session,
+                &source,
+            )?;
+            let scopes = if scopes.is_empty() {
+                vec![a(vec![
+                    V::Uint(0),
+                    b(&verified.descriptor().scope().network),
+                ])]
+            } else {
+                scopes
+                    .iter()
+                    .map(|v| {
+                        let (kind, identifier) =
+                            v.split_once(':').context("scope must be kind:identifier")?;
+                        Ok(a(vec![V::Uint(kind.parse()?), b(&id(identifier)?)]))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            ensure!(!actions.contains(&11), "application grant cannot delegate");
+            let request = Request::Delegate {
+                parent: context.version(102, selected.parent)?,
+                child: a(vec![
+                    b(&grant),
+                    b(&id(&subject)?),
+                    reference(&context.version(101, selected.tier)?),
+                    a(actions.into_iter().map(V::Uint).collect()),
+                    a(scopes),
+                    a(vec![V::Uint(not_before_ms), V::Uint(expires_ms)]),
+                    V::Uint(0),
+                    a(limits.into_iter().map(V::Uint).collect()),
+                ]),
+            };
+            let result = client::local(
+                &verified,
+                request,
+                Some(&context),
+                None,
+                &online.socket,
+                &signer,
+                &mut store,
+                &mut session,
+                || source.health(),
+            )?;
+            // The offer opens a distinct cache that includes the exact created child.
+            DelegationContext::refresh_local(
+                &verified,
+                scope.selection(Some(grant))?,
+                &online.socket,
+                &signer,
+                &mut store,
+                &mut session,
+                || source.health(),
+            )?;
+            mutation_output("ApplicationGrantDelegated", &result)
+        }
+        Command::Register {
+            online,
+            scope,
+            accepted,
+            receipt,
+        } => {
+            let verified = bootstrap(&online.location)?;
+            let bytes = files::read_single(&accepted, offers::OFFER_LIMIT, true)?;
+            let offer = Offer::parse(&verified, &bytes, true)?;
+            let signer = signer(&online.key)?;
+            ensure!(
+                signer.verifying_key().to_bytes() == offer.acceptance.owner,
+                "registration signer differs from consenting owner"
+            );
+            let mut store = Store::open(&online.location.directory, verified.descriptor().clone())?;
+            let source = clock(&online.location, store.descriptor().voters())?;
+            let mut session = Session::new()?;
+            let selected = scope.selection(Some(offer.acceptance.grant.id))?;
+            let context = context(
+                &verified,
+                &online,
+                selected.clone(),
+                Some("AuthorityApplicationRegister"),
+                &signer,
+                &mut store,
+                &mut session,
+                &source,
+            )?;
+            let result = client::local(
+                &verified,
+                Request::Register {
+                    parent: context.version(102, selected.parent)?,
+                    accepted: offer.acceptance.envelope,
+                },
+                Some(&context),
+                Some(&receipt),
+                &online.socket,
+                &signer,
+                &mut store,
+                &mut session,
+                || source.health(),
+            )?;
+            mutation_output("ApplicationRegistered", &result)
+        }
+        Command::Get {
+            online,
+            application_key,
+        } => lifecycle(online, Some(id(&application_key)?), false),
+        Command::List { online } => lifecycle(online, None, false),
+        Command::Withdraw {
+            online,
+            application_key,
+        } => lifecycle(online, Some(id(&application_key)?), true),
     }
 }
+fn lifecycle(online: Online, application: Option<[u8; 32]>, withdraw: bool) -> Result<()> {
+    let verified = bootstrap(&online.location)?;
+    let signer = signer(&online.key)?;
+    let mut store = Store::open(&online.location.directory, verified.descriptor().clone())?;
+    let source = clock(&online.location, store.descriptor().voters())?;
+    let mut session = Session::new()?;
+    let request = if withdraw {
+        crate::authority_inspection::stream_client::resolve_refusal_local(
+            &store.descriptor().clone(),
+            &online.socket,
+            &signer,
+            &mut store,
+            &mut session,
+            || source.health(),
+        )?;
+        let application = application.context("withdrawal requires application key")?;
+        let needs_get = store.resume_ordinary()?.is_none_or(|p| {
+            crate::authority_proof::Intent::from_signed(p.signed())
+                .is_ok_and(|i| i.action == "AuthorityApplicationGet")
+        });
+        if needs_get {
+            client::local(
+                &verified,
+                Request::Get(application),
+                None,
+                None,
+                &online.socket,
+                &signer,
+                &mut store,
+                &mut session,
+                || source.health(),
+            )?;
+        }
+        Request::Withdraw(client::withdrawal_target(&store, application)?)
+    } else {
+        application.map_or(Request::List, Request::Get)
+    };
+    let result = client::local(
+        &verified,
+        request,
+        None,
+        None,
+        &online.socket,
+        &signer,
+        &mut store,
+        &mut session,
+        || source.health(),
+    )?;
+    if withdraw {
+        mutation_output("ApplicationWithdrawn", &result)
+    } else if application.is_some() {
+        state_output(&result)
+    } else {
+        list_output(&result)
+    }
+}
+
+#[cfg(test)]
+#[path = "AuthorityApplicationCliTests.rs"]
+mod tests;

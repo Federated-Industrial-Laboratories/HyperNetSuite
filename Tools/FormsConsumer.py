@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# Read one authenticated form with an independently enrolled receiving device.
+"""Read one retained form against an independently accepted local intake record."""
 import argparse
 import json
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--suite', type=Path, required=True)
-    parser.add_argument('--config', type=Path, required=True)
-    parser.add_argument('--vault', type=Path, required=True)
-    parser.add_argument('--key', type=Path, required=True)
-    parser.add_argument('--mailbox', required=True)
-    parser.add_argument('--message-id', required=True)
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument('--host')
-    source.add_argument('--local', action='store_true')
+    for name in ('bootstrap', 'bootstrap-digest', 'directory', 'clock-witness',
+                 'mail-directory', 'vault', 'age-key', 'mailbox', 'message'):
+        parser.add_argument('--' + name, required=True)
+    parser.add_argument('--clock-monitor-key')
+    parser.add_argument('--host-kernel-boot')
     args = parser.parse_args()
-    command = [str(args.suite.resolve(strict=True)), '--config', str(args.config),
-               'forms', '--vault', str(args.vault), '--key', str(args.key),
-               'receive', '--mailbox', args.mailbox, '--message-id', args.message_id]
-    command += ['--local'] if args.local else ['--host', args.host]
+    if bool(args.clock_monitor_key) != bool(args.host_kernel_boot):
+        parser.error('Both clock monitor pins are required together')
+    command = [str(args.suite.resolve(strict=True)), 'forms', 'receive-local']
+    for name, value in vars(args).items():
+        if name != 'suite' and value is not None:
+            command.extend(['--' + name.replace('_', '-'), str(value)])
     result = subprocess.run(command, check=True, capture_output=True, timeout=180)
     if len(result.stdout) > 65536:
         raise ValueError('Form response exceeds its bound')
@@ -38,5 +37,6 @@ if __name__ == '__main__':
     try:
         main()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        print(f'Form intake failed: {error}', file=sys.stderr)
+        text = ('Form intake failed: ' + str(error)).encode('unicode_escape').decode('ascii')
+        print(text, file=sys.stderr)
         sys.exit(1)

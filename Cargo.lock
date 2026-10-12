@@ -1322,6 +1322,7 @@ dependencies = [
  "age",
  "anyhow",
  "base64 0.22.1",
+ "bech32",
  "clap",
  "crossterm",
  "ed25519-dalek",

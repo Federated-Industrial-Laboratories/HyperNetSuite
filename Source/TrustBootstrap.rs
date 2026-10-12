@@ -59,6 +59,8 @@ pub struct RouteSpec {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DraftSpec {
     pub voters: Vec<String>,
+    pub authority_transports: BTreeMap<String, String>,
+    pub clock_monitors: Vec<String>,
     pub administrator: String,
     pub administrator_actions: Vec<u64>,
     pub enrolment: String,
@@ -82,6 +84,8 @@ pub struct Summary {
     pub bootstrap_time_ms: u64,
     pub genesis_governance: summary::Genesis,
     pub voters: Vec<String>,
+    pub authority_transports: BTreeMap<String, String>,
+    pub clock_monitors: Vec<String>,
     pub administrators: Vec<String>,
     pub enrolment: String,
     pub public_reading: bool,
@@ -97,6 +101,34 @@ pub struct Verified {
     pub summary: Summary,
     pub recovery_payload: Vec<u8>,
     pub accepted_keys: BTreeSet<[u8; 32]>,
+    fingerprint: [u8; 32],
+    file_digest: [u8; 32],
+    descriptor: crate::authority_proof::TrustDescriptor,
+    governance_records: Vec<Vec<u8>>,
+    fully_accepted: bool,
+    reservations: Vec<(u64, [u8; 32])>,
+}
+impl Verified {
+    pub fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+    /// SHA-256 of the exact accepted bootstrap file, used by installation manifests.
+    pub fn file_digest(&self) -> [u8; 32] {
+        self.file_digest
+    }
+    /// Exact descriptor verified together with the complete bootstrap; diagnostic summaries are not trust state.
+    pub fn descriptor(&self) -> &crate::authority_proof::TrustDescriptor {
+        &self.descriptor
+    }
+    pub fn governance_records(&self) -> &[Vec<u8>] {
+        &self.governance_records
+    }
+    pub fn reservations(&self) -> &[(u64, [u8; 32])] {
+        &self.reservations
+    }
+    pub fn fully_accepted(&self) -> bool {
+        self.fully_accepted
+    }
 }
 
 pub fn hex32(text: &str) -> Result<[u8; 32]> {
@@ -285,14 +317,14 @@ fn verify(bytes: &[u8], require_acceptance: bool, time: Option<u64>) -> Result<V
         "genesis governance digest mismatch"
     );
     let governance_value = wire::decode(governance_bytes)?;
-    let governance = record(&governance_value, 15, 5)?;
+    let governance = record(&governance_value, 15, 6)?;
     ensure!(
         id(&governance[2])? == network && id(&governance[3])? == incarnation,
         "genesis network mismatch"
     );
     let mut records = BTreeMap::new();
     let mut previous = None;
-    for value in governance[4].list(34)? {
+    for value in governance[4].list(35)? {
         let bytes = value.bytes()?;
         let value = wire::decode(bytes)?;
         let values = value.list(32)?;
@@ -302,6 +334,7 @@ fn verify(bytes: &[u8], require_acceptance: bool, time: Option<u64>) -> Result<V
             100 | 102 => 17,
             101 => 14,
             114 => 13,
+            131 => 8,
             _ => bail!("unexpected genesis record kind"),
         };
         let values = record(&value, kind, arity)?;
@@ -310,8 +343,10 @@ fn verify(bytes: &[u8], require_acceptance: bool, time: Option<u64>) -> Result<V
             "genesis context mismatch"
         );
         values[5].null()?;
-        values[arity - 1].null()?;
-        let lookup = if kind == 100 || kind == 114 {
+        if kind != 131 {
+            values[arity - 1].null()?;
+        }
+        let lookup = if kind == 100 || kind == 114 || kind == 131 {
             network
         } else {
             id(&values[6])?
@@ -323,6 +358,12 @@ fn verify(bytes: &[u8], require_acceptance: bool, time: Option<u64>) -> Result<V
         previous = Some((kind, lookup));
         records.insert((kind, lookup), (bytes.to_vec(), value));
     }
+    let (runtime_bytes, _) = records
+        .get(&(131, network))
+        .ok_or_else(|| anyhow::anyhow!("missing runtime bootstrap keys"))?;
+    let runtime_keys =
+        crate::runtime_bootstrap_keys::Keys::parse(runtime_bytes, network, incarnation)?;
+    runtime_keys.validate_voters(&voters)?;
     let (policy_bytes, policy_value) = records
         .get(&(100, network))
         .ok_or_else(|| anyhow::anyhow!("missing network policy"))?;
@@ -528,6 +569,36 @@ fn verify(bytes: &[u8], require_acceptance: bool, time: Option<u64>) -> Result<V
             && !administrators.contains(&admission_key),
         "route transport key reuses governance identity"
     );
+    let reservations = governance[5]
+        .list(64)?
+        .iter()
+        .map(|value| {
+            let pair = value.array(2)?;
+            let role = pair[0].uint()?;
+            ensure!(role <= 6, "unknown reserved identity role");
+            Ok((role, key(&pair[1])?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    sorted(&reservations)?;
+    let mut expected_reservations = voters
+        .iter()
+        .map(|key| (0, *key))
+        .chain(public_keys.iter().map(|key| (1, *key)))
+        .chain([(2, relay_key), (3, admission_key)])
+        .chain(administrators.iter().map(|key| (4, *key)))
+        .chain(runtime_keys.reservations())
+        .collect::<Vec<_>>();
+    expected_reservations.sort();
+    ensure!(
+        reservations == expected_reservations
+            && reservations
+                .iter()
+                .map(|(_, key)| *key)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == reservations.len(),
+        "genesis role reservations differ from the accepted identities"
+    );
     origin(route[5].text()?)?;
     origin(route[9].text()?)?;
     let relay_domain = id(&route[7])?;
@@ -592,6 +663,16 @@ fn verify(bytes: &[u8], require_acceptance: bool, time: Option<u64>) -> Result<V
             bootstrap_time_ms: bootstrap_time,
             genesis_governance: summary::describe(&records, &network, governance_bytes)?,
             voters: voters.iter().map(hex::encode).collect(),
+            authority_transports: runtime_keys
+                .authority_transports
+                .iter()
+                .map(|(voter, transport)| (hex::encode(voter), hex::encode(transport)))
+                .collect(),
+            clock_monitors: runtime_keys
+                .clock_monitors
+                .iter()
+                .map(hex::encode)
+                .collect(),
             administrators: administrators.iter().map(hex::encode).collect(),
             enrolment: enrolment.into(),
             public_reading,
@@ -617,6 +698,16 @@ fn verify(bytes: &[u8], require_acceptance: bool, time: Option<u64>) -> Result<V
         },
         recovery_payload: recovery_bytes.clone(),
         accepted_keys,
+        fingerprint: wire::digest(bytes),
+        file_digest: Sha256::digest(bytes).into(),
+        descriptor: crate::authority_proof::TrustDescriptor::from_canonical(descriptor_bytes)?,
+        governance_records: governance[4]
+            .list(35)?
+            .iter()
+            .map(|v| Ok(v.bytes()?.to_vec()))
+            .collect::<Result<Vec<_>>>()?,
+        fully_accepted: !draft,
+        reservations,
     })
 }
 
@@ -718,6 +809,42 @@ pub fn draft(spec: DraftSpec, identities: [[u8; 32]; 4], time: u64) -> Result<Ve
         V::Null,
     ]);
     let policy_bytes = wire::encode(&array(policy))?;
+    let runtime_keys = crate::runtime_bootstrap_keys::Keys {
+        authority_transports: spec
+            .authority_transports
+            .iter()
+            .map(|(voter, transport)| Ok((hex32(voter)?, hex32(transport)?)))
+            .collect::<Result<_>>()?,
+        clock_monitors: spec
+            .clock_monitors
+            .iter()
+            .map(|key| hex32(key))
+            .collect::<Result<_>>()?,
+    };
+    ensure!(
+        runtime_keys.clock_monitors.len() == spec.clock_monitors.len(),
+        "Repeated bootstrap clock monitor"
+    );
+    let runtime_bytes = runtime_keys.encode(network, incarnation)?;
+
+    let mut reservations = spec
+        .voters
+        .iter()
+        .map(|key| Ok((0, hex32(key)?)))
+        .chain(
+            spec.recovery
+                .keys
+                .iter()
+                .map(|key| Ok((1, hex32(&key.public_key)?))),
+        )
+        .collect::<Result<Vec<_>>>()?;
+    reservations.extend([
+        (2, hex32(&spec.route.relay_transport_key)?),
+        (3, hex32(&spec.route.admission_transport_key)?),
+        (4, hex32(&spec.administrator)?),
+    ]);
+    reservations.extend(runtime_keys.reservations());
+    reservations.sort();
     let governance = wire::encode(&array([
         u(15),
         u(1),
@@ -728,7 +855,13 @@ pub fn draft(spec: DraftSpec, identities: [[u8; 32]; 4], time: u64) -> Result<Ve
             b(&tier_bytes),
             b(&grant_bytes),
             b(&recovery_bytes),
+            b(&runtime_bytes),
         ]),
+        array(
+            reservations
+                .iter()
+                .map(|(role, key)| array([u(*role), b(key)])),
+        ),
     ]))?;
     let descriptor = wire::encode(&array([
         u(10),
@@ -840,8 +973,15 @@ mod tests {
             .map(|seed| SigningKey::from_bytes(&[seed; 32]))
             .collect::<Vec<_>>();
         recovery.sort_by_key(|key| key.verifying_key().to_bytes());
+        let authority_transports = voters
+            .iter()
+            .enumerate()
+            .map(|(index, voter)| (voter.clone(), public(30 + index as u8)))
+            .collect();
         let spec = DraftSpec {
             voters,
+            authority_transports,
+            clock_monitors: vec![public(40)],
             administrator: public(5),
             administrator_actions: vec![9, 10, 11, 12],
             enrolment: "InvitationOnly".into(),
@@ -916,6 +1056,24 @@ mod tests {
         assert!(accept(&draft, &keys[2], 100).is_err());
     }
     #[test]
+    fn bootstrap_file_pin_and_protocol_fingerprint_remain_distinct() {
+        let (draft, keys) = fixture();
+        let complete = assemble(
+            &draft,
+            &[
+                accept(&draft, &keys[0], 100).unwrap(),
+                accept(&draft, &keys[1], 100).unwrap(),
+            ],
+            100,
+        )
+        .unwrap();
+        let verified = inspect(&complete, true).unwrap();
+        let file_pin: [u8; 32] = Sha256::digest(&complete).into();
+        assert_eq!(verified.file_digest(), file_pin);
+        assert_eq!(verified.fingerprint(), wire::digest(&complete));
+        assert_ne!(verified.file_digest(), verified.fingerprint());
+    }
+    #[test]
     fn expired_bootstrap_remains_inspectable_without_authority() {
         let (draft, keys) = fixture();
         let complete = assemble(
@@ -930,5 +1088,41 @@ mod tests {
         assert!(check(&complete, true, 1000).is_err());
         assert!(inspect(&complete, true).is_ok());
         assert!(check(&complete, true, 49).is_err());
+    }
+    #[test]
+    fn genesis_reservations_bind_every_dedicated_role_without_legacy_fallback() {
+        let (draft, _) = fixture();
+        let checked = inspect(&draft, false).unwrap();
+        assert_eq!(checked.reservations().len(), 15);
+        assert!(checked.reservations().iter().any(|(role, _)| *role == 4));
+        for mutation in 0..3 {
+            let mut bundle = wire::decode(&draft).unwrap().array(6).unwrap().to_vec();
+            let mut governance = wire::decode(bundle[3].bytes().unwrap())
+                .unwrap()
+                .array(6)
+                .unwrap()
+                .to_vec();
+            if mutation == 0 {
+                governance.pop();
+            } else {
+                let mut reservations = governance[5].list(64).unwrap().to_vec();
+                if mutation == 1 {
+                    reservations.pop();
+                } else {
+                    reservations[0] = array([u(0), b(&hex32(&public(99)).unwrap())]);
+                }
+                governance[5] = array(reservations);
+            }
+            let governance = wire::encode(&array(governance)).unwrap();
+            let mut descriptor = wire::decode(bundle[2].bytes().unwrap())
+                .unwrap()
+                .array(11)
+                .unwrap()
+                .to_vec();
+            descriptor[8] = b(&wire::digest(&governance));
+            bundle[2] = b(&wire::encode(&array(descriptor)).unwrap());
+            bundle[3] = b(&governance);
+            assert!(inspect(&wire::encode(&array(bundle)).unwrap(), false).is_err());
+        }
     }
 }

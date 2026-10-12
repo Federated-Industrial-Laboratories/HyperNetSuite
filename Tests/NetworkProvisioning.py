@@ -108,12 +108,15 @@ def main():
             return value['publicKey'], path
 
         voters = sorted(key('Voter' + str(i))[0] for i in range(4))
+        transports = {voter: key('AuthorityTransport' + str(i))[0] for i, voter in enumerate(voters)}
+        monitor, _ = key('ClockMonitor')
         administrator, _ = key('Administrator')
         recoveries = sorted([key('Recovery' + str(i)) for i in range(3)])
         relay, _ = key('Relay')
         admission, _ = key('Admission')
         now = int(time.time() * 1000)
-        spec = {'voters': voters, 'administrator': administrator,
+        spec = {'voters': voters, 'authorityTransports': transports, 'clockMonitors': [monitor],
+                'administrator': administrator,
                 'administratorActions': [9, 10, 11, 12, 13, 21, 22, 25, 27, 28],
                 'enrolment': 'InvitationOnly', 'publicReading': False, 'minimumRoute': 'Independent',
                 'publicationModes': ['HostReadable', 'Sealed'], 'defaultPublicationMode': 'HostReadable',
@@ -152,6 +155,9 @@ def main():
         original = profile.read_bytes()
         inspection = run(['network', 'inspect', '--profile', profile])
         require('secretKey' not in json.dumps(inspection), 'Inspection exposed keys')
+        require(inspection['trust']['authorityTransports'] == transports
+                and inspection['trust']['clockMonitors'] == [monitor],
+                'Inspection omitted the accepted authority transport or clock identities')
         governance_summary = inspection['trust']['genesisGovernance']
         grant_summary = governance_summary['rootGrants'][0]
         tier_summary = governance_summary['tiers'][0]

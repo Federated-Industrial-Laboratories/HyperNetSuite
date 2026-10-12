@@ -1,169 +1,95 @@
 # Applications and review adapters
 
-HyperNetSuite exposes native Pages to separate application identities. It also
-exchanges inert review data with a provider chosen by the operator. It neither
-starts a provider nor gives it a credential, shell, plugin, network client or
-HyperNet tool. A model response is untrusted data. The operator is responsible
-for any separately arranged disclosure and provider retention policy.
+Review adapters exchange explicitly selected inert data with a provider chosen
+by the operator. HyperNetSuite does not start a provider, follow Page links or
+give a provider credentials, a shell, plugins or tools. Provider output is an
+untrusted recommendation, never a command.
 
-## Dedicated application access
+## Native review authority
 
-Create a new key and profile in a private directory. Obtain the network identity,
-endpoint and CA through the same authenticated process as other clients:
+Use [ApplicationAccess](ApplicationAccess.md) for application admission and
+[Pages](Pages.md) for its native Page policy. A reviewer needs the current exact
+102 capability for action 3. An application also needs its current 127
+registration and dual-signed 148 policy, with ReviewInspect and ReviewDecide
+permissions for the selected namespace and Page. Withdrawn, expired or replaced
+rights refuse. Application registration alone does not grant review access.
 
-```sh
-mkdir -m 700 Application
-HyperNetSuite keygen --output Application/Identity.json
-HyperNetSuite configure --network NETWORK_HEX --endpoint https://authority.example:8443 \
-  --ca NetworkCa.pem --identity Application/Identity.json --application \
-  --output Application/Profile.json
-HyperNetSuite --config Application/Profile.json applications consent \
-  --owner-key OWNER_PUBLIC_KEY --expires UNIX_SECONDS --namespace News \
-  --permission PagesRead --output Application/Consent.json
-HyperNetSuite --config Owner/Profile.json applications grant --consent Application/Consent.json
-HyperNetSuite --config Application/Profile.json applications get --application-key APPLICATION_PUBLIC_KEY
-HyperNetSuite --config Application/Profile.json pages list --namespace News
-HyperNetSuite --config Application/Profile.json pages read --page-id PAGE_ID
-```
+Ordinary reviewers and Manual application policies require the human's explicit
+Approve or Reject decision. Automatic application policy uses mode 1 with an
+exact policy digest; applying a recommendation still requires `--automatic`.
+A human can instead supply an explicit decision under that same policy. Media
+inspection is a separate permission and does not itself approve a Page.
 
-The `application` profile flag selects client checks. The authority independently
-enforces all rights, including when this flag is absent or incorrect. No owner
-secret appears in the application profile. A key with another network role,
-including a pending invitation, cannot become an application key. Applications
-cannot invite, grant, host, federate, request replica tickets, transfer files,
-use SSH or access mail through their Pages permission.
+All online commands use the independently accepted bootstrap, local requester
+floor, signing key, clock observation, private authority socket and exact grant
+arguments described in Pages. There is no direct reader route or legacy profile
+fallback. Offline import uses the location and key arguments only; it neither
+opens a requester floor nor makes a network request.
 
-Repeat `--namespace` for up to eight exact namespaces. Repeat `--page-id` to
-restrict access to at most sixteen exact page IDs. Omitting page IDs selects all
-pages in the listed namespaces. Lists are sorted and deduplicated before signing;
-there are no wildcards. `pages list` and `pages queue` require an explicit
-`--namespace` with an application profile. Permissions are intersections of the
-namespace, page allowlist and action:
-
-| Permission | Operations |
-| --- | --- |
-| PagesRead | List and read currently published native pages |
-| PagesSubmit | Submit and withdraw this application's own pages |
-| ReviewInspect | Queue and inspect pending pages |
-| ReviewDecide | Approve or reject exact pending content; requires ReviewInspect |
-| MediaRead | Fetch exact currently published assets; Suite also uses PagesRead |
-| MediaSubmit | Upload own pending assets and replicate own publication; Suite also uses PagesSubmit |
-| MediaInspect | Fetch and attest exact pending assets; Suite also uses ReviewInspect |
-
-Review permissions require an administrator owner. ReviewDecide also requires
-`--review-policy-digest POLICY_SHA256` and `--review-mode manual` or `automatic`
-when creating consent. Digest the exact policy bytes through a trusted local
-process. Deliver that policy to the chosen provider separately; the export
-contains the digest, not policy text. In Suite, Manual requires an operator-supplied
-decision. The authority checks the signed mode and scope; it does not prove that a
-human acted. Other clients holding a Manual credential must enforce their own
-human-confirmation policy. Automatic permits the separate `review-apply --automatic`
-operation under that exact policy. Neither mode starts a provider or automatically
-watches a queue.
-
-Application consent uses the existing signed request envelope with command
-`ApplicationConsent`. Its fields are `ownerKey`, `expires`, `namespaces`,
-`pageIds` (null or exact list), `permissions`, `reviewPolicyDigest` and `reviewMode`
-(the last two null without ReviewDecide). The owner signs
-`ApplicationGrantCreate { consent: ENVELOPE }`. The inner application signature
-proves possession; the outer owner signature approves exact scope. The ordinary
-request freshness window applies to both signatures, so issue the grant promptly.
-The grant is immutable. Generate a fresh application key for changed scope.
-Expiry is at most seven days and cannot exceed the owner's current membership.
+The examples use these Bash arrays; substitute independently verified pins and
+the reviewer's existing private requester directory:
 
 ```sh
-HyperNetSuite --config Owner/Profile.json applications list
-HyperNetSuite --config Owner/Profile.json applications list --after APPLICATION_PUBLIC_KEY
-HyperNetSuite --config Owner/Profile.json applications revoke --application-key APPLICATION_PUBLIC_KEY
+Location=(--bootstrap /Private/Bootstrap.cbor --bootstrap-digest BOOTSTRAP_SHA256 \
+  --directory /Private/ReviewerFloor --clock-witness /Private/Clock/ClockHealth.cbor \
+  --clock-monitor-key MONITOR_PUBLIC_KEY --host-kernel-boot CURRENT_BOOT_ID)
+Online=("${Location[@]}" --key /Private/Reviewer.key \
+  --socket /Private/Authority/Control.sock)
+Capability=(--grant REVIEW_GRANT_ID)
 ```
 
-Get and revoke are available to the owner or application; an owner lists only
-its own records. A successful grant response is required to establish access.
-After an uncertain creation response, get the application key before retrying.
-Owner rights, application expiry, revocation and scope are rechecked on each
-action. Changes also affect publication availability within the existing
-five-second authority freshness bound. Retained archive signatures alone do not
-grant continuing access. There are initially eight retained grants per owner and
-64 per network. Referenced grants remain reserved; they cannot be reclaimed by
-churning credentials.
+Add `--grant-record /Private/ReviewGrant.cbor` to `Capability` when the exact
+delegated grant is not already retained. The reviewer key used by offline import
+must match the identity that signed the disclosure.
 
-## Independent wire clients
+## Text disclosure
 
-Applications send HTTPS `POST /V1/Command` with TLS 1.3 and the explicitly pinned
-network CA. The JSON envelope has `network`, `publicKey`, `payload` and
-`signature`. Network and public key are canonical lowercase 32-byte hex;
-signature is 64-byte lowercase hex. Payload is unpadded base64url of the exact
-UTF-8 JSON request bytes. Requests contain `version: 1`, `requestId` (16-byte hex),
-`issuedAt` (Unix seconds) and `command`. Ed25519 signs the concatenation of
-`HyperNet/Request/1` followed by NUL, decoded network, decoded public key, and
-exact payload bytes. Do not reserialise a received signed payload before verifying
-it. The authority accepts the existing 60-second request freshness window. The
-same envelope construction signs the nested ApplicationConsent.
-
-Get and create return `result.application`; list returns `result.entries` and
-`result.next`; revoke returns `result.applicationKey` and `result.revoked`.
-An application record has `ownerKey`, `applicationKey`, `grant`, `grantDigest`,
-`expires`, `namespaces`, `pageIds`, `permissions`, `reviewPolicyDigest`,
-`reviewMode` and `revoked`. `grant` preserves the owner envelope and nested consent;
-`grantDigest` is SHA256 of the exact signed owner message, including its domain
-and identities. Suite verifies these signatures and the duplicated scope fields.
-Fresh authenticated authority responses establish current grant status; archived
-signatures establish provenance only. Commands use the Core protocol's normal
-`ok`, `code`, `epoch` and `result` response fields.
-
-App-signed PageReview includes `applicationPolicyDigest` and
-`applicationReviewMode`, exactly matching the current grant. Human PageReview omits
-both. Application reviews also require `reviewExpires`, an absolute Unix deadline
-within 300 seconds. Adapter apply supplies its job expiry for either identity
-kind; ordinary human `pages review` omits the optional deadline. Submission and approval proofs keep their actual application signer keys;
-the owner never impersonates the application. See HyperNet's application and
-Pages protocol documentation for complete server bounds and error behaviour.
-
-## Explicit review exchange
-
-Create a private exchange directory. Use a human administrator profile or a
-separate ReviewInspect application profile. Every export selects one current,
-verified, signed pending submission:
+Create a private exchange directory and export one current pending source:
 
 ```sh
-mkdir -m 700 ReviewExchange
-HyperNetSuite --config Reviewer/Profile.json adapters review-export \
-  --page-id PAGE_ID --recipient LocalClassifier --purpose 'Review for the News policy' \
-  --policy-digest POLICY_SHA256 --expires UNIX_SECONDS --consent-disclosure \
-  --output ReviewExchange/Job.json --receipt ReviewExchange/Receipt.json
+mkdir -m 700 /Private/ReviewExchange
+HyperNetSuite adapters review-export "${Online[@]}" "${Capability[@]}" \
+  --page-id PAGE_ID --recipient LocalClassifier \
+  --purpose 'Review this Books submission' --policy-digest POLICY_SHA256 \
+  --expires UNIX_SECONDS --consent-disclosure \
+  --output /Private/ReviewExchange/Job.json \
+  --receipt /Private/ReviewExchange/Disclosure.cbor
 ```
 
-Expiry must be within 300 seconds, and must fit any application grant. An
-application's bound review policy must match. The receipt is signed by the
-configured reviewer. It privately retains the exact job and signed source. The
-export contains `{ "job": JOB, "jobDigest": SHA256 }`. `JOB` has these fields:
+The expiry must be in the next 300 seconds and cannot exceed application consent.
+The current quorum-certified inspection supplies the exact pending 141 revision
+and immutable source. The signed private receipt binds network and incarnation,
+requester, exact 102 grant, optional 148 policy and 127 registration, review mode,
+140 ledger, 141 revision, canonical 203 source reference, author statement,
+namespace, recipient label, purpose, policy digest, expiry and exact source.
+The receipt is durable before the selected plaintext is exported.
+
+The JSON export is `{ "job": JOB, "jobDigest": SHA256 }`. The job contains:
 
 ```text
-version, kind, network, jobId, requester, applicationGrantDigest, reviewMode,
-recipient, purpose, policyDigest, issuedAt, expires, consentDisclosure, pageId,
-expectedVersion, revision, author, namespace, audience, profile, digest,
-submissionDigest, body
+version, kind, network, incarnation, jobId, requester, grant, application,
+applicationRegistration, reviewMode, recipient, purpose, policyDigest,
+issuedAt, expires, consentDisclosure, pageId, ledger, revision, source,
+author, authorStatement, namespace, body
 ```
 
-`version` is 1 and `kind` is `PageReview`. Human exports have null
-`applicationGrantDigest` and `reviewMode`. The opaque `jobDigest` binds the compact
-UTF-8 JSON encoding of `JOB` in the field order above. Providers echo the supplied
-digest; they do not need to serialise or sign the job. Only public identifiers,
-selected content and disclosure metadata are exported. Page links remain text;
-no link is fetched. Pages and provider rationale cannot select another operation,
-identity, endpoint, file, tool or policy.
+`version` is 1 and `kind` is `NativePageReview`. Ordinary reviewers have null
+application, applicationRegistration and reviewMode fields. References are hex
+encodings of canonical native records or object references. Providers copy the
+opaque supplied bindings; they do not need to serialise or sign the job.
+`jobDigest` hashes the compact UTF-8 JSON job in the field order above.
 
-Arrange any provider processing separately. The result must be an owner-only
-regular JSON file, no larger than 8192 bytes, containing exactly:
+Arrange provider processing separately. Its result must be a private regular
+JSON file of at most 8192 bytes with exactly these fields:
 
 ```json
 {
   "version": 1,
   "jobId": "COPY_FROM_JOB",
   "network": "COPY_FROM_JOB",
+  "incarnation": "COPY_FROM_JOB",
   "pageId": "COPY_FROM_JOB",
-  "digest": "COPY_FROM_JOB",
-  "submissionDigest": "COPY_FROM_JOB",
+  "source": "COPY_FROM_JOB",
   "policyDigest": "COPY_FROM_JOB",
   "jobDigest": "COPY_FROM_EXPORT",
   "decision": "Abstain",
@@ -171,110 +97,125 @@ regular JSON file, no larger than 8192 bytes, containing exactly:
 }
 ```
 
-Decisions are case-sensitive `Approve`, `Reject` or `Abstain`. Rationale is at
-most 2048 UTF-8 bytes and is displayed with terminal controls escaped. Unknown
-or duplicate fields, prose wrappers, multiple JSON objects, tool calls, wrong
-bindings and oversized results fail. Prompt instructions inside content remain
-content; this containment does not establish classifier accuracy or prevent a
-provider from making a bad recommendation. Results carry no provider identity
-signature. Anyone able to write the result file can supply a recommendation;
-protect the local exchange and any separate provider transport accordingly.
+Decisions are case-sensitive Approve, Reject or Abstain. Rationale is at
+most 2048 UTF-8 bytes and JSON output escapes terminal controls. Unknown or duplicate
+fields, prose wrappers, additional objects, tool fields, wrong bindings and
+oversized results refuse. Tool-shaped text inside the rationale remains text.
+No provider identity signature is implied: protect the result file and any
+separate provider transport. These restrictions contain effects, not mistakes
+in a provider's judgement.
+
+## Inspection and exact apply
 
 ```sh
-HyperNetSuite --config Reviewer/Profile.json adapters review-import \
-  --receipt ReviewExchange/Receipt.json --result ReviewExchange/Result.json
-HyperNetSuite --config Reviewer/Profile.json adapters review-apply \
-  --receipt ReviewExchange/Receipt.json --result ReviewExchange/Result.json --decision reject
+HyperNetSuite adapters review-import "${Location[@]}" --key /Private/Reviewer.key \
+  --receipt /Private/ReviewExchange/Disclosure.cbor \
+  --result /Private/ReviewExchange/Result.json
+HyperNetSuite adapters review-apply "${Online[@]}" "${Capability[@]}" \
+  --receipt /Private/ReviewExchange/Disclosure.cbor \
+  --result /Private/ReviewExchange/Result.json --decision reject \
+  --decision-output /Private/ReviewExchange/Apply.cbor
 ```
 
-Import validates and displays a recommendation only. It makes no network request
-and does not check current authority. Manual apply requires the human's own
-`--decision approve` or `reject`; it can differ from the recommendation. An
-application must hold a current Manual ReviewDecide grant. Ordinary `pages review`
-with a Manual application profile also verifies and supplies the current policy.
-An explicit Automatic grant uses this separate operation:
+Import validates the disclosure signature and exact recommendation and reports
+`applied:false` and `authorityChecked:false`. Manual apply requires the human's
+own decision, which can differ from the recommendation. Abstain cannot publish
+or reject. An explicitly authorised Automatic application replaces `--decision`
+with `--automatic`; the current exact mode 1 policy must match the disclosed
+policy digest. Neither a Manual policy nor an ordinary reviewer can do that.
+
+Before constructing a new decision, apply rechecks the pending ledger, revision,
+source and exact application policy. It saves an immutable signed apply receipt
+binding the recommendation, explicit choice and exact native PageReviewStatement,
+source and optional approved bundle. Only then does it submit the decision.
+If interrupted, repeat the same command, result and decision-output path. The
+saved statement is reused without new randomness or silent substitution. A
+changed choice or recommendation requires a new review; it cannot overwrite the
+retained attempt. The authority and requester verifier still require current
+rights, source, media evidence, expiry and exact application policy on retry.
+The receipt is historical local provenance, not reusable permission.
+
+Do not start another operation while this exact apply is pending. After known
+completion, a second publication request is unnecessary. Expiry cannot recall
+an already committed decision or plaintext previously disclosed. Expired or
+replaced jobs require a fresh export before any new effect.
+
+## Selected media disclosure
+
+Text export includes inert asset declarations but never fetches their payloads.
+Disclose one selected asset only with separate media consent and an explicit
+local store route:
 
 ```sh
-HyperNetSuite --config AutomaticReviewer/Profile.json adapters review-apply \
-  --receipt ReviewExchange/Receipt.json --result ReviewExchange/Result.json --automatic
+HyperNetSuite adapters media-export "${Online[@]}" "${Capability[@]}" \
+  --receipt /Private/ReviewExchange/Disclosure.cbor --asset Diagram \
+  --host HOST_ID --service-socket /Private/Media/Service.sock \
+  --progress-directory /Private/ReviewExchange/DiagramProgress \
+  --consent-media-disclosure --output /Private/ReviewExchange/Diagram.json \
+  --media-receipt /Private/ReviewExchange/DiagramDisclosure.cbor
 ```
 
-Automatic apply requires the same application grant, mode and policy as export.
-Automatic Abstain cannot change publication. A separate human decision can differ
-from any recommendation. Both modes recheck the exact current pending
-source, version and signer before sending a signed PageReview. The authority then
-rechecks current rights, the exact object and the signed review expiry before
-committing the decision. A response can arrive after its deadline; a result already
-committed cannot be recalled through expiry. A stale, replaced,
-expired or revoked job must be exported anew; failures never silently publish.
-Do not retry a successful apply: the changed page version makes old results stale.
+For an installed store use `--service-directory` and optional `--core` in place
+of `--service-socket`. The reviewer needs current MediaInspect permission.
+The client chooses only a 144 asset belonging to the exact disclosed 141 revision,
+fetches the entire canonical object through finite authenticated store requests,
+verifies its bytes and persists resumable progress, then records current 145
+inspection evidence. It rechecks the pending Page again before disclosure.
 
-All exchange destinations require a user-owned mode 0700 parent. Files are mode 0600,
-bounded, opened through directory descriptors without symbolic-link traversal,
-and published without replacing an existing file. The receipt is saved before
-plaintext export. If export fails, inspect the retained private receipt and select
-new paths for another export. Expiry controls apply permission; it cannot erase
-copies already released. Delete plaintext exports according to the chosen policy.
+A separate signed receipt is saved before plaintext release. Metadata binds the
+original job, recipient, purpose, policy, expiry, source and revision, exact 144
+asset and 145 inspection; the JSON `payload` is standard padded base64. The output
+bound follows the existing canonical media byte ceiling plus base64 expansion
+and bounded metadata. It is not an independent smaller asset quota. Canonical
+bitmap and inert vector validation, host consent and current copy requirements
+continue to apply. Page approval independently requires all required current
+copies and reviewer inspections. An inspection records byte verification, not
+human examination or classifier accuracy.
 
-## Selected review media
-
-Text review export includes the signed Asset declarations but never fetches asset
-bytes. An administrator or a ReviewInspect application with separate MediaInspect
-permission can disclose one asset for an existing unexpired review job:
-
-```sh
-HyperNetSuite --config Reviewer/Profile.json adapters media-export \
-  --receipt ReviewExchange/Receipt.json --asset Diagram --consent-media-disclosure \
-  --output ReviewExchange/Diagram.json --media-receipt ReviewExchange/DiagramReceipt.json
-```
-
-This rechecks the exact pending submission and full canonical asset. It records a
-media inspection attestation and saves a signed disclosure receipt before writing
-plaintext bytes. The output contains `disclosure` metadata and an unpadded
-base64url `payload`. Metadata includes version 1, kind `PageMediaReview`, network,
-reviewJobId, reviewJobDigest, requester, recipient, purpose, policyDigest,
-issuedAt, expires, consentMediaDisclosure, pageId, revision, sourceDigest and the
-exact Asset declaration. The original job determines recipient, policy and expiry;
-the page cannot change them. The export is at most two MiB and follows the same
-private-directory and no-overwrite rules. MediaInspect alone cannot approve.
-
-The attestation confirms this client's byte verification, not human examination
-or model accuracy. The operator must arrange assessment before approving. A
-separate disclosure flag is required even when the original text job permitted
-disclosure. No provider is started or contacted. Expiry cannot recall plaintext
-already released.
+Exchange destinations have user-owned 0700 parents and 0600 files. Reads reject
+symbolic-link traversal and writes never replace a destination. A failed export
+can leave its private signed receipt; choose new output paths for a new disclosure.
+All files have actual encoded size bounds. Retain or remove plaintext according
+to the chosen disclosure policy; expiry does not erase released copies.
 
 ## One-letter mail disclosure
 
-Mail applications use the existing separate device permissions Read, Send and
-Delete described in [PrivateMail](PrivateMail.md). A Pages application grant never
-becomes a mailbox credential. Keep provider file processing separate from a mail
-device, particularly one with Send or Delete rights.
+Mail applications use the separate Read, Send and Delete device permissions
+in [PrivateMail](PrivateMail.md). Application registration never becomes a
+mailbox credential. An owner signs each explicit device binding and publishes
+the exact roster. Keep application vaults separate from owner vaults and keep
+provider processing separate from devices with Send or Delete rights.
 
-An owner of a local encrypted vault can explicitly disclose one already archived
-letter. Select its exact mailbox, 32-byte address ID and native 16-byte message ID
-(both canonical lowercase hexadecimal):
+An owner of a local encrypted vault can explicitly disclose one archived letter.
+A Read grant does not itself consent to onward disclosure. Use the location and
+vault arguments described in PrivateMail, plus the exact mailbox, address and
+32-byte message ID:
 
 ```sh
-HyperNetSuite --config Mail/Profile.json mail --vault Mail/Vault --key Mail/VaultKey \
-  archive-disclose --mailbox Personal --address ADDRESS_ID --message-id MESSAGE_ID \
-  --recipient LocalClassifier --purpose 'Classify this selected letter' \
-  --expires UNIX_SECONDS --consent-disclosure \
-  --output ReviewExchange/Letter.json --receipt ReviewExchange/LetterReceipt.json
+HyperNetSuite mail archive-disclose "${Location[@]}" \
+  --directory /Private/PersonalFloor "${Vault[@]}" --mailbox Personal \
+  --address ADDRESS_ID --message MESSAGE_ID --recipient LocalClassifier \
+  --purpose 'Classify this selected letter' --expires UNIX_SECONDS \
+  --consent-disclosure --output /Private/ReviewExchange/Letter.json \
+  --receipt /Private/ReviewExchange/LetterReceipt.json
 ```
 
-The output contains `disclosure` metadata and exactly one `letter`. The metadata
-binds network, address, message, recipient, purpose, creation/expiry, consent,
-origin and the letter digest. Expiry is at most 300 seconds. The digest is SHA256
-of the compact serde JSON letter encoding; the signed receipt contains only this
-metadata and its digest, never another plaintext copy, keys, prekeys, vault state
-or owner recovery material. Its signature identifies the local mailbox request
-key and attests to disclosure; it is not a fresh online authorisation or a new
-sender signature. `origin` distinguishes retained local and imported archive
-records. Conflicting copies with the same selected message ID are refused.
+The output contains `disclosure` metadata and exactly one `letter`. Metadata
+binds network, incarnation, bootstrap pin, selected address/message, recipient,
+purpose, creation/expiry, consent, local archive origin and plaintext digest.
+Expiry is at most 300 seconds. The content digest is SHA256 of the compact JSON
+letter encoding. A purpose-bound signature by the local device request key
+attests to this disclosure; it is not fresh online authority or a new sender
+signature. The signed receipt contains metadata and its digest, never another
+plaintext copy, keys, unconsumed packages or recovery material.
 
-This operation works on local history, makes no authority or provider call, and
-cannot send, delete, classify or act on a letter. A device revocation prevents new
-online access but cannot recall history it already decrypted. Protect and remove
-exported plaintext separately. The general encrypted archive/recovery commands
-remain separate, explicit workflows.
+Both destinations must be absent in owned private directories. Their paths are
+checked before the receipt is persisted and plaintext is released. Neither file
+replaces existing data. If a later output error leaves only the receipt, preserve
+it and use new output/receipt names for a deliberate retry. A receipt does not
+claim that a provider received or processed the export.
+
+The operation makes no authority or provider call and cannot send, delete,
+classify or act on a letter. Device revocation prevents new online access but
+cannot recall history already decrypted. Protect and remove released plaintext
+separately; expiry cannot recall a recipient's retained copy.
