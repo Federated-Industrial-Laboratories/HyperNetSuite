@@ -42,10 +42,18 @@ def run(arguments, timeout=45):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--work-directory', type=Path, required=True, help='Existing private persistent qualification directory')
     parser.add_argument('--prefix', required=True)
     parser.add_argument('--public-key', required=True, help='Independently pinned package signer')
     parser.add_argument('--ssh-keygen', default='/usr/bin/ssh-keygen')
     args = parser.parse_args()
+    work = args.work_directory.resolve(strict=True)
+    metadata = work.stat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+        parser.error('--work-directory must be private and owned by the current user')
+    os.umask(0o077)
+    os.environ['TMPDIR'] = str(work)
+    tempfile.tempdir = str(work)
     prefix = Path(args.prefix).absolute()
     # This command and its verifier must come from an independently trusted source.
     verifier = Path(__file__).with_name('Bundle.py')
@@ -62,7 +70,7 @@ def main():
     if version != 'HyperNetSuite ' + manifest['version']:
         raise ValueError('Installed binary and package versions differ')
     report['checks'].append('Exact binary version')
-    with tempfile.TemporaryDirectory(prefix='HyperNetSuiteQualification') as directory:
+    with tempfile.TemporaryDirectory(prefix='HyperNetSuiteQualification', dir=work) as directory:
         private = Path(directory)
         key = private / 'Identity.json'
         generated = json.loads(run([str(binary), 'keygen', '--output', str(key)]))

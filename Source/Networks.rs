@@ -13,10 +13,18 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+#[path = "AuthorityRecoveryCli.rs"]
+mod recovery;
+
 const PROFILE_LIMIT: usize = 600000;
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Propose, observe and independently accept a new network after authority loss.
+    Recovery {
+        #[command(subcommand)]
+        command: recovery::Command,
+    },
     /// Create an offline governance draft from public keys and explicit policy.
     Draft {
         #[arg(long)]
@@ -101,6 +109,8 @@ struct Profile {
     accepted_relay_domains: Vec<String>,
     required_publication_modes: Vec<String>,
     permit_network_search: bool,
+    #[serde(default)]
+    recovery: Option<recovery::Binding>,
 }
 
 fn time() -> Result<u64> {
@@ -234,6 +244,7 @@ fn verify_profile(profile: &Profile, bytes: &[u8], current: bool) -> Result<trus
                 .all(|v| checked.summary.publication_modes.contains(v)),
         "client publication intersection is empty or invalid"
     );
+    recovery::verify_profile_binding(profile)?;
     Ok(checked)
 }
 fn load(path: &Path) -> Result<(Profile, trust::Verified)> {
@@ -273,6 +284,7 @@ fn profile_report(profile: &Profile, checked: &trust::Verified) -> Result<()> {
 
 pub fn run(command: Command) -> Result<()> {
     match command {
+        Command::Recovery { command } => recovery::run(command),
         Command::Draft {
             spec,
             output: destination,
@@ -360,6 +372,7 @@ pub fn run(command: Command) -> Result<()> {
                 accepted_relay_domains: vec![checked.summary.route.relay_domain.clone()],
                 required_publication_modes: modes,
                 permit_network_search,
+                recovery: None,
             };
             let checked = verify_profile(&profile, &bytes, true)?;
             let encoded = Zeroizing::new(serde_json::to_vec(&profile)?);

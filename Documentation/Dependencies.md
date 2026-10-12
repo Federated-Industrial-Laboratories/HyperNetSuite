@@ -394,33 +394,3 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | zmij | 1.0.23 | MIT |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib |
-
-The supported profile uses OpenMLS 0.9.1 with OpenMlsRustCrypto 0.6.0,
-`default-features = false`, and the RFC 9420 X25519/AES-128-GCM/SHA-256/Ed25519
-suite. It does not enable `libcrux-provider`, debug content logging, SQLite,
-post-quantum drafts or other draft extensions. The all-target supported feature
-graph excludes `libcrux-kem`; Cargo.lock still records the optional upstream
-provider's pinned 0.0.9 release. Exact-lock RustSec reports RUSTSEC-2026-0330 and
-RUSTSEC-2026-0331 for that inactive package. Enabling the alternate provider would
-require resolving those findings before deployment. The active age localisation
-build macro depends on `proc-macro-error2`, which has the informational
-RUSTSEC-2026-0173 unmaintained notice. No advisory is globally suppressed.
-
-age 0.11.5 provides the native X25519 file format without plugins or armor. The
-0.12.1 dependency graph cannot currently coexist with this OpenMLS provider's
-stable `kem` dependency because its older ML-KEM release requires an incompatible
-pre-release of the same crate. Both maintained age release lines include the
-[current upstream parser fixes](https://github.com/str4d/rage/releases/tag/v0.11.4).
-OpenMLS 0.9.1 includes the [nested-extension decoder fix](https://github.com/openmls/openmls/security/advisories/GHSA-gc79-23g3-8g52).
-These dependency checks are not a security certification of the integrated client.
-
-Transfers reuse the pinned native age X25519 implementation. SSH invocation uses
-an explicitly selected external OpenSSH executable, version 10.6 or newer. The
-qualified baseline is OpenSSH 10.6p1; the Suite does not bundle that executable.
-The operator maintains its platform package, upstream licence notices and updates.
-
-The media importer pins image 0.25.10 with only PNG and JPEG features, roxmltree
-0.21.1 and svgtypes 0.16.1. Canonical vector rendering pins tiny-skia 0.12.0 with
-only its std feature. It does not enable tiny-skia PNG decoding or SIMD. Both
-encoded-image import and canonical-vector rasterisation run in the restricted
-worker. Library allocation limits supplement the operating-system boundary.

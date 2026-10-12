@@ -1,56 +1,11 @@
 // SPDX-License-Identifier: MIT
-// Explicit browser mail settings and bounded inert field editing.
+// Bounded inert field editing with explicit local confirmation.
 use crate::{
-    Config, forms,
     markup::forms::{Field, FieldKind},
     terminal_input::Event,
 };
-use anyhow::{Context as _, Result, ensure};
-use clap::Args;
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde_json::Value;
-use std::path::PathBuf;
-
-#[derive(Args, Default)]
-pub struct Options {
-    #[arg(long, requires_all = ["key", "mailbox"])]
-    vault: Option<PathBuf>,
-    #[arg(long, requires_all = ["vault", "mailbox"])]
-    key: Option<PathBuf>,
-    #[arg(long, requires_all = ["vault", "key"])]
-    mailbox: Option<String>,
-    #[arg(long, requires = "vault")]
-    mail_config: Option<PathBuf>,
-}
-#[derive(Clone)]
-pub struct Context {
-    pub config: Config,
-    pub settings: forms::Settings,
-}
-impl Options {
-    pub fn context(self, reader: &Config) -> Result<Option<Context>> {
-        let Some(vault) = self.vault else {
-            return Ok(None);
-        };
-        let config: Config = if let Some(path) = self.mail_config {
-            serde_json::from_slice(&crate::files::read_bounded(&path, false)?)?
-        } else {
-            reader.clone()
-        };
-        ensure!(
-            config.network == reader.network,
-            "form mail and page profiles must name the same network"
-        );
-        Ok(Some(Context {
-            config,
-            settings: forms::Settings {
-                vault,
-                key: self.key.context("--key is required")?,
-                mailbox: self.mailbox.context("--mailbox is required")?,
-            },
-        }))
-    }
-}
 
 pub struct Editor {
     pub form: String,

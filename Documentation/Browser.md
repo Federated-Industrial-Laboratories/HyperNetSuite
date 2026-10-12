@@ -1,27 +1,31 @@
 # Browser
 
-The browser uses one configured network profile and its existing credentials.
-It does not discover networks, install trust roots or open external applications.
-Pages remain inert HyperPage documents. The browser verifies each fetched page
-through the same independent proof checks as the command-line reader.
+The browser uses an independently accepted bootstrap, a retained requester floor,
+an explicit private authority socket and a scoped Page capability. It does not
+discover networks or open external applications. Every fetched Page carries
+current quorum evidence and its exact signed author, reviewer and source bundle.
+Pages remain inert HyperPage documents.
 
 ```sh
-HyperNetSuite --config Reader.json browse --namespace News
-HyperNetSuite --config Reader.json browse hypernet://NETWORK/AUTHOR/News/PAGE
-HyperNetSuite --config Reader.json browse --namespace News --after PAGE
+HyperNetSuite browse [online options] --grant GRANT --namespace News
+HyperNetSuite browse [online options] --grant GRANT hypernet://NETWORK/AUTHOR/News/PAGE
+HyperNetSuite browse [online options] --grant GRANT --namespace News --after CURSOR
 ```
 
-Replace NETWORK and AUTHOR with their complete 64-character lowercase hexadecimal
-identifiers, and PAGE with its complete 32-character identifier. `--after` starts
-a catalogue after that page ID; it cannot be combined with a page address.
-`--namespace` filters the native catalogue. Application profiles require an
-explicit namespace for `browse`, including direct addresses, and retain their
-existing scoped rights.
+Online options select the bootstrap file and its independently verified file
+SHA256, private requester directory, signing key, authority socket and trusted
+clock witness. See [Pages](Pages.md). The signing identity may be a member or an
+explicitly scoped application; registration alone does not confer Page access.
+
+NETWORK and AUTHOR are complete64-character lowercase hexadecimal identities;
+PAGE is a complete32-character identity. CURSOR is the exact64-character record
+cursor returned by the catalogue, rather than a raw Page identity. It cannot be
+combined with a Page address. `--namespace` selects the native catalogue.
 
 ## Catalogue and addresses
 
 Without an address, `browse` fetches a catalogue from the configured authority.
-Each batch has at most 32 currently published descriptors. Entries show identities
+Each bounded batch carries certified publication records and an explicit continuation cursor. Entries show identities
 and publication information, not titles extracted from unfetched page bodies.
 Select an entry and press Enter to fetch and verify its content. Catalogue access
 does not approve a draft or confer access to another namespace or network.
@@ -39,9 +43,8 @@ Invalid or oversized pasted values are rejected as a whole. Pasted text never
 submits itself. Terminal input decoding and pending escape sequences are bounded.
 
 A native address must identify the exact network, author, namespace and page.
-The fetched publication must match all four values. A foreign address requires
-an existing, current, explicit federation agreement; ambiguous agreements are
-refused. An address cannot select a different endpoint, certificate or identity.
+The fetched publication must match all four values. The native browser refuses another network; use the explicit Federation workflow.
+An address cannot select a different endpoint, certificate or identity.
 HTTPS references are displayed as external references and are not fetched or
 passed to a browser, shell or other program.
 
@@ -101,14 +104,16 @@ one, it contains one catalogue batch and its next cursor. Use `--after` to reque
 another batch explicitly. `--ascii` escapes non-ASCII display text. Plain output
 has no terminal styling, automatic navigation or page actions.
 
-`pages read --tui` and `federation read --tui` share the same browser session and
-recoverable navigation. Local preview and moderation remain explicitly
+`pages read --tui` shares this browser session and recoverable navigation. Local preview and moderation remain explicitly
 unapproved; they do not gain network navigation from page content.
 
 Native forms support local field editing and a separate trusted send review.
 See [Forms](Forms.md) for explicit mailbox selection, keyboard controls,
 confirmation and recovery. Pages cannot choose local credentials, autofill
 values or submit automatically.
+The sender must independently verify the destination owner with
+`mail contact-verify` and publish its scoped Send device before using Submit.
+The recipient separately accepts the exact approved form before typed intake.
 
 Images remain labelled placeholders until the reader activates an explicit
 Reveal control. Each fetch rechecks the exact page and consented media route.
@@ -116,3 +121,30 @@ Select a graphics protocol explicitly; unsupported terminal contexts retain
 alt text. Animation uses local clocks and cached pixels, with no network frame
 stream or background fetch. See [Media](Media.md) for commands and
 [MediaViewer](MediaViewer.md) for supported graphics, isolation and limits.
+
+## Explicit media and form access
+
+Pass `--media-route HOST=/Private/MediaControl.sock`, or
+`--media-service HOST=/Private/InstalledService` with `--media-core /Path/HyperNet`.
+Each host must already occur in the exact approved asset manifest. Repeat these
+options for distinct hosts. No endpoint comes from Page text. Select an existing
+private persistent `--media-directory /Private/BrowserMedia`; exact asset/host jobs
+survive interruption. Retrieval resumes its retained operation before new work,
+then checks the current publication again before revealing pixels. Local
+inspection can instead bind `--media AssetId=/Explicit/CanonicalFile`.
+
+Enable form submissions with `--form-directory`, `--form-vault`, `--form-age-key`,
+`--form-mailbox` and `--form-service`. The Mail directory belongs to a separately
+scoped requester, in the same network and incarnation. Choose either an explicit
+`--form-socket` or `--form-service-directory` and optional `--form-core`.
+`--form-retention-seconds` defaults to3600; the recipient's current policy must
+permit the requested duration. Choose a shorter duration when its policy requires
+it. This setting never extends mailbox or device expiry.
+
+Submitting first prepares an encrypted draft and opens a separate trusted review.
+Read all values, identities and placement details before typing SEND. Confirmation
+rechecks the exact displayed publication and Mail versions, then durably records
+the immutable outbox entry before sending. Changed content or placement requires
+new review. Cancellation sends nothing and retains the draft for the Forms CLI.
+A failed send reports the exact message identity to resume with `forms send`;
+closing the terminal does not cancel an already confirmed transmission.

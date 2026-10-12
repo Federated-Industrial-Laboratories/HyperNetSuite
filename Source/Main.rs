@@ -1,73 +1,92 @@
+#[path = "AuthorityCapacity.rs"]
+mod authority_capacity;
+#[path = "AuthorityDeploymentRecords.rs"]
+mod authority_deployment_records;
+#[path = "AuthorityDeployments.rs"]
+mod authority_deployments;
+#[path = "AuthorityHistory.rs"]
+mod authority_history;
+#[path = "RuntimeBootstrapKeys.rs"]
+mod runtime_bootstrap_keys;
+#[path = "RuntimeManifest.rs"]
+mod runtime_manifest;
 // SPDX-License-Identifier: MIT
+#[path = "AuthorityApplications.rs"]
+mod authority_applications;
+#[path = "AuthorityChallenge.rs"]
+mod authority_challenge;
+#[path = "AuthorityClock.rs"]
+mod authority_clock;
+#[path = "AuthorityDomains.rs"]
+mod authority_domains;
+#[path = "AuthorityEpoch.rs"]
+mod authority_epoch;
+#[path = "AuthorityFloor.rs"]
+mod authority_floor;
+#[path = "AuthorityGovernance.rs"]
+mod authority_governance;
+#[path = "AuthorityInspection.rs"]
+mod authority_inspection;
+#[path = "AuthorityInspectionCli.rs"]
+mod authority_inspection_cli;
+#[path = "AuthorityLocalTransport.rs"]
+mod authority_local_transport;
+#[path = "AuthorityMembership.rs"]
+mod authority_membership;
+#[path = "AuthorityObjects.rs"]
+mod authority_objects;
+#[path = "AuthorityProof.rs"]
+mod authority_proof;
+#[cfg(test)]
+#[path = "AuthorityRecipient.rs"]
+mod authority_recipient;
+#[path = "AuthorityRecovery.rs"]
+mod authority_recovery;
+#[path = "AuthorityRuntimeActivation.rs"]
+mod authority_runtime_activation;
 // Independent signed HyperNet command client and local device-key management.
 #[path = "AdapterFiles.rs"]
 mod adapter_files;
 #[path = "Applications.rs"]
 mod applications;
+#[path = "AuthorityMail.rs"]
+mod authority_mail;
+#[path = "AuthorityPages.rs"]
+mod authority_pages;
 #[path = "Borders.rs"]
 mod borders;
-#[path = "BridgeConsent.rs"]
-mod bridge_consent;
-#[path = "Federation.rs"]
-mod federation;
-#[path = "FederationProof.rs"]
-mod federation_proof;
 #[path = "Files.rs"]
 mod files;
 #[path = "FormUi.rs"]
 mod form_ui;
-#[path = "Forms.rs"]
-mod forms;
-#[path = "Mail.rs"]
-mod mail;
-#[path = "MailArchive.rs"]
-mod mail_archive;
 #[path = "MailCrypto.rs"]
 mod mail_crypto;
-#[path = "MailDelivery.rs"]
-mod mail_delivery;
-#[path = "MailDisclosure.rs"]
-mod mail_disclosure;
 #[path = "MailProtocol.rs"]
 mod mail_protocol;
-#[path = "MailTls.rs"]
-mod mail_tls;
-#[path = "MailVault.rs"]
-mod mail_vault;
 #[path = "Markup.rs"]
 mod markup;
 #[path = "Media.rs"]
 mod media;
 #[path = "MediaImport.rs"]
 mod media_import;
-#[path = "MediaProtocol.rs"]
-mod media_protocol;
 #[path = "MediaWorker.rs"]
 mod media_worker;
 #[path = "Motion.rs"]
 mod motion;
-#[path = "Navigation.rs"]
-mod navigation;
+#[path = "NativeFederation.rs"]
+mod native_federation;
 #[path = "Networks.rs"]
 mod networks;
 #[path = "PageLayout.rs"]
 mod page_layout;
-#[path = "PageProof.rs"]
-mod page_proof;
 #[path = "PageView.rs"]
 mod page_view;
-#[path = "Pages.rs"]
-mod pages;
 #[path = "Protocol.rs"]
 mod protocol;
 #[path = "Reader.rs"]
 mod reader;
-#[path = "ReviewAdapter.rs"]
-mod review_adapter;
 #[path = "Services.rs"]
 mod services;
-#[path = "ShareWithdrawal.rs"]
-mod share_withdrawal;
 #[path = "SshProof.rs"]
 mod ssh_proof;
 #[path = "TerminalGraphics.rs"]
@@ -76,6 +95,7 @@ mod terminal_graphics;
 mod terminal_input;
 #[path = "TransferFiles.rs"]
 mod transfer_files;
+pub(crate) use transfer_files as authority_files;
 #[path = "TransferProtocol.rs"]
 mod transfer_protocol;
 #[path = "TransferVault.rs"]
@@ -93,7 +113,6 @@ use ed25519_dalek::SigningKey;
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -107,159 +126,49 @@ use zeroize::Zeroize;
     about = "Independent HyperNet command-line client"
 )]
 struct Options {
-    #[arg(long, global = true)]
-    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Verify current governance through a private local authority control socket.
+    #[command(subcommand)]
+    AuthorityInspection(authority_inspection_cli::Command),
     /// Prepare and inspect independently authenticated offline network trust.
     #[command(subcommand)]
     Network(networks::Command),
     /// Browse the configured network catalogue or a verified page address.
-    Browse {
-        #[arg(conflicts_with = "after")]
-        uri: Option<String>,
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long)]
-        after: Option<String>,
-        #[arg(long)]
-        ascii: bool,
-        #[command(flatten)]
-        forms: form_ui::Options,
-        #[command(flatten)]
-        graphics: terminal_graphics::Options,
-    },
+    Browse(authority_pages::Browse),
     /// Fill and exchange explicitly accepted encrypted form submissions.
-    Forms(forms::Arguments),
+    Forms(authority_mail::FormsArguments),
     /// Manage separate least-privilege application credentials.
     #[command(subcommand)]
     Applications(applications::Command),
     /// Exchange explicit inert review jobs and bounded recommendations.
     #[command(subcommand)]
-    Adapters(review_adapter::Command),
+    Adapters(authority_pages::adapters::Command),
     /// Consented encrypted file exchange.
     Transfers(transfers::Arguments),
     /// Discover, request and invoke separately consented SSH services.
     #[command(subcommand)]
     Services(services::Command),
     /// Private encrypted mail, selected storage and device management.
-    Mail(mail::Arguments),
+    Mail(authority_mail::Arguments),
     /// Agree, share, review and read explicitly federated Pages.
     #[command(subcommand)]
-    Federation(federation::Command),
+    Federation(native_federation::Command),
     /// Import, store, review and reveal explicitly consented page media.
     #[command(subcommand)]
-    Media(media::Command),
+    Media(authority_pages::media::Command),
     /// Author, review and read inert HyperNet Pages.
     #[command(subcommand)]
-    Pages(pages::Command),
+    Pages(authority_pages::Command),
     /// Generate a device key locally. The secret is written only to a new private file.
     Keygen {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Write a new client profile after verifying the network fingerprint separately.
-    Configure {
-        #[arg(long)]
-        network: String,
-        #[arg(long)]
-        endpoint: String,
-        #[arg(long)]
-        ca: PathBuf,
-        #[arg(long)]
-        identity: PathBuf,
-        /// Mark a dedicated application profile for explicit grant and policy checks.
-        #[arg(long)]
-        application: bool,
-        #[arg(long)]
-        client_certificate: Option<PathBuf>,
-        #[arg(long)]
-        client_key: Option<PathBuf>,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    /// Sign a local host resource specification without contacting the network.
-    HostConsent {
-        #[arg(long)]
-        spec: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    /// Read current membership. Another device requires administration rights.
-    Status {
-        #[arg(long)]
-        device_key: Option<String>,
-    },
-    /// Issue a single-use invitation bound to a device public key.
-    Invite {
-        #[arg(long)]
-        device_key: String,
-        #[arg(long, value_parser=grant_mask)]
-        grants: u64,
-        /// Absolute Unix expiry, no more than seven days ahead.
-        #[arg(long)]
-        expires: u64,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    /// Redeem an invitation file using this device's key.
-    Redeem {
-        #[arg(long)]
-        invitation: PathBuf,
-    },
-    /// Replace a live device's network grant. Revoked keys cannot be restored.
-    Grant {
-        #[arg(long)]
-        device_key: String,
-        #[arg(long, value_parser=grant_mask)]
-        grants: u64,
-        #[arg(long)]
-        expires: u64,
-    },
-    Revoke {
-        #[arg(long)]
-        device_key: String,
-    },
-    /// Record consent to an exact local hosting profile digest.
-    Consent {
-        #[arg(long)]
-        profile: String,
-        #[arg(long, value_parser=clap::value_parser!(u64).range(1..=7))]
-        grants: u64,
-        #[arg(long)]
-        expires: u64,
-        #[arg(long)]
-        certificate: String,
-        /// Exact signed local consent file for the selected hosting services.
-        #[arg(long)]
-        document: PathBuf,
-    },
-    /// Withdraw network hosting consent. Stop the local host first for immediate withdrawal.
-    Withdraw,
-    /// Verify fresh authority for an exact hosting profile using mutual TLS.
-    Heartbeat {
-        #[arg(long)]
-        profile: String,
-    },
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Config {
-    #[serde(default)]
-    application: bool,
-    network: String,
-    endpoint: String,
-    ca_certificate: PathBuf,
-    identity: PathBuf,
-    #[serde(default)]
-    client_certificate: Option<PathBuf>,
-    #[serde(default)]
-    client_key: Option<PathBuf>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Zeroize)]
@@ -268,36 +177,6 @@ struct Config {
 struct Identity {
     secret_key: String,
     public_key: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Invitation {
-    version: u32,
-    network: String,
-    device_key: String,
-    secret: String,
-    expires: u64,
-    grants: u64,
-    request_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct HostSpecification {
-    grants: u64,
-    expires: u64,
-    memory_bytes: u64,
-    pids: u64,
-    cpu_quota: u64,
-    cpu_period: u64,
-    state_bytes: u64,
-    authority_endpoint: String,
-    authority_address: String,
-    services: Vec<String>,
-    namespaces: Vec<String>,
-    page_cache_bytes: u64,
-    page_media_cache_bytes: u64,
 }
 
 fn main() {
@@ -310,13 +189,6 @@ fn main() {
     }
 }
 
-fn grant_mask(value: &str) -> std::result::Result<u64, String> {
-    match value.parse::<u64>() {
-        Ok(mask @ (1 | 3 | 5 | 7 | 9)) => Ok(mask),
-        _ => Err("grant must be 1, 3, 5, 7 or dedicated federation grant 9".into()),
-    }
-}
-
 fn now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
@@ -324,9 +196,6 @@ fn random_hex<const N: usize>() -> String {
     let mut bytes = [0u8; N];
     OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
-}
-fn checked_key(value: &str) -> Result<()> {
-    protocol::hex_bytes::<32>(value).map(|_| ())
 }
 fn print_value(value: &Value) -> Result<()> {
     let raw = serde_json::to_string_pretty(value)?;
@@ -373,46 +242,18 @@ fn run() -> Result<()> {
         }
     };
     match options.command {
-        Command::Network(command) => {
-            anyhow::ensure!(
-                options.config.is_none(),
-                "network preparation does not accept an online --config profile"
-            );
-            return networks::run(command);
-        }
-        Command::Browse {
-            uri,
-            namespace,
-            after,
-            ascii,
-            forms,
-            graphics,
-        } => {
-            return navigation::run(
-                options.config.as_deref(),
-                uri,
-                namespace,
-                after,
-                ascii,
-                forms,
-                graphics,
-            );
-        }
-        Command::Applications(command) => {
-            return applications::run(options.config.as_deref(), command);
-        }
-        Command::Adapters(command) => {
-            return review_adapter::run(options.config.as_deref(), command);
-        }
-        Command::Transfers(arguments) => {
-            return transfers::run(options.config.as_deref(), arguments);
-        }
-        Command::Services(command) => return services::run(options.config.as_deref(), command),
-        Command::Forms(arguments) => return forms::run(options.config.as_deref(), arguments),
-        Command::Mail(arguments) => return mail::run(options.config.as_deref(), arguments),
-        Command::Media(command) => return media::run(options.config.as_deref(), command),
-        Command::Pages(command) => return pages::run(options.config.as_deref(), command),
-        Command::Federation(command) => return federation::run(options.config.as_deref(), command),
+        Command::AuthorityInspection(command) => authority_inspection_cli::run(command),
+        Command::Network(command) => networks::run(command),
+        Command::Browse(arguments) => authority_pages::browse(arguments),
+        Command::Applications(command) => applications::run(command),
+        Command::Adapters(command) => authority_pages::adapters::run(command),
+        Command::Transfers(arguments) => transfers::run(None, arguments),
+        Command::Services(command) => services::run(None, command),
+        Command::Forms(arguments) => authority_mail::run_forms(None, arguments),
+        Command::Mail(arguments) => authority_mail::run(None, arguments),
+        Command::Federation(command) => native_federation::run(command),
+        Command::Media(command) => authority_pages::media::run(command),
+        Command::Pages(command) => authority_pages::run(command),
         Command::Keygen { output } => {
             let key = SigningKey::generate(&mut OsRng);
             let identity = Identity {
@@ -420,252 +261,9 @@ fn run() -> Result<()> {
                 public_key: hex::encode(key.verifying_key().to_bytes()),
             };
             files::write_new(&output, &serde_json::to_vec_pretty(&identity)?)?;
-            return print_value(&json!({"publicKey":identity.public_key,"identity":output}));
-        }
-        Command::Configure {
-            network,
-            endpoint,
-            ca,
-            identity,
-            application,
-            client_certificate,
-            client_key,
-            output,
-        } => {
-            checked_key(&network)?;
-            protocol::endpoint(&endpoint)?;
-            load_identity(&identity)?;
-            if client_certificate.is_some() != client_key.is_some() {
-                bail!("client certificate and key must be provided together");
-            }
-            let config = Config {
-                application,
-                network,
-                endpoint,
-                ca_certificate: ca.canonicalize()?,
-                identity: identity.canonicalize()?,
-                client_certificate: client_certificate.map(|p| p.canonicalize()).transpose()?,
-                client_key: client_key.map(|p| p.canonicalize()).transpose()?,
-            };
-            protocol::client(&config)?;
-            files::write_new(&output, &serde_json::to_vec_pretty(&config)?)?;
-            return print_value(&json!({"profile":output,"network":config.network}));
-        }
-        command => {
-            let config_path = options
-                .config
-                .context("--config is required for network commands")?;
-            let config: Config =
-                serde_json::from_slice(&files::read_bounded(&config_path, false)?)?;
-            checked_key(&config.network)?;
-            let identity = load_identity(&config.identity)?;
-            let mut request_id = random_hex::<16>();
-            let mut pending: Option<(PathBuf, Invitation)> = None;
-            let body = match command {
-                Command::HostConsent { spec, output } => {
-                    let document: HostSpecification =
-                        serde_json::from_slice(&files::read_bounded(&spec, false)?)?;
-                    if document.grants != 2
-                        || !(67108864..=8589934592).contains(&document.memory_bytes)
-                        || !(16..=512).contains(&document.pids)
-                        || !(1000..=800000).contains(&document.cpu_quota)
-                        || document.cpu_period != 100000
-                        || !(1048576..=268435456).contains(&document.state_bytes)
-                        || document.expires <= now()?
-                        || document.expires > now()?.saturating_add(604800)
-                    {
-                        bail!("host specification exceeds the supported consent bounds");
-                    }
-                    let endpoint = protocol::endpoint(&document.authority_endpoint)?;
-                    let address: std::net::SocketAddr = document
-                        .authority_address
-                        .parse()
-                        .context("authorityAddress must be a literal socket address")?;
-                    if endpoint
-                        .host_str()
-                        .is_none_or(|name| name.parse::<std::net::IpAddr>().is_ok())
-                        || endpoint.port_or_known_default() != Some(address.port())
-                    {
-                        bail!(
-                            "host authority endpoint must use a DNS name and the pinned address port"
-                        );
-                    }
-                    if document.page_media_cache_bytes != 0 {
-                        bail!("media hosting is unavailable; pageMediaCacheBytes must be zero");
-                    }
-                    if document.services.is_empty() {
-                        if !document.namespaces.is_empty() || document.page_cache_bytes != 0 {
-                            bail!(
-                                "heartbeat-only consent requires empty namespaces and zero cache"
-                            );
-                        }
-                    } else if document.services != ["Pages"]
-                        || document.namespaces.is_empty()
-                        || document.namespaces.len() > 16
-                        || document
-                            .namespaces
-                            .iter()
-                            .any(|name| !markup::namespace(name))
-                        || document
-                            .namespaces
-                            .iter()
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .len()
-                            != document.namespaces.len()
-                        || document.page_cache_bytes < 65536
-                        || document.page_cache_bytes > document.state_bytes.saturating_sub(262144)
-                    {
-                        bail!("invalid Pages scope or cache allowance");
-                    }
-                    let value = json!({
-                        "version":3,"network":config.network,"deviceKey":identity.public_key,
-                        "grants":document.grants,"expires":document.expires,
-                        "memoryBytes":document.memory_bytes,"pids":document.pids,
-                        "cpuQuota":document.cpu_quota,"cpuPeriod":document.cpu_period,
-                        "stateBytes":document.state_bytes,"authorityEndpoint":document.authority_endpoint,
-                        "authorityAddress":document.authority_address,
-                        "services":document.services,"namespaces":document.namespaces,
-                        "pageCacheBytes":document.page_cache_bytes,
-                        "pageMediaCacheBytes":document.page_media_cache_bytes
-                    });
-                    let payload = serde_json::to_vec(&value)?;
-                    protocol::endpoint(&document.authority_endpoint)?;
-                    let mut bytes = protocol::sign_consent(&identity, &payload)?;
-                    bytes.push(b'\n');
-                    let profile = hex::encode(Sha256::digest(&bytes));
-                    bytes.pop();
-                    files::write_new(&output, &bytes)?;
-                    return print_value(
-                        &json!({"profile":profile,"consent":output,"deviceKey":identity.public_key,"hostMemoryBytes":document.memory_bytes,"relayMemoryBytes":134217728u64,"totalMemoryBytes":document.memory_bytes+134217728,"relayBytesPerSecond":1048576}),
-                    );
-                }
-                Command::Status { device_key } => {
-                    if let Some(key) = &device_key {
-                        checked_key(key)?;
-                    }
-                    json!({"type":"Status","deviceKey":device_key})
-                }
-                Command::Invite {
-                    device_key,
-                    grants,
-                    expires,
-                    output,
-                } => {
-                    checked_key(&device_key)?;
-                    let time = now()?;
-                    if expires <= time || expires > time.saturating_add(604800) {
-                        bail!("invitation expiry must be within the next seven days");
-                    }
-                    let invitation = if output.exists() {
-                        let saved: Invitation =
-                            serde_json::from_slice(&files::read_bounded(&output, true)?)?;
-                        if saved.version != 1
-                            || saved.network != config.network
-                            || saved.device_key != device_key
-                            || saved.grants != grants
-                            || saved.expires != expires
-                        {
-                            bail!("existing invitation file does not match the requested grant");
-                        }
-                        saved
-                    } else {
-                        let saved = Invitation {
-                            version: 1,
-                            network: config.network.clone(),
-                            device_key: device_key.clone(),
-                            secret: random_hex::<32>(),
-                            expires,
-                            grants,
-                            request_id: request_id.clone(),
-                        };
-                        // Persist before sending. Repeating this command retries the same invitation.
-                        files::write_new(&output, &serde_json::to_vec_pretty(&saved)?)?;
-                        saved
-                    };
-                    let verifier = hex::encode(Sha256::digest(protocol::hex_bytes::<32>(
-                        &invitation.secret,
-                    )?));
-                    pending = Some((output, invitation));
-                    json!({"type":"Invite","verifier":verifier,"deviceKey":device_key,"grants":grants,"expires":expires})
-                }
-                Command::Redeem { invitation } => {
-                    let value: Invitation =
-                        serde_json::from_slice(&files::read_bounded(&invitation, true)?)?;
-                    if value.version != 1
-                        || value.network != config.network
-                        || value.device_key != identity.public_key
-                    {
-                        bail!("invitation does not match this network and device");
-                    }
-                    checked_key(&value.secret)?;
-                    // Redemption is idempotent by invitation and signing key, independently of this request ID.
-                    request_id = random_hex::<16>();
-                    json!({"type":"Redeem","secret":value.secret})
-                }
-                Command::Grant {
-                    device_key,
-                    grants,
-                    expires,
-                } => {
-                    checked_key(&device_key)?;
-                    json!({"type":"Grant","deviceKey":device_key,"grants":grants,"expires":expires})
-                }
-                Command::Revoke { device_key } => {
-                    checked_key(&device_key)?;
-                    json!({"type":"Revoke","deviceKey":device_key})
-                }
-                Command::Consent {
-                    profile,
-                    grants,
-                    expires,
-                    certificate,
-                    document,
-                } => {
-                    checked_key(&profile)?;
-                    checked_key(&certificate)?;
-                    let mut command = json!({"type":"Consent","profile":profile,"grants":grants,"expires":expires,"certificate":certificate});
-                    {
-                        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-                        let bytes = files::read_bounded(&document, false)?;
-                        if bytes.len() > 16384 || hex::encode(Sha256::digest(&bytes)) != profile {
-                            bail!("consent document does not match the profile or size bound");
-                        }
-                        command["document"] = json!(URL_SAFE_NO_PAD.encode(bytes));
-                    }
-                    command
-                }
-                Command::Withdraw => json!({"type":"Withdraw"}),
-                Command::Heartbeat { profile } => {
-                    checked_key(&profile)?;
-                    json!({"type":"Heartbeat","profile":profile})
-                }
-                Command::Keygen { .. }
-                | Command::Network(_)
-                | Command::Configure { .. }
-                | Command::Media(_)
-                | Command::Browse { .. }
-                | Command::Pages(_)
-                | Command::Federation(_)
-                | Command::Mail(_)
-                | Command::Forms(_)
-                | Command::Transfers(_)
-                | Command::Services(_)
-                | Command::Applications(_)
-                | Command::Adapters(_) => {
-                    unreachable!()
-                }
-            };
-            let reply = protocol::send(&config, &identity, &request_id, now()?, body);
-            if let Some((path, _invitation)) = &pending {
-                eprintln!(
-                    "Invitation material retained at {}. Only a successful response confirms issuance.",
-                    terminal_text(&path.to_string_lossy(), false)
-                );
-            }
-            print_value(&reply?)?;
+            print_value(&json!({"publicKey":identity.public_key,"identity":output}))
         }
     }
-    Ok(())
 }
 
 fn load_identity(path: &Path) -> Result<Identity> {
@@ -679,35 +277,5 @@ fn load_identity(path: &Path) -> Result<Identity> {
 }
 
 #[cfg(test)]
-mod command_tests {
-    use super::*;
-    #[test]
-    fn grant_arguments_keep_the_declared_unsigned_type() {
-        for command in ["invite", "grant", "consent"] {
-            let mut args = vec![
-                "HyperNetSuite",
-                command,
-                "--grants",
-                "3",
-                "--expires",
-                "1800000000",
-            ];
-            if command == "consent" {
-                args.extend([
-                    "--profile",
-                    "00",
-                    "--certificate",
-                    "00",
-                    "--document",
-                    "Consent.json",
-                ]);
-            } else {
-                args.extend(["--device-key", "00"]);
-            }
-            if command == "invite" {
-                args.extend(["--output", "Invitation.json"]);
-            }
-            assert!(Options::try_parse_from(args).is_ok());
-        }
-    }
-}
+#[path = "AuthorityDeploymentTests.rs"]
+mod authority_deployment_tests;

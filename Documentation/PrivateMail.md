@@ -1,242 +1,199 @@
 # Private mail
 
-Private mail requires a current HyperNet membership, a pinned mail authority
-signing key and at least one consented MailStore. MailStore is a separate,
-confined HyperNet service. The authority stores public address, device and prekey
-metadata; it does not receive letter plaintext, ciphertext or mailbox contents.
-The Suite sends encrypted letters directly to the exact stores selected in the
-address owner's signed manifest. An administrator cannot widen this placement.
+The Mail client uses a fully accepted, independently pinned bootstrap, retained
+quorum floors, an age-encrypted vault and explicitly selected Mail services.
+The authority certifies public metadata and one-use package claims. It does not
+receive plaintext or ciphertext. A selected store holds only encrypted letters.
+There is no separate mail authority signing key and no direct TCP reader route.
 
-The examples below abbreviate the common command prefix as `Mail`:
+## Prepare identities
+
+An admitted manager needs SendMail15 and ReadMail16 capabilities to publish an
+owner-signed mailbox. Store registration additionally requires StoreMail14 and
+ManageService26. The deployment's registrar and operator consent remain separate
+requirements. Mail owner keys, device request keys and MLS signing keys are
+created separately inside the vault; device keys must not be admitted as members.
+
+Each command takes an explicit location. These shell arrays abbreviate examples;
+replace the paths, pins, IDs and expiry values with independently verified inputs:
 
 ```sh
-HyperNetSuite --config Profile.json mail --vault MailVault --key MailIdentity
+Location=(--bootstrap /Private/Bootstrap.cbor --bootstrap-digest BOOTSTRAP_SHA256 \
+  --clock-witness /Private/Clock/ClockHealth.cbor \
+  --clock-monitor-key MONITOR_PUBLIC_KEY --host-kernel-boot CURRENT_BOOT_ID)
+Vault=(--vault /Private/MailVault --age-key /Private/MailAge.key)
+Manager=("${Location[@]}" --directory /Private/ManagerFloor \
+  --key /Private/Manager.json --socket /Private/Authority/Control.sock)
 ```
 
-`Profile.json` is an existing admitted member profile. Create its identity and
-join through the ordinary invite commands described in Usage.md. The member's
-registration link stays in the authority's private state; each address has a
-separate public owner key, request key and MLS signing key. Reusing a membership
-profile does not publish that link. Addresses, selected store addresses, device
-rosters, message sizes and timing remain visible to the authority or selected
-stores. This is not an anonymity network.
-
-## Create and verify addresses
+The manager floor is initialized through `authority-inspection initialise` and
+has its own ordinary requester stream. `mail init` creates a private vault and
+separate age identity. It never overwrites existing state:
 
 ```sh
-Mail init --authority-key AUTHORITY_PUBLIC_KEY
-Mail hosts
-Mail address-create --mailbox Personal --host HOST_PUBLIC_KEY --copies 1 \
+HyperNetSuite mail init "${Location[@]}" --directory /Private/ManagerFloor "${Vault[@]}"
+HyperNetSuite mail address-create "${Location[@]}" --directory /Private/ManagerFloor \
+  "${Vault[@]}" --mailbox Personal --host MAIL_SERVICE_KEY --private \
   --expires UNIX_SECONDS --retention 86400
-Mail address-show --mailbox Personal
-Mail refill --mailbox Personal --count 8
-Mail contact-verify --address CONTACT_ADDRESS --owner-fingerprint OWNER_PUBLIC_KEY
+HyperNetSuite mail publish "${Manager[@]}" "${Vault[@]}" --mailbox Personal \
+  --grant MANAGER_GRANT_ID
+HyperNetSuite mail device-initialise "${Location[@]}" \
+  --directory /Private/PersonalFloor "${Vault[@]}" --mailbox Personal
 ```
 
-Replace `Mail` with the prefix above. The first command creates a mode 0700
-vault directory and a separate mode 0600 native age identity. It reports the age
-public recipient needed for encrypted exports. Keep the identity private; the
-same operating-system account can read this key and decrypt its vault.
+Use `--grant-record` when an exact delegated grant is not already retained.
+Address creation returns the address, owner public key and public device
+binding; no private key is printed. Publication atomically admits the device's
+request stream without granting membership or administrative authority.
+`device-initialise` derives its requester from the vault and creates a separate
+floor. Never reuse the manager directory for a device.
 
-Exchange the full owner fingerprint through an independently trusted channel.
-The address is derived from that owner key and the network identifier. A fetched
-key is not automatically considered verified. Both sender and recipient verify
-their contact before sending or first reading, respectively. A changed owner
-requires a different address and a new explicit verification. Saved manifest
-versions reject rollbacks or conflicting versions for that contact.
+A private mailbox selects exactly one host and one copy. Omit `--private` only
+when deliberately choosing another policy. Use repeated `--host` and `--copies`
+for up to four explicitly selected stores. Administrators cannot expand this
+owner-signed placement. No network-default fallback is used.
 
-Use another mailbox label to create another independent address. Names are local
-labels, not network aliases. Creation saves all private keys before registering
-with the authority. If the response is lost, `address-register --mailbox Personal`
-retries that exact registration and verifies its resulting manifest.
+## Send and read
 
-Address and device consent lasts at most seven days. Renew the address before
-its devices: `address-renew --mailbox Personal --expires UNIX_SECONDS`, then
-`device-renew --mailbox Personal --device-id DEVICE_ID --expires UNIX_SECONDS`.
-Renewal changes the manifest generation and needs fresh public prekeys on every
-receiving device. An owner can renew an expired address while its registering
-member remains admitted. A deleted address cannot be reactivated.
-
-## Send, retry and receive
-
-Create subject and body files owned by the current user with no group or other
-permissions. Subjects are limited to 512 UTF-8 bytes; bodies to 32768 bytes.
+Use the device's floor and private authority socket for device commands:
 
 ```sh
-Mail send --mailbox Personal --to CONTACT_ADDRESS \
-  --subject-file Subject.txt --body Letter.txt
-Mail outbox
-Mail retry --message-id MESSAGE_ID
-Mail inbox --mailbox Personal
-Mail read --mailbox Personal --host HOST_PUBLIC_KEY --message-id MESSAGE_ID
-Mail read --mailbox Personal --local --message-id MESSAGE_ID
+Device=("${Location[@]}" --directory /Private/PersonalFloor "${Vault[@]}" \
+  --mailbox Personal --socket /Private/Authority/Control.sock)
+Store=(--service MAIL_SERVICE_KEY --service-directory /Private/MailService \
+  --core /Installed/HyperNet)
+HyperNetSuite mail sync "${Device[@]}"
+HyperNetSuite mail refill "${Device[@]}" --count 4
+HyperNetSuite mail contact-verify "${Device[@]}" \
+  --address RECIPIENT_ADDRESS --owner-key INDEPENDENTLY_VERIFIED_OWNER_KEY
+HyperNetSuite mail compose "${Location[@]}" --directory /Private/PersonalFloor \
+  "${Vault[@]}" --mailbox Personal --recipient RECIPIENT_ADDRESS \
+  --subject 'A private letter' --body-file /Private/Body.txt --expires UNIX_SECONDS
+HyperNetSuite mail send "${Device[@]}" "${Store[@]}" --message MESSAGE_ID
+HyperNetSuite mail inbox "${Device[@]}" "${Store[@]}"
+HyperNetSuite mail read "${Device[@]}" "${Store[@]}" --message MESSAGE_ID
 ```
 
-The draft and claim ID are encrypted and synced before requesting one-use
-KeyPackages. The exact encrypted envelope is synced before the first upload.
-Retries use those same bytes. `Queued`, `Partial` and `Stored` report placement
-progress; `durable` is true only after the manifest's required number of signed
-store receipts. `Stored` means all selected stores accepted the letter; it does
-not mean the recipient read it. Inspect this structured result even when the
-command succeeds. Preparation failures retain a queued draft with an error.
+The body input is an owned private UTF-8 file. The initial recipient owner must
+be verified independently, not merely copied from an unauthenticated directory.
+Later contact refreshes preserve owner identity and reject rollback or forks.
+Each Read device publishes one-use packages. Missing packages prevent the entire
+claim. A caller can publish one through eight per refill; interrupted publication
+resumes retained packages instead of regenerating their secrets.
 
-A letter includes every current Read device. An offline device with published
-prekeys still receives it. Missing prekeys block the whole letter; devices are
-never silently omitted. The receiver must periodically run `refill`. Each call
-publishes at most eight packages. Thirty-two public packages per device are
-allowed. After owner roster or placement changes, each retained receiving device
-must refresh and refill for the new manifest generation. Old private packages
-remain available for letters already admitted under the old generation.
+`compose` retains the draft and returns its32-byte message ID. `send` claims an
+exact complete package set, encrypts one MLS letter, and permanently binds its
+ciphertext digest before upload. Rerun the same command after interruption.
+The pending request, package selection and ciphertext remain unchanged.
+Changing either mailbox revision before completion can refuse further delivery;
+retain existing receipts and compose a new letter explicitly when appropriate.
 
-Retry first asks each unresolved selected store for its signed receipt, using the
-exact retained message ID, ciphertext digest and route. A matching receipt confirms
-an earlier accepted letter even after sender or recipient renewal. Current sender
-permission and recipient placement remain required. If a receipt query fails, that
-host stays unresolved and no upload is attempted there. A confirmed absent receipt
-permits a new upload only while both signed manifests still match the retained
-ciphertext and its lifetime remains valid. Otherwise retry reports the failed host
-explicitly; retain its receipt information and send a new letter only by an explicit
-new action. Do not assume a timeout means no store accepted it. There is no atomic
-transaction across stores and no silent replacement of an accepted envelope. `cancel --message-id MESSAGE_ID` removes only the local outbox
-copy; it cannot recall previously stored letters.
+`send` addresses one selected service per invocation. Repeat it for other
+selected stores when the manifest requires several copies. The result reports
+`confirmedCopies`, `requiredCopies` and `delivered`. Successful command execution
+does not imply all required copies exist. `delivered` records verified storage
+receipts, not that the recipient read the letter.
 
-A combined Read+Send device cannot send to its own address: MLS forbids duplicate
-signature keys in a group. Use another address or a separate Send-only device
-for this case. Different addresses in one vault work normally.
+The example uses the installed service's bounded local exchange command. An
+existing same-UID private socket can instead be selected with `--service-socket`.
+These choices are mutually exclusive. They do not expose or discover a public
+reader route. The supplied service key must match the exact selected Mail role.
 
-Read verifies the original sender operation, the authority's signed admission at
-its recorded time, the store receipt and the complete owner-signed MLS leaf set.
-The current roster does not retroactively authenticate an old letter. The
-archive and destruction of the used private prekey are committed in one encrypted
-snapshot before acknowledgement or output. Repeated reads do not consume a second
-prekey. Output escapes terminal controls in subjects, bodies and server errors.
+Inbox pages contain up to16 sorted entries. Pass `--after` using the returned
+`next` ID to continue. An empty final page is valid. Read independently verifies
+the quorum result, service receipt, immutable ciphertext, original signed
+manifests and actual MLS membership. It commits the decrypted archive and removes
+the consumed private package in one encrypted snapshot before output. Repeating
+a read returns that archive without consuming another package. Output is JSON,
+which escapes terminal control characters in message text.
 
-## Placement and scoped devices
+A combined Read/Send device cannot send to itself at the same address because
+MLS does not admit duplicate signature keys. Use another address or a distinct
+Send-only device. Separate addresses in one vault are supported.
+
+## Owner changes and application devices
+
+Owner commands create a local signed revision. Publish each revision before
+creating another one so its exact predecessor remains the committed mailbox:
 
 ```sh
-Mail placement --mailbox Personal --host FIRST_HOST --host SECOND_HOST --copies 2
-Mail device-create --mailbox Reader --address ADDRESS --expires UNIX_SECONDS \
-  --permission Read --output ReaderBinding.json
-Mail device-enrol --mailbox Personal --binding ReaderBinding.json
-Mail device-revoke --mailbox Personal --device-id DEVICE_ID
+HyperNetSuite mail placement "${Location[@]}" --directory /Private/ManagerFloor \
+  "${Vault[@]}" --mailbox Personal --host MAIL_SERVICE_KEY --private
+HyperNetSuite mail publish "${Manager[@]}" "${Vault[@]}" --mailbox Personal \
+  --grant MANAGER_GRANT_ID
 ```
 
-Run `device-create` in the application's own vault and give the owner only its
-public binding file. The owner reviews and signs that binding. Available scopes
-are `Read`, `Send` and `Delete`; repeat `--permission` for multiple scopes. The
-child gets no general membership, host or administrator rights. Use
-`contact-verify --mailbox Reader` and `hosts --mailbox Reader` to select its
-scoped identity for public directory access; no general member key is needed.
-`device-export --mailbox Reader --output ReaderBinding.json` re-exports a saved
-public binding if its original file was lost or could not be written. Keep application
-vaults and age identities separate; sharing the owner's vault grants access to
-all keys in that vault, regardless of the public child's advertised scope.
+Use `address-renew --expires UNIX_SECONDS` to extend a mailbox, publish that
+revision, then use `device-renew --device DEVICE_ID --expires UNIX_SECONDS` and
+publish again when its child expiry also needs extension. Both local commands
+use the same location, vault and mailbox arguments as `placement`.
+Device expiry must not exceed its mailbox expiry. After a publication changes,
+retained Read devices sync and refill for that new generation. Old private
+packages remain available for already accepted letters until their expiry.
+New devices receive future letters; adding a device does not decrypt history.
 
-Placement names every allowed store; there is no fallback to administrator-selected
-storage. Removing a store prevents future access through this manifest and asks
-stores to remove no-longer-authorised data through policy synchronisation. Existing remote letters are not migrated automatically; read and export
-needed history before changing placement. A malicious store can retain
-ciphertext it already held. Revoking a device prevents
-fresh operations and excludes it from future letters; it cannot erase that
-device's existing plaintext or keys. New devices obtain future mail after refill;
-historical mail requires explicit archive transfer.
+Create an application's device in its own vault with `device-create --mailbox
+Reader --address ADDRESS --expires UNIX_SECONDS --permission Read --output
+/Private/ReaderBinding.json`, plus that vault's location arguments. Repeat
+`--permission` for Send or Delete when needed. Give only the public binding to
+the owner, who uses `device-enrol --mailbox Personal --binding FILE`, then
+publishes the new revision. The application initializes its own device floor.
+`device-export --mailbox Reader --output FILE` safely re-exports a retained
+binding if the original output was lost; it never regenerates private keys.
 
-`delete --mailbox Personal --host HOST --message-id ID --digest DIGEST` deletes a
-remote letter through a Delete-scoped device and returns a signed receipt. Obtain
-the digest from `inbox`. Delete each selected copy separately. Use
-`archive-delete --mailbox Personal --message-id ID` to remove local retained
-history. `address-delete --mailbox Personal` signs an address tombstone. Neither
-operation promises erasure of previously copied plaintext or external backups.
+`device-revoke --device DEVICE_ID` removes that device in the next owner-signed
+revision. `address-delete` produces a permanent address tombstone. Publish both
+through the manager. Removed identities stay reserved; neither operation can
+revoke plaintext or keys already retained by another party. Placement changes
+do not migrate existing letters or prove deletion from former stores.
 
-## History and recovery
+## Deletion, history and recovery
 
-```sh
-Mail archive-export --mailbox Personal --recipient AGE_PUBLIC_RECIPIENT \
-  --output History.age
-Mail archive-import --input History.age --expected-address ADDRESS
-Mail archive-list --address ADDRESS
-Mail archive-read --address ADDRESS --message-id MESSAGE_ID
-```
+`mail delete` uses a current Delete-scoped device and the same explicit store
+arguments to delete one remote copy. The store retains a tombstone through claim
+expiry; retry cannot resurrect it. Delete each required copy separately.
+`archive-read --message ID` reads the retained local plaintext archive;
+`archive-delete --message ID` removes only that local entry. Both use the vault
+and location arguments and do not contact a service. `addresses` and `outbox`
+show public summaries without exposing private keys or letter bodies.
 
-Import into the vault whose age identity matches the explicit export recipient.
-It is usable without an active mailbox. History is authenticated as the exporting
-owner's or authorised device's retained copy and labelled `ImportedArchive`; it
-is not reinterpreted as a newly received message. The export contains no active
-MLS signer, request key, unspent prekey or outbox retry state. Import does not
-restore any of those keys or change contact verification. A letter removed from
-the active vault remains in any previously exported archive.
+For explicit onward release of one already archived letter, use `archive-disclose`
+with its exact address/message, named recipient, purpose, expiry and
+`--consent-disclosure`. The command writes signed metadata before private
+no-overwrite plaintext output and makes no provider call. See
+[Adapters](Adapters.md) for the complete selected-disclosure contract.
 
-An owner may explicitly add `--include-owner-recovery` during export. Keep this
-archive offline with its separate recipient identity. Then use:
+Keep the age identity separate from the encrypted vault and protect both. The
+vault retains active private keys, unconsumed packages, pending drafts, receipts
+and deliberately readable local history. Its admission bound is32MiB. Delete
+unneeded local archives before reaching that bound. A compromised age identity
+can expose retained plaintext history; this is not continuous conversation
+post-compromise recovery.
 
-```sh
-Mail owner-recover --mailbox Recovered --input Recovery.age --expected-address ADDRESS
-```
+Do not replace a live vault or floor with an older snapshot. Doing so can restore
+consumed private packages or discard acknowledged effects. No check can detect
+replacement of every local witness and private key by someone controlling the
+account. Lost private packages cannot be reconstructed from public inventory.
+There is no implicit owner recovery or automatic archive import in this client.
 
-This restores the address owner, creates fresh request and MLS signing keys, and
-registers a new device with the current authority. It requires a still-admitted
-registering member. If the eight-device roster is full or the address expired,
-it saves the recovered owner and fresh device locally, reports
-`freshDeviceEnrolled:false`, and leaves activation pending. Renew the address or
-revoke an old device, then use `device-export` and owner `device-enrol` to activate
-the saved fresh binding. It does not restore old
-prekeys, old active groups, contact verification or history; import history
-separately. If the registration response is lost, `address-show` reconciles it
-using the saved owner identity. Revoke lost devices with the recovered owner.
+A healthy authority replacement preserves the bootstrap pin and explicitly
+adopts a certified epoch chain in each manager/device floor. A freshly initialized
+device floor begins at the accepted bootstrap and must adopt that chain before
+contacting a later committee. Service requester and recipient journals must
+likewise advance together. Exceptional recovery establishes a new network
+identity requiring independent acceptance; it does not inherit mail secrets or
+silently move this vault to another network.
 
-The encrypted vault holds active keys, drafts and retained plaintext history.
-Keep the current vault and age identity safe, but do not copy an old vault back
-into active service: that rolls back consumed-prekey and deduplication state.
-Use history export and explicit owner recovery instead. No software check can
-detect replacement of every local key, snapshot and rollback floor by someone
-with full access to the account.
+## Cryptography and limits
 
-## Cryptographic profile and limits
+Each letter uses RFC9420 MLS with X25519, AES-128-GCM, SHA-256 and Ed25519 through
+the existing OpenMLS implementation. Local snapshots use age X25519 recipients,
+without plugins or shell execution. Public packages are independently checked
+against the owner-signed credential, exact native reference and lifetime.
 
-Each letter uses a fresh RFC 9420 MLS group with
-X25519/AES-128-GCM/SHA-256/Ed25519 and OpenMLS 0.9.1. The sender authenticates every
-KeyPackage against the owner's device roster, exact credential, lifetime and
-canonical MLS reference. No draft MLS extension, custom cipher or executable
-mail body is enabled. Local snapshots and exports use the standard age X25519
-recipient format through age 0.11.5, without plugins, SSH recipients or armor.
-
-Deleting a consumed prekey and the temporary group removes those active secrets
-from the live vault. Old snapshots, filesystem copies and device compromise can
-preserve them. Retained history is deliberately decryptable with the archive key
-and has no forward secrecy against that key's compromise. This per-letter profile
-does not claim continuous conversation post-compromise recovery. It also does not
-provide recipient anonymity, post-quantum protection or denial-of-service immunity.
-
-TLS 1.3 validates the configured CA and service name, then checks the exact
-consented leaf-certificate digest before HTTP upload. Proxy settings and redirects
-are disabled and connection addresses are fixed by host consent. Host, device,
-manifest and mailbox limits are enforced independently by HyperNet. The local
-vault is limited to 32 MiB, 64 local mailboxes, 128 outbox entries and 1024 retained
-history entries. Export/delete history and cancel unneeded drafts before reaching
-these limits.
-
-## MailStore consent
-
-Host commands use the dedicated host's existing admitted profile and do not need
-a vault. `mail host-consent --spec Host.json --output Consent.json` signs the
-MailHostConsent documented by HyperNet; `mail host-register --consent Consent.json`
-registers it. The host's admission grants must be MEMBER|HOST (3), with no page,
-bridge or administrator role. Consent fixes resource limits, persistent-state
-quota, TLS certificate digest, exact CA PEM digest, listener and authority
-addresses, authority signer and expiry. Use HyperNet's MailStore launcher for
-process confinement and separate persistent storage. `mail host-withdraw
---expected-generation N` withdraws that host consent.
-
-The consented `memoryBytes`, `pids`, `cpuQuota` and `cpuPeriod` limit the MailStore
-worker. The separate Gate additionally consumes up to 128 MiB of memory, 32 PIDs,
-0.5 CPU (50000/100000) and 8 MiB of volatile state. `host-consent` reports both
-sets of limits. `stateBytes` sizes the sole preallocated persistent mailbox file;
-the Gate does not receive a second persistent mailbox database.
-
-## Selected disclosure
-
-[Adapters](Adapters.md) describes `mail archive-disclose` for one explicitly selected
-local letter. It produces plaintext only after named-recipient consent and retains
-a signed metadata receipt. It exports no device, vault or recovery secret. Pages
-application grants do not confer mailbox rights; mail integrations keep their own
-Read, Send and Delete device permissions.
+Subjects are at most512bytes and bodies at most32768bytes. Ciphertext is at
+most128KiB. A mailbox has at most eight devices and four selected stores.
+Profile, grant, global authority state and store resource limits also apply.
+Failure preserves committed history; limits never evict one-use safety records
+silently. Authorities and selected stores can observe routing metadata, message
+size and timing. This profile does not claim anonymity or post-quantum security.

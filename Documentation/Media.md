@@ -1,144 +1,141 @@
 # Page media
 
-Media is immutable content bound to an exact signed page revision. HyperNet
-stores canonical assets separately from page text. HyperNetSuite imports,
-previews, uploads and independently verifies those assets. Every fetch requires
-an explicit action and fresh permission. Pages cannot choose a local file,
-external URL, decoder, graphics protocol or executable.
+Media is immutable content bound to one exact signed Page revision. HyperNetSuite
+imports canonical assets, uploads to explicitly selected consenting hosts, and
+independently validates complete downloaded assets. Pages cannot select a local
+file, external URL, decoder, graphics protocol or executable. Effects use the
+viewer's clock and cached pixels; animation frames are not network messages.
 
-## Prepare and publish
+## Prepare an asset
 
-List the network's currently consented media hosts and minimum copy policy:
+Find current consenting hosts with `pages host list [online options] --grant GRANT
+--role media --namespace News`. Hosting and upload permissions are separate.
+Import one local image or vector:
 
 ```sh
-HyperNetSuite --config Author.json media hosts
 mkdir -m 700 Artwork
 HyperNetSuite media import --input Diagram.svg --output Artwork/Diagram.Vector \
   --manifest Artwork/Diagram.Asset --id Diagram --host HOST_ONE --host HOST_TWO --copies 2
 ```
 
-The host keys must consent to the intended namespace. The manifest contains
-`id`, `profile`, `width`, `height`, `bytes`, `digest`, `hosts` and `copies`.
-Copy its exact compact JSON object after `@Asset` on one line in the draft.
-Add an Image and an explicit Reveal button:
+PNG and JPEG import produce canonical HyperNetRaster/1 RGB bytes. SVG import
+produces bounded HyperNetVector/1 geometry through an isolated importer. Original
+encoded input is never uploaded. Assets have bounded dimensions, pixel counts,
+geometry and total Page bytes. See [HyperPage](HyperPage.md),
+[MediaSchema](MediaSchema.json) and [MediaViewer](MediaViewer.md).
+
+Place the exact manifest JSON after `@Asset` on one line in the draft. Every
+asset needs an Image reference and an explicit Reveal control:
 
 ```text
 @Image {"id":"DiagramView","asset":"Diagram","alt":"Network connections","rows":12,"fit":"Contain"}
 @Button {"label":"Reveal diagram","action":{"kind":"Reveal","target":"DiagramView"}}
 ```
 
-Each declared asset must appear in an Image. Its ID, digest, dimensions, hosts
-and copy count are part of the signed page, not mutable rendering hints. Assets
-are at most 1024 pixels per axis and 262144 pixels; a page permits eight assets
-and four MiB total. Vectors have additional geometry bounds. See
-[HyperPage](HyperPage.md), [MediaSchema](MediaSchema.json) and the
-[import and display guide](MediaViewer.md). The JSON schema describes structure;
-canonical byte ordering, digest, arithmetic and reference checks also apply.
+Use `pages preview Draft.txt --tui --media Diagram=Artwork/Diagram.Vector` to
+inspect a local draft. Local mappings are explicit and are read only on reveal.
+Alt text remains available without a supported graphics protocol.
+
+Sign and submit the Page with the separate `pages author` and `pages submit`
+commands in [Pages](Pages.md). Submission returns immutable kind144 asset records.
+For each asset, retain its `id`, `generation` and `digest`; the summary also shows
+the source asset ID, byte count, raw content hash and selected hosts. The record
+digest and raw asset SHA256 have different purposes and are not interchangeable.
+
+## Upload and resume
+
+Every finite media effect takes the exact asset record, capability, authority
+connection and selected service route. For example:
 
 ```sh
-HyperNetSuite pages preview Draft.txt --tui --graphics kitty \
-  --media Diagram=Artwork/Diagram.Vector
-HyperNetSuite --config Author.json pages submit --file Draft.txt --namespace News \
-  --output Artwork/Submission.json
-HyperNetSuite --config Author.json media upload --submission Artwork/Submission.json \
-  --asset Diagram --input Artwork/Diagram.Vector
+HyperNetSuite media upload [online options] --grant AUTHOR_GRANT \
+  --asset RECORD_ID --asset-generation GENERATION --asset-digest RECORD_DIGEST \
+  --host HOST_ONE --service-socket /Private/MediaControl.sock \
+  --progress-directory Artwork/UploadOne --input Artwork/Diagram.Vector
 ```
 
-Preview uses only the explicitly mapped local files and loads an asset only on
-Reveal. Select a supported graphics protocol or retain the complete alt-text
-fallback. Preview cannot submit forms or navigate the network. PNG and JPEG import
-produce `HyperNetRaster/1` RGB bytes; SVG import produces `HyperNetVector/1` geometry.
-Original encoded files are never uploaded.
+Repeat with each host in the signed manifest, using a separate progress directory.
+The service route is either an explicit `--service-socket` or an installed
+`--service-directory` with the Core executable selected by `--core`. These modes
+cannot be combined. No arbitrary network route is inferred from Page content.
 
-Upload uses the exact saved author submission. It checks local bytes before
-sending, resumes immutable 32 KiB chunks, and seals independently validated
-content at each selected host. `--host HOST_KEY` selects one manifest host;
-omitting it attempts all. An exact repeated chunk is accepted, while conflicting
-bytes at the same offset fail. Partial failure does not erase successful copies.
-Retry the same asset and submission. Store expiry, withdrawal or changed page
-state can prevent a retry; those conditions require fresh consent or a new draft.
-The required copies must satisfy both the signed manifest and current network
-policy before publication.
+The client retains exact input, operation and completed ranges in private
+persistent storage. Retry the same command, source, asset, host and directory
+after interruption. It resumes an unresolved signed operation before preparing
+another one. Received bytes and receipts are committed before acknowledgement.
+Conflicting chunks, changed identities and gaps are refused. Completed progress
+is checked against the retained certified asset and its complete-copy receipt.
+
+Uploads use finite 32 KiB wire chunks. The host signs a complete-copy receipt only
+after all canonical bytes pass length, raw SHA256, dimensions and decoder checks.
+The author commits that receipt to authority metadata. Publication requires the
+manifest's copy count and the current namespace minimum; no new host is selected
+implicitly. Expiry, withdrawal or changed pending content can prevent a retry.
 
 ## Inspect and approve
 
-Use a separate administrator or appropriately scoped review identity. Save the
-exact pending inspection, then retrieve and verify each asset:
+A reviewer first retains the exact pending Page with `pages inspect`. Retrieve
+and validate every declared asset:
 
 ```sh
-mkdir -m 700 Moderation
-HyperNetSuite --config Administrator.json pages inspect --page-id PAGE_ID \
-  --output Moderation/Review.json
-HyperNetSuite --config Administrator.json media inspect --review Moderation/Review.json \
-  --asset Diagram --output Moderation/Diagram.Vector
-HyperNetSuite --config Administrator.json pages inspect --page-id PAGE_ID --output Moderation/DisplayedReview.json --tui \
-  --media Diagram=Moderation/Diagram.Vector --graphics kitty
-HyperNetSuite --config Administrator.json pages review --input Moderation/DisplayedReview.json \
-  --decision approve
+HyperNetSuite media inspect [online options] --grant REVIEW_GRANT \
+  --asset RECORD_ID --asset-generation GENERATION --asset-digest RECORD_DIGEST \
+  --host HOST_ONE --service-socket /Private/MediaControl.sock \
+  --progress-directory Moderation/DiagramProgress \
+  --output Moderation/Diagram.Vector --expires-ms EXPIRY
 ```
 
-`media inspect` rechecks the exact pending source, independently validates all
-asset bytes and records that identity's media inspection attestation. It does
-not approve the page or establish that a person examined the image. Activate
-Reveal and assess the converted content before deciding. Publication requires
-an inspection attestation for every asset and enough current sealed copies.
-A changed revision invalidates the saved page review. Use `--decision reject`
-when content is unsuitable. Media content can be offensive despite valid geometry.
+Inspection downloads the entire exact asset and verifies its complete-copy
+receipt before recording a media inspection. Its expiry is part of the explicit
+review job. This does not itself approve a Page or establish that a person viewed
+the image. Display the retained Page with `--media Diagram=Moderation/Diagram.Vector`
+and activate Reveal before signing the separate Page decision.
 
-Review adapters remain explicit file exchanges. `adapters review-export` contains
-text and manifests only. A separate `adapters media-export` with
-`--consent-media-disclosure` releases one verified asset for that exact job; see
-[Adapters](Adapters.md). It does not start a provider or send credentials.
+`pages review-sign` rechecks the exact pending source. Publication requires current
+copies and the reviewer's inspection for every asset. Reject unsuitable content
+with a separate signed rejection. Canonical geometry prevents executable content;
+it does not guarantee that an image is appropriate.
 
-## Read, replicate and withdraw
+## Read and export
+
+Use `media get` with the exact asset reference and a reader capability to inspect
+its current metadata. `media read` takes the same connection, asset, host and
+persistent progress options as inspection, with `--output` and no inspection
+expiry. It rechecks current approved publication and host consent. The complete
+validated result is written to a new private file; a retry can confirm an already
+identical output without replacing unrelated content.
 
 ```sh
-mkdir -m 700 Received
-HyperNetSuite --config Reader.json media read --page-id PAGE_ID --asset Diagram \
-  --output Received/Diagram.Vector
-HyperNetSuite media export-svg --input Received/Diagram.Vector --output Received/Diagram.svg
-HyperNetSuite --config Reader.json pages read --page-id PAGE_ID --tui --graphics kitty
-HyperNetSuite --config Author.json media replicate --page-id PAGE_ID --asset Diagram \
-  --source-host HOST_ONE --destination-host HOST_TWO
+HyperNetSuite media export-svg --input Received/Diagram.Vector \
+  --output Received/Diagram.svg
 ```
 
-Read selects a current manifest host, or an explicit `--host`. It verifies the
-complete digest, length, dimensions and canonical encoding before publishing a
-new private output file. Replication requires the original author's rights and
-both hosts in the immutable manifest. Ordinary readers cannot create copies in
-a store. Exported SVG contains only static numeric paths and literal paints;
-it never restores original XML. Alternate graphical viewers can interpret the
-same validated geometry directly and retain HyperPage's semantic layout and
-controls.
+SVG export contains static numeric paths and literal paints, never the original
+XML. Other graphical viewers can interpret the same validated geometry while
+retaining native Page semantics. Local reveal mappings remain available to the
+terminal viewer with complete alt-text fallback.
 
-A browser reveal independently rechecks the exact current page and media route.
-Motion uses local clocks and cached pixels only. Withdrawal and loss of current
-permission deny new fetches; previously received or exported bytes cannot be
-recalled. Store cleanup follows consented retention, not a guarantee of remote
-secure erasure. Foreign reads require the explicit bilateral media terms in
-[Federation](Federation.md).
+## Storage consent and policy
 
-## Separate storage consent
+Role2 media hosts have a distinct operator-signed profile and deployment. Use
+`pages host profile --role media`, then `pages host register` as an authorised
+manager. Namespace, volume, physical state capacity, maximum asset bytes and
+retention are explicit. The usable data budget accounts for both crash-safe
+banks, headers and exact encoded metadata; physical storage is not counted twice.
 
-A Pages text-cache consent has zero media allowance. A PageMedia store needs its
-own service identity, signed version 1 consent, namespace list, capacity,
-retention and pinned authority route. It cannot reuse a mail, transfer, bridge or
-ordinary member identity. Follow HyperNet's PageMedia guide to prepare the exact
-specification and confined store configuration:
+An administrator with the namespace policy capability can use `media policy
+--namespace News --copies N`. This does not alter an existing manifest or make
+another machine consent to storage. The minimum copy policy applies when assets
+are submitted and reviewed.
 
-```sh
-HyperNetSuite --config MediaHost.json media host-consent --input Specification.json \
-  --output Consent.json
-HyperNetSuite --config MediaHost.json media host-register --input Consent.json
-HyperNetSuite --config Administrator.json media policy-set --minimum-copies 2
-HyperNetSuite --config MediaHost.json media host-withdraw --host-key HOST_KEY \
-  --expected-generation 1
-```
+Signing and registration do not activate a service. Install and activate it
+through the Core runtime's separate consent workflow. For local withdrawal, stop
+the installed service; the manager or operator can also commit exact-generation
+`pages host withdraw`. Withdrawal and expired permission deny new effects.
+Previously received plaintext cannot be recalled or securely erased remotely.
 
-Signing and registration do not start a service. The hardware operator starts
-and stops it using HyperNet's separate PageMediaStore tool. For emergency local
-withdrawal, stop the store first. Registration requires a current host grant and
-exact resource consent. Catalogue and per-chunk permissions are short-lived;
-unavailable authority fails closed. Bytes and recovery overhead consume the
-consented quota without deduplication credit. Increasing the copy policy does
-not silently modify an author's manifest or select new hardware.
+The browser uses `--media-route` or `--media-service` and an existing private
+`--media-directory` for these same verified, resumable reads. Retrieval occurs
+only after Reveal. Current publication identity is checked before a fresh job
+and after completion. Exact pending work can resume before that final check;
+bytes are not displayed if the publication changed. See [Browser](Browser.md).

@@ -57,58 +57,35 @@ fn imported_documents_and_paths_are_terminal_safe() {
             .status
             .success()
     );
-    let key: serde_json::Value = serde_json::from_slice(&fs::read(&identity).unwrap()).unwrap();
-    let profile = root.join("Profile.json");
-    private_json(
-        &profile,
-        &json!({
-            "network":"00".repeat(32), "endpoint":"https://authority.invalid/",
-            "caCertificate":root.join("MissingCa.pem"), "identity":identity
-        }),
-    );
     let control = "\u{001b}]2;InjectedTitle\u{0007}\u{009b}2J\u{202e}\u{2066}\u{061c}";
     let document = root.join("Imported.json");
     private_json(&document, &json!({(control): true}));
     safe_failure(command(&[
-        "--config",
-        profile.to_str().unwrap(),
-        "redeem",
-        "--invitation",
-        document.to_str().unwrap(),
-    ]));
-    safe_failure(command(&[
-        "--config",
-        profile.to_str().unwrap(),
-        "host-consent",
+        "network",
+        "draft",
         "--spec",
         document.to_str().unwrap(),
         "--output",
-        root.join("Consent.json").to_str().unwrap(),
+        root.join("Draft.cbor").to_str().unwrap(),
     ]));
-    safe_failure(command(&["--config", document.to_str().unwrap(), "status"]));
+    safe_failure(command(&[
+        "network",
+        "inspect",
+        "--profile",
+        document.to_str().unwrap(),
+    ]));
     safe_failure(command(&[&format!("--{control}")]));
-    let expiry = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 60)
-        .to_string();
-    let invitation = root.join(format!("Invitation{control}.json"));
     let output = command(&[
-        "--config",
-        profile.to_str().unwrap(),
-        "invite",
-        "--device-key",
-        key["publicKey"].as_str().unwrap(),
-        "--grants",
-        "1",
-        "--expires",
-        &expiry,
+        "keygen",
         "--output",
-        invitation.to_str().unwrap(),
+        root.join(format!("Identity{control}.json"))
+            .to_str()
+            .unwrap(),
     ]);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Invitation material retained"));
-    safe_failure(output);
-    assert!(invitation.is_file());
+    assert!(output.status.success());
+    let text = std::str::from_utf8(&output.stdout).unwrap();
+    assert!(text.contains("\\u"));
+    assert!(!text.chars().any(|ch| ch.is_control() && ch != '\n'));
+    assert!(!text.contains(['\u{202e}', '\u{2066}', '\u{061c}']));
     fs::remove_dir_all(root).unwrap();
 }

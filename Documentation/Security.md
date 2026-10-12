@@ -2,8 +2,12 @@
 
 HyperNetSuite treats remote data as untrusted. Page markup is inert. Plain output
 escapes terminal controls, and only trusted renderer operations generate terminal
-sequences. Links, downloads and SSH sessions require explicit actions. Network
-profiles pin an independently authenticated network identity and TLS trust root.
+sequences. Links, downloads and SSH sessions require explicit actions. Offline
+network profiles pin an independently authenticated bootstrap and minimum route
+policy; they do not establish a working reader connection. Current local operator
+commands use that independent bootstrap pin and a retained requester floor with
+an explicitly selected private control socket. Federation bridge endpoints are
+separately constrained by their accepted manifests and certificate pins.
 
 Application grants and mail-device credentials retain their separate scopes.
 Adapter exports require explicit disclosure consent. A policy digest, expiry or
