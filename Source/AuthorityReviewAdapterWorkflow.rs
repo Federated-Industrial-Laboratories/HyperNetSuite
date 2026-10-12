@@ -28,13 +28,7 @@ fn inspect(
     grant: &VersionRef,
     page: [u8; 16],
 ) -> Result<(ResultState, statements::Inspection)> {
-    let (result, objects) = c.action(
-        Action::Inspect { page },
-        Some(grant.clone()),
-        Resolved::default(),
-    )?;
-    let inspected = statements::Inspection::from_result(&result, &objects, page)?;
-    Ok((result, inspected))
+    statements::Inspection::fetch(c, grant, page)
 }
 fn current(
     c: &mut Client,

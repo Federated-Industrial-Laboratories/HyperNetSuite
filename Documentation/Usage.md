@@ -96,6 +96,11 @@ reviewer and reader workflows. Local preview needs no network profile:
 HyperNetSuite pages preview /Private/Draft.Page --tui
 ```
 
+[Sealed Pages](SealedPages.md) describes the separate `pages sealed` commands for
+encrypted author submissions, explicit manual approval, durable ciphertext and
+device-owned reading. [Recipients](Recipients.md) describes independent contact
+trust and recipient device admission.
+
 [Private Mail](PrivateMail.md) describes verified contacts, device keys, storage
 placement and retained-state recovery. [Forms](Forms.md) separates prepare,
 review, confirm, send and intake. Page content never supplies executable handlers.

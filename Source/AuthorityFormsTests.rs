@@ -81,9 +81,15 @@ fn prepared(sender: &Mailbox, recipient: &Mailbox) -> (Prepared, Record, Record)
     let sr = Reference::for_bytes(Class::PageSource, source.as_bytes()).unwrap();
     let page_id = [71; 16];
     let page_key = page::page_id(&page_id).unwrap();
-    let parameters =
-        page::objects::Author::parameters(page_id, "Books", &sr, &grant, None, (now + 600) * 1000)
-            .unwrap();
+    let parameters = page::objects::Author::parameters(
+        page_id,
+        "Books",
+        source.as_bytes(),
+        &grant,
+        None,
+        (now + 600) * 1000,
+    )
+    .unwrap();
     let signed = fixture::signed(
         &fixture::key(5),
         "PageAuthorStatement",

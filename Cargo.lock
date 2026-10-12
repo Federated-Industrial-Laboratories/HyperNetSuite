@@ -1345,6 +1345,7 @@ dependencies = [
  "tls_codec",
  "unicode-segmentation",
  "unicode-width",
+ "x25519-dalek 2.0.1",
  "zeroize",
 ]
 

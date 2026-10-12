@@ -4,7 +4,7 @@ use super::super::tests::{Fixture, certified_request};
 use super::*;
 use crate::{
     authority_domains::page::{self, Command as PageCommand, objects::Author},
-    authority_objects::{Class, Object, Reference, Resolved},
+    authority_objects::Resolved,
 };
 
 fn current_clocks() -> (ClockHealth, ClockHealth) {
@@ -148,11 +148,10 @@ fn reply(
 }
 
 #[test]
-fn page_source_and_multiple_records_survive_floor_before_cache_interruption() {
+fn page_source_metadata_survives_floor_before_cache_interruption() {
     let mut f = Fixture::with_actions(vec![0, 2, 3]);
     let scope = f.bootstrap.descriptor().scope();
     let source = b"HyperNetPage/2\n# Bookshop\n: Opening hours.\n";
-    let reference = Reference::for_bytes(Class::PageSource, source).unwrap();
     let grant = references(
         f.bootstrap.governance_records(),
         scope.network,
@@ -165,7 +164,7 @@ fn page_source_and_multiple_records_survive_floor_before_cache_interruption() {
     let parameters = Author::parameters(
         [71; 16],
         "Books",
-        &reference,
+        source,
         &grant,
         None,
         f.current.observe().unwrap().wall_ms + 600000,
@@ -187,7 +186,7 @@ fn page_source_and_multiple_records_survive_floor_before_cache_interruption() {
         .into(),
         grant: Some(grant.clone()),
     };
-    let objects = || vec![Object::verify(reference.clone(), source.to_vec()).unwrap()];
+    let objects = Vec::new;
     let authority = State::empty(scope.network, scope.incarnation);
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
     // Bootstrap verification and durable fixture setup precede this request's live deadline.

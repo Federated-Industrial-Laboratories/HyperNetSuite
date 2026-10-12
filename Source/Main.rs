@@ -10,6 +10,12 @@ mod authority_history;
 mod runtime_bootstrap_keys;
 #[path = "RuntimeManifest.rs"]
 mod runtime_manifest;
+#[path = "SealedCrypto.rs"]
+mod sealed_crypto;
+#[path = "SealedPageData.rs"]
+mod sealed_page_data;
+#[path = "SealedVault.rs"]
+mod sealed_vault;
 // SPDX-License-Identifier: MIT
 #[path = "AuthorityApplications.rs"]
 mod authority_applications;

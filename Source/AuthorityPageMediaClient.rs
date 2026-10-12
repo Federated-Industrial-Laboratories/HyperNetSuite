@@ -47,8 +47,10 @@ pub fn prepare_domain(
     ensure!(
         matches!(
             &command,
-            domain::Command::Page(Command::MediaAuthorise { .. })
-                | domain::Command::Federation(domain::federation::Command::MediaAuthorise { .. })
+            domain::Command::Page(
+                Command::MediaAuthorise { .. }
+                    | Command::Content(page::content::Command::Authorise { .. })
+            ) | domain::Command::Federation(domain::federation::Command::MediaAuthorise { .. })
         ),
         "only a finite media effect can leave the participant"
     );
@@ -153,7 +155,7 @@ pub fn packet(request: &Request, payload: &[u8], reconcile: bool) -> Result<Vec<
     wire::encode(&a(vec![
         V::Uint(200),
         V::Uint(1),
-        V::Text("MediaExchange".into()),
+        V::Text(request.exchange_tag().into()),
         b(request.signed()),
         b(payload),
         V::Bool(reconcile),

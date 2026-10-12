@@ -407,3 +407,10 @@ Refused certified requests can be resolved through the existing stream mechanism
 explicit fencing retains uncertainty about an unresolved effect. A successful Get
 refreshes lifecycle metadata but does not make an old grant current. No command
 silently broadens discovery or starts a service.
+
+## Sealed recipient identity
+
+`authority-inspection recipients` manages separately encrypted user roots,
+device admission, independently pinned contacts and frozen publication rosters.
+Follow [Recipients](Recipients.md) for its custody, possession and revocation
+boundaries. Ordinary membership and InspectAudit do not confer decryption access.

@@ -25,11 +25,9 @@ fn open_at(parent: &File, value: &OsStr, flags: i32, mode: u32) -> Result<File> 
             mode,
         )
     };
-    ensure!(
-        fd >= 0,
-        "cannot open path safely: {}",
-        std::io::Error::last_os_error()
-    );
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot open path safely");
+    }
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 pub fn directory(path: &Path) -> Result<File> {

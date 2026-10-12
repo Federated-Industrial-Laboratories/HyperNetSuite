@@ -61,7 +61,7 @@ pub(super) fn author(
     let parameters = Author::parameters(
         page_id,
         &namespace,
-        &reference,
+        &bytes,
         &grant,
         app.as_ref().map(|a| &a.0),
         expires_ms,
@@ -85,11 +85,38 @@ pub(super) struct Inspection {
     pub source: Vec<u8>,
 }
 impl Inspection {
-    pub fn from_result(
-        result: &ResultState,
-        objects: &Resolved,
+    pub fn fetch(
+        c: &mut Client,
+        grant: &VersionRef,
         page_id: [u8; 16],
-    ) -> Result<Self> {
+    ) -> Result<(ResultState, Self)> {
+        content_cli::resume_source(c, grant, page::content::Effect::Inspect)?;
+        let (result, _) = c.action(
+            Action::Inspect { page: page_id },
+            Some(grant.clone()),
+            Resolved::default(),
+        )?;
+        let scope = result.prefix.scope();
+        let head = page::Ledger::parse(
+            &result
+                .cache
+                .state
+                .record(140, page::page_id(&page_id)?)?
+                .payload,
+        )?;
+        let pending = head.pending.context("Page has no pending revision")?;
+        let revision = page::Revision::parse(
+            &result.cache.state.record(141, pending.id)?.payload,
+            scope.network,
+            scope.incarnation,
+        )?;
+        let placement = content_cli::selected_placement(&result.cache.state, &revision)?;
+        let bytes =
+            content_cli::fetch_source(c, grant, &placement, page::content::Effect::Inspect)?;
+        let inspected = Self::from_result(&result, &bytes, page_id)?;
+        Ok((result, inspected))
+    }
+    pub fn from_result(result: &ResultState, bytes: &[u8], page_id: [u8; 16]) -> Result<Self> {
         let head = page::Ledger::parse(
             &result
                 .cache
@@ -105,7 +132,7 @@ impl Inspection {
         );
         let scope = result.prefix.scope();
         let revision = page::Revision::parse(&record.payload, scope.network, scope.incarnation)?;
-        let source = objects.get(&revision.author.source)?.to_vec();
+        let source = bytes.to_vec();
         revision.verify_source(&source)?;
         Ok(Self {
             record,
@@ -169,14 +196,7 @@ pub(super) fn review(
         incarnation,
     )?;
     let grant = c.grant(capability)?;
-    let (current, objects) = c.action(
-        Action::Inspect {
-            page: old.revision.author.raw_page,
-        },
-        Some(grant.clone()),
-        Resolved::default(),
-    )?;
-    let inspected = Inspection::from_result(&current, &objects, old.revision.author.raw_page)?;
+    let (current, inspected) = Inspection::fetch(&mut c, &grant, old.revision.author.raw_page)?;
     ensure!(
         inspected.record.bytes == old.record.bytes && inspected.source == old.source,
         "pending Page differs from the retained review input; inspect it again"
@@ -324,15 +344,17 @@ pub(super) fn parse_decision(
 
 pub(super) fn apply_decision(c: &mut Client, bytes: &[u8]) -> Result<ResultState> {
     let scope = c.store.descriptor().scope();
-    let (review, bundle, objects) = parse_decision(
+    let (review, bundle, _) = parse_decision(
         bytes,
         scope.network,
         scope.incarnation,
         c.key.verifying_key().to_bytes(),
     )?;
     let grant = review.grant.clone();
-    Ok(
-        c.action(Action::Review { review, bundle }, Some(grant), objects)?
-            .0,
-    )
+    Ok(c.action(
+        Action::Review { review, bundle },
+        Some(grant),
+        Resolved::default(),
+    )?
+    .0)
 }

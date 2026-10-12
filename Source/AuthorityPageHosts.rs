@@ -46,6 +46,9 @@ pub enum Command {
         maximum_asset_bytes: u64,
         #[arg(long)]
         retention_ms: u64,
+        /// Explicit JSON capacity partitions and opaque-hosting consent.
+        #[arg(long)]
+        content_policy: Option<PathBuf>,
         #[arg(long)]
         output: PathBuf,
     },
@@ -133,6 +136,7 @@ pub(super) fn run(command: Command) -> Result<()> {
             state_bytes,
             maximum_asset_bytes,
             retention_ms,
+            content_policy,
             output,
         } => {
             let bootstrap = control::bootstrap(&location)?;
@@ -172,6 +176,9 @@ pub(super) fn run(command: Command) -> Result<()> {
                 state_bytes,
                 maximum_asset_bytes,
                 retention_ms,
+                content: content_policy
+                    .map(|path| content_policy_file(&path))
+                    .transpose()?,
                 envelope: vec![],
             };
             profile.envelope = wire::sign_envelope(&profile.payload()?, &key)?;
@@ -366,4 +373,35 @@ mod tests {
         );
         assert!(withdrawal_needs_context(Some(&discretionary), 1, host, 1).is_err());
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ContentPolicyFile {
+    metadata_bytes: u64,
+    data_bytes: u64,
+    staging_bytes: u64,
+    quarantine_bytes: u64,
+    maximum_objects: u64,
+    opaque: bool,
+    failure_domain: String,
+    reviewer_keys: Vec<String>,
+}
+fn content_policy_file(path: &std::path::Path) -> Result<page::ContentPolicy> {
+    let p: ContentPolicyFile = serde_json::from_slice(&files::read_public_single(path, 4096)?)?;
+    let policy = page::ContentPolicy {
+        metadata_bytes: p.metadata_bytes,
+        data_bytes: p.data_bytes,
+        staging_bytes: p.staging_bytes,
+        quarantine_bytes: p.quarantine_bytes,
+        maximum_objects: p.maximum_objects,
+        opaque: p.opaque,
+        failure_domain: id(&p.failure_domain)?,
+        reviewers: p
+            .reviewer_keys
+            .iter()
+            .map(|k| id(k))
+            .collect::<Result<_>>()?,
+    };
+    page::ContentPolicy::parse(&policy.value())
 }

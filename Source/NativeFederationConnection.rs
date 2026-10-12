@@ -112,7 +112,7 @@ impl Client {
         };
         if !matches(&command) {
             ensure!(
-                !command.mutation() && !command.returns_bundle(),
+                !command.mutation(),
                 "another federation request is pending; resume its exact command"
             );
             self.action(command, grant, Resolved::default())?;

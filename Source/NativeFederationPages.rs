@@ -423,7 +423,7 @@ fn fetch(
         }
         _ => false,
     })?;
-    let (result, objects) = if let Some(r) = resumed {
+    let (result, _) = if let Some(r) = resumed {
         r
     } else {
         let (q, current) = publication_context(&mut c, &g, agreement, raw, review)?;
@@ -439,6 +439,10 @@ fn fetch(
         )?
     };
     let q = qualified(&c, agreement, raw)?;
+    let head = fed::ForeignPage::parse(&result.cache.state.record(154, q)?.payload)?;
+    let selected = selected(&result.cache.state, &head, review)?;
+    let revision = fed::ForeignRevision::parse(&selected.payload)?;
+    let objects = exchange::body(&c, &route, &revision)?;
     let inspection = Inspection::from_result(&result, &objects, q, review)?;
     if let Some(output) = output {
         files::write_new(&output, &wire::encode(&inspection.value())?)?;

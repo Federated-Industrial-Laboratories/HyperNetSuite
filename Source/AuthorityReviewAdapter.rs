@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Providers receive explicitly selected inert data; only a current native reviewer can apply a decision.
 use super::{
-    Action, Cache, Capability, Client, Digest, Online, Path, PathBuf, Resolved, ResultState, V,
-    VersionRef, domain, domain_cli, files, id, media, page, publication, raw, statements, wire,
+    Action, Cache, Capability, Client, Digest, Online, Path, PathBuf, ResultState, V, VersionRef,
+    domain, domain_cli, files, id, media, page, publication, raw, statements, wire,
 };
 use crate::{adapter_files as disclosure, authority_inspection_cli as control};
 use anyhow::{Context, Result, ensure};

@@ -38,6 +38,8 @@ pub(crate) use connection::Client;
 pub(crate) mod adapters;
 #[path = "AuthorityPageApplications.rs"]
 mod applications;
+#[path = "AuthorityPageContentCli.rs"]
+pub(crate) mod content_cli;
 #[path = "AuthorityPageHosts.rs"]
 mod hosts;
 #[path = "AuthorityPageInteractions.rs"]
@@ -46,6 +48,8 @@ mod interactions;
 pub(crate) mod media;
 #[path = "AuthorityPagePublication.rs"]
 pub(crate) mod publication;
+#[path = "AuthoritySealedPages.rs"]
+mod sealed;
 #[path = "AuthorityPageStatements.rs"]
 mod statements;
 #[path = "AuthorityPageView.rs"]
@@ -91,6 +95,16 @@ pub enum Decision {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Author, review and read encrypted publications with explicit recipient trust.
+    Sealed {
+        #[command(subcommand)]
+        command: sealed::Command,
+    },
+    /// Place, transfer, inspect and withdraw immutable Page content.
+    Content {
+        #[command(subcommand)]
+        command: content_cli::Command,
+    },
     /// Manage explicit Page or media hosting consent.
     Host {
         #[command(subcommand)]
@@ -263,13 +277,6 @@ fn source(path: &Path) -> Result<Vec<u8>> {
     let bytes = files::read_public_single(path, crate::authority_objects::PAGE_SOURCE_BYTES)?;
     crate::markup::parse(std::str::from_utf8(&bytes)?).map_err(anyhow::Error::msg)?;
     Ok(bytes)
-}
-fn input(class: Class, bytes: Vec<u8>) -> Result<Resolved> {
-    let reference = Reference::for_bytes(class, &bytes)?;
-    Resolved::exact(
-        std::slice::from_ref(&reference),
-        vec![Object::verify(reference.clone(), bytes)?],
-    )
 }
 fn summary(result: &ResultState) -> Result<()> {
     let f = result.value.array(5)?;

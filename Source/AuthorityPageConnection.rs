@@ -3,6 +3,7 @@
 use super::*;
 pub(crate) struct Client {
     pub bootstrap: Verified,
+    pub directory: PathBuf,
     pub key: SigningKey,
     pub store: Store,
     pub(super) session: Session,
@@ -11,27 +12,34 @@ pub(crate) struct Client {
 }
 impl Client {
     pub fn new(online: &Online) -> Result<Self> {
-        let bootstrap = control::bootstrap(&online.location)?;
-        let key = domain_cli::signer(&online.key)?;
-        let mut store = Store::open(&online.location.directory, bootstrap.descriptor().clone())?;
+        Self::owned(
+            &online.location,
+            &online.socket,
+            domain_cli::signer(&online.key)?,
+        )
+    }
+    pub fn owned(location: &control::Location, socket: &Path, key: SigningKey) -> Result<Self> {
+        let bootstrap = control::bootstrap(location)?;
+        let mut store = Store::open(&location.directory, bootstrap.descriptor().clone())?;
         store.require_requester(key.verifying_key().to_bytes())?;
-        let clock = control::clock(&online.location, store.descriptor().voters())?;
+        let clock = control::clock(location, store.descriptor().voters())?;
         let mut session = Session::new()?;
         stream_client::resolve_refusal_local(
             &store.descriptor().clone(),
-            &online.socket,
+            socket,
             &key,
             &mut store,
             &mut session,
             || clock.health(),
         )?;
         Ok(Self {
+            directory: location.directory.clone(),
             bootstrap,
             key,
             store,
             session,
             clock,
-            socket: online.socket.clone(),
+            socket: socket.into(),
         })
     }
     pub fn cache(&self) -> Result<Cache> {
@@ -58,6 +66,21 @@ impl Client {
             &mut self.store,
             &mut self.session,
             objects,
+            || self.clock.health(),
+        )
+    }
+    pub fn domain_action(
+        &mut self,
+        command: domain::Command,
+        grant: Option<VersionRef>,
+    ) -> Result<ResultState> {
+        domain_client::local(
+            &self.bootstrap,
+            Request { command, grant },
+            &self.socket,
+            &self.key,
+            &mut self.store,
+            &mut self.session,
             || self.clock.health(),
         )
     }
