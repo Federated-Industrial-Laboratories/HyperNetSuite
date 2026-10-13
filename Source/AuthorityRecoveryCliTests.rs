@@ -37,6 +37,7 @@ fn old_profile(dir: &Directory, bootstrap: &[u8]) -> PathBuf {
         required_publication_modes: vec!["HostReadable".into(), "Sealed".into()],
         permit_network_search: false,
         recovery: None,
+        joined: None,
     };
     dir.file("Predecessor.json", &serde_json::to_vec(&profile).unwrap())
 }

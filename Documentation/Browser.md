@@ -1,7 +1,9 @@
 # Browser
 
 The browser uses an independently accepted bootstrap, a retained requester floor,
-an explicit private authority socket and a scoped Page capability. It does not
+an explicitly selected authority endpoint and a scoped Page capability.
+Use [PrivateRoutes](PrivateRoutes.md) for a relay-only client connection; the
+`network connect` wrapper supplies its retained trust and endpoint. It does not
 discover networks or open external applications. Every fetched Page carries
 current quorum evidence and its exact signed author, reviewer and source bundle.
 Pages remain inert HyperPage documents.

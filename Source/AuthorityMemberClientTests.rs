@@ -243,6 +243,7 @@ fn value(pending: &GovernancePrepared) -> V {
         V::Text(member.action.into()),
         a(refs.iter().map(version_value).collect()),
         b(&member.created),
+        V::Uint(member.mutation.snapshot().height + 1),
     ])
 }
 fn delegate(f: &mut Fixture, candidate: &SigningKey) -> V {
@@ -298,6 +299,9 @@ fn delegate(f: &mut Fixture, candidate: &SigningKey) -> V {
     completion
 }
 fn offer(f: &Fixture) -> Vec<u8> {
+    offer_with_lifetime(f, 3_600_000)
+}
+fn offer_with_lifetime(f: &Fixture, acceptance_ms: u64) -> Vec<u8> {
     let value = wire::decode(f.context.governance.record_bytes(102, [24; 32]).unwrap()).unwrap();
     let span = value.array(17).unwrap()[12].array(2).unwrap();
     member_offer::invite(
@@ -308,7 +312,7 @@ fn offer(f: &Fixture) -> Vec<u8> {
             member: [25; 32],
             reader_grant: [24; 32],
             validity: (span[0].uint().unwrap(), span[1].uint().unwrap()),
-            acceptance_ms: 3_600_000,
+            acceptance_ms,
         },
         &f.signer,
         f.issued,
@@ -582,7 +586,7 @@ fn member_result_checks_complete_dependencies_and_exact_created_record() {
     for position in [3, 4] {
         let mut altered = wire::decode(&result.value)
             .unwrap()
-            .array(5)
+            .array(6)
             .unwrap()
             .to_vec();
         altered[position] = if position == 3 { a(vec![]) } else { b(&[0]) };
@@ -827,6 +831,7 @@ fn high_dependency_receipt_fits_the_declared_bound_before_submission() {
             V::Text(intent.action),
             a(versions.iter().map(version_value).collect()),
             b(&created),
+            V::Uint(u64::MAX),
         ]))
         .unwrap()),
     ]))
@@ -845,3 +850,6 @@ fn high_dependency_receipt_fits_the_declared_bound_before_submission() {
     assert!(bytes.len() > 32768);
     assert!(bytes.len() <= member_offer::RECEIPT_LIMIT);
 }
+
+#[path = "AuthorityMemberReplayTests.rs"]
+mod replay;

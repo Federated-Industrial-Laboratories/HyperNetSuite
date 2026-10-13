@@ -187,6 +187,8 @@ impl DelegationContext {
             &mut clock,
         )?;
         let request = Request::Context(selection);
+        let control =
+            crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
         let pending = Prepared::new(
             bootstrap,
             request,
@@ -197,7 +199,7 @@ impl DelegationContext {
             session,
             clock()?,
         )?;
-        let result = pending.local(path, store, session, &mut clock)?;
+        let result = pending.local(&control, store, session, &mut clock)?;
         result
             .context
             .context("context response did not contain selected records")

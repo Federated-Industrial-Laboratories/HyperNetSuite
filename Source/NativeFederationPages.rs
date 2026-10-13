@@ -314,6 +314,7 @@ pub(super) fn run(command: Command) -> Result<()> {
                 Some(current.metadata.author.raw_page),
                 Some(current.native),
                 None,
+                (&review.grant, 3),
             )?;
             summary(
                 &c.action(
@@ -361,7 +362,7 @@ pub(super) fn run(command: Command) -> Result<()> {
             let after = after.as_deref().map(id).transpose()?;
             if let Some((r,_))=c.resume(|a|matches!(a,Action::List{agreement:x,export} if *x==agreement&&matches!(export.command(),Ok(Action::Export{admission,..}) if matches!(admission.command(),Ok(Action::Admission{after:a,..}) if a==after))))? {return summary(&r)}
             c.inventory_context(agreement, 0, &g)?;
-            let export = exchange::lease(&c, &route, agreement, None, None, after)?;
+            let export = exchange::lease(&c, &route, agreement, None, None, after, (&g, 0))?;
             summary(
                 &c.action(
                     Action::List { agreement, export },
@@ -427,14 +428,22 @@ fn fetch(
         r
     } else {
         let (q, current) = publication_context(&mut c, &g, agreement, raw, review)?;
-        let export = exchange::lease(&c, &route, agreement, Some(raw), Some(current.native), None)?;
+        let export = exchange::lease(
+            &c,
+            &route,
+            agreement,
+            Some(raw),
+            Some(current.native),
+            None,
+            (&g, if review { 3 } else { 0 }),
+        )?;
         c.action(
             if review {
                 Action::Inspect { page: q, export }
             } else {
                 Action::Read { page: q, export }
             },
-            Some(g),
+            Some(g.clone()),
             Resolved::default(),
         )?
     };
@@ -442,7 +451,7 @@ fn fetch(
     let head = fed::ForeignPage::parse(&result.cache.state.record(154, q)?.payload)?;
     let selected = selected(&result.cache.state, &head, review)?;
     let revision = fed::ForeignRevision::parse(&selected.payload)?;
-    let objects = exchange::body(&c, &route, &revision)?;
+    let objects = exchange::body(&c, &route, &revision, (&g, if review { 3 } else { 0 }))?;
     let inspection = Inspection::from_result(&result, &objects, q, review)?;
     if let Some(output) = output {
         files::write_new(&output, &wire::encode(&inspection.value())?)?;

@@ -87,7 +87,15 @@ fn proof(
     inspect: bool,
 ) -> Result<fed::ForeignProof> {
     let (_, revision) = pages::publication_context(c, grant, agreement, raw, inspect)?;
-    exchange::lease(c, route, agreement, Some(raw), Some(revision.native), None)
+    exchange::lease(
+        c,
+        route,
+        agreement,
+        Some(raw),
+        Some(revision.native),
+        None,
+        (grant, if inspect { 3 } else { 0 }),
+    )
 }
 fn refresh(
     c: &mut Client,

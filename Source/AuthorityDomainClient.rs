@@ -24,6 +24,28 @@ fn minimum(versions: &[VersionRef], floor: &[VersionRef]) -> Result<()> {
     domains::result::minimum(versions, floor)
 }
 impl Cache {
+    /// A membership result can advance governance without changing domain metadata.
+    pub(crate) fn retain_context(
+        bootstrap: &Verified,
+        store: &Store,
+        context: &ContextState,
+    ) -> Result<()> {
+        let mut cache = Self::load(bootstrap, store)?;
+        let scope = store.descriptor().scope();
+        cache.records.clear();
+        for bytes in context.current_records(store)? {
+            let version = references(
+                std::slice::from_ref(&bytes),
+                scope.network,
+                scope.incarnation,
+            )?;
+            if version.iter().all(|r| store.generations().contains(r)) {
+                cache.records.push(bytes);
+            }
+        }
+        cache.save(store)
+    }
+
     pub fn load(bootstrap: &Verified, store: &Store) -> Result<Self> {
         ensure!(
             bootstrap.fully_accepted()
@@ -546,6 +568,7 @@ pub fn local_with_objects(
     let descriptor = store.descriptor().clone();
     stream_client::ensure_stream(&descriptor, path, signer, store, session, &mut clock)?;
     let cache = Cache::load(bootstrap, store)?;
+    let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
     let prepared = Prepared::new_with_objects(
         bootstrap,
         request,
@@ -574,7 +597,7 @@ pub fn local_with_objects(
             &prepared.ordered,
             &submission,
             prepared.deadline,
-            path,
+            &control,
             store.prefix(),
             store.tree_head(),
             &mut clock,

@@ -1,9 +1,9 @@
-# Offline network preparation
+# Network preparation and membership
 
-The installed `HyperNetSuite network` commands prepare authenticated trust for
-the current network contract. They do not join a running network, redeem
-an invitation or connect to an endpoint. These profiles express client trust and minimum route requirements. Online
-joining remains unavailable until the approved privacy connector is implemented.
+The installed `HyperNetSuite network` commands prepare independently authenticated
+trust and explicitly join through approved relay routes. Preparation and inspection
+remain offline. The [private route workflow](PrivateRoutes.md) describes invitation
+redemption, clock health, ordinary browsing, cancellation and connection inspection.
 Local operator commands use separately provisioned control sockets and authority floors.
 
 Client preparation needs only the installed binary and its declared Linux
@@ -80,14 +80,12 @@ and null expected snapshot are explicit. The descriptor's epoch, protocol and
 windows before accepting a fingerprint; an administrator key alone does not
 describe the authority that key will receive.
 
-```sh
-HyperNetSuite network join --profile Client/Profile.json
-```
-
-This command returns `OnlineJoinUnavailable` locally. It does not attempt a direct
-connection or use an older configuration as a fallback. No voucher or invitation
-secret belongs in this offline profile. Later online enrolment must use a bounded
-relay voucher and the authenticated inner admission-service channel.
+Preparation grants no membership. Continue with `network request`, obtain an
+independently authenticated invitation and use `network join` with the invitation,
+its verified digest, a persistent state directory and healthy local clock witness.
+[PrivateRoutes](PrivateRoutes.md) supplies the complete sequence. Joining uses a
+separate bounded relay voucher and authenticated inner authority channel, with no
+direct fallback.
 
 Remove an unused offline profile explicitly:
 
@@ -96,10 +94,10 @@ HyperNetSuite network remove --profile Client/Profile.json \
   --fingerprint VERIFIED_WHOLE_BOOTSTRAP_DIGEST
 ```
 
-Removal deletes only that verified profile and its unused local keys. Adjacent
+Removal deletes only that verified profile and its local keys. Adjacent
 files and the bootstrap remain. It does not contact the network or revoke network
-rights. A profile used by a future online workflow will require that workflow's
-explicit withdrawal and removal rules.
+rights. Joined requester state and admission receipts remain in their separate directory;
+removing a profile does not erase uncertain effects or revoke remote membership.
 
 ## Prepare governance and recovery acceptance
 

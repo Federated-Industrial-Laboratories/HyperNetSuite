@@ -3,9 +3,12 @@
 use super::super::tests::{Fixture, voters};
 use super::*;
 use ed25519_dalek::Signer;
+
+#[path = "AuthorityDeploymentReplayTests.rs"]
+mod replay;
 fn certified(
     p: &Prepared,
-    value: V,
+    mut value: V,
     time: u64,
     store: &Store,
 ) -> (CertifiedReply, AncestryEvidence) {
@@ -13,6 +16,16 @@ fn certified(
     let height = store.prefix().height() + 1;
     let intent = Intent::from_signed(&p.intent).unwrap();
     let challenge = Challenge::from_signed(&p.challenge).unwrap();
+    if matches!(
+        p.request,
+        Request::Register { .. } | Request::Withdraw { .. }
+    ) {
+        let V::Array(fields) = &mut value else {
+            panic!("mutation result")
+        };
+        assert_eq!(fields.len(), 5);
+        fields.push(V::Uint(intent.minimum_policy_height + 1));
+    }
     let result = wire::encode(&a(vec![
         V::Uint(24),
         V::Uint(1),

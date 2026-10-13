@@ -121,7 +121,8 @@ fn sealed_reviewer_outside_audience_requires_current_membership_and_object_admis
             .unwrap();
     assert!(!audience_value.allowed_roots.contains(&root.reference));
     state.put(audience.clone()).unwrap();
-    let source = b"HyperNetPage/2\n# Private review\n: Only the reviewer sees this draft.\n".to_vec();
+    let source =
+        b"HyperNetPage/2\n# Private review\n: Only the reviewer sees this draft.\n".to_vec();
     let intent = publication::Author {
         object: OBJECT,
         policy: VersionRef {

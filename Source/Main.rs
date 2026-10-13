@@ -59,6 +59,8 @@ mod applications;
 mod authority_mail;
 #[path = "AuthorityPages.rs"]
 mod authority_pages;
+#[path = "AuthorityRouteReader.rs"]
+mod authority_route_reader;
 #[path = "Borders.rs"]
 mod borders;
 #[path = "Files.rs"]
@@ -87,10 +89,24 @@ mod networks;
 mod page_layout;
 #[path = "PageView.rs"]
 mod page_view;
+#[path = "PrivateRouteClient.rs"]
+mod private_route_client;
+#[path = "PrivateRouteClock.rs"]
+mod private_route_clock;
+#[path = "PrivateRouteCommands.rs"]
+mod private_route_commands;
 #[path = "Protocol.rs"]
 mod protocol;
 #[path = "Reader.rs"]
 mod reader;
+#[path = "RouteConnector.rs"]
+mod route_connector;
+#[path = "RouteProfile.rs"]
+mod route_profile;
+#[path = "RouteProtocol.rs"]
+mod route_protocol;
+#[path = "RouteTls.rs"]
+mod route_tls;
 #[path = "Services.rs"]
 mod services;
 #[path = "SshProof.rs"]
@@ -144,6 +160,9 @@ enum Command {
     /// Prepare and inspect independently authenticated offline network trust.
     #[command(subcommand)]
     Network(networks::Command),
+    /// Register relay services and issue bounded possession-key route vouchers.
+    #[command(subcommand)]
+    Routes(private_route_commands::Command),
     /// Browse the configured network catalogue or a verified page address.
     Browse(authority_pages::Browse),
     /// Fill and exchange explicitly accepted encrypted form submissions.
@@ -235,6 +254,7 @@ fn run() -> Result<()> {
         return media_worker::run();
     }
     files::disable_dumps()?;
+    private_route_client::install_cancellation()?;
     let options = match Options::try_parse() {
         Ok(options) => options,
         Err(error) => {
@@ -247,9 +267,13 @@ fn run() -> Result<()> {
             std::process::exit(error.exit_code());
         }
     };
-    match options.command {
+    dispatch(options.command)
+}
+fn dispatch(command: Command) -> Result<()> {
+    match command {
         Command::AuthorityInspection(command) => authority_inspection_cli::run(command),
         Command::Network(command) => networks::run(command),
+        Command::Routes(command) => private_route_commands::run(command),
         Command::Browse(arguments) => authority_pages::browse(arguments),
         Command::Applications(command) => applications::run(command),
         Command::Adapters(command) => authority_pages::adapters::run(command),

@@ -145,6 +145,7 @@ impl Transport {
                 page::MEDIA_RECEIPT_LIMIT,
             );
         }
+        crate::private_route_client::require_local_allowed()?;
         let directory = self
             .service_directory
             .as_ref()

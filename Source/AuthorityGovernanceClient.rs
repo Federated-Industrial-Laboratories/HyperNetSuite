@@ -122,9 +122,10 @@ impl ContextState {
             &mut clock,
         )?;
         loop {
+            let control = LocalControl::prepare_authority(path, store)?;
             let pending =
                 GovernancePrepared::refresh(bootstrap, grant, signer, store, session, clock()?)?;
-            match pending.local(path, store, session, &mut clock)? {
+            match pending.local(&control, store, session, &mut clock)? {
                 Outcome::Context(value) => {
                     paging::clear(store)?;
                     return Ok(*value);
@@ -148,6 +149,7 @@ impl ContextState {
         mut clock: impl FnMut() -> Result<ClockHealth>,
     ) -> Result<CreatedRecord> {
         stream_client::ensure_stream(&self.descriptor, path, signer, store, session, &mut clock)?;
+        let control = LocalControl::prepare_authority(path, store)?;
         let pending = GovernancePrepared::revoke(
             self,
             request.grant,
@@ -157,7 +159,7 @@ impl ContextState {
             session,
             clock()?,
         )?;
-        match pending.local(path, store, session, &mut clock)? {
+        match pending.local(&control, store, session, &mut clock)? {
             Outcome::Revoked(value) => Ok(*value),
             _ => bail!("unexpected governance result"),
         }
@@ -518,7 +520,11 @@ impl<'a> GovernancePrepared<'a> {
             "governance evaluation lies outside its conservative interval"
         );
         let value = wire::decode(&result.value)?;
-        let f = record(&value, 201, 5)?;
+        let arity = match self.mode {
+            Mode::Member(_) | Mode::Revoke { .. } => 6,
+            Mode::Refresh { .. } => 5,
+        };
+        let f = record(&value, 201, arity)?;
         ensure!(
             f[2].text()? == self.action(),
             "governance result action differs"
@@ -594,6 +600,12 @@ impl<'a> GovernancePrepared<'a> {
                 target,
                 tombstone,
             } => {
+                let creation_height = f[5].uint()?;
+                ensure!(
+                    creation_height > intent.minimum_policy_height
+                        && creation_height <= executed.height,
+                    "revocation creation height differs from its causal floor or execution"
+                );
                 ensure!(
                     intent.resource == target.id
                         && intent.revision == target.generation
@@ -642,10 +654,11 @@ impl<'a> GovernancePrepared<'a> {
                         ))
                     })
                     .collect::<Result<BTreeMap<_, _>>>()?;
+                let previous = entries.insert((126, target.id), tombstone.clone());
                 ensure!(
-                    entries
-                        .insert((126, target.id), tombstone.clone())
-                        .is_none_or(|prior| prior == *tombstone),
+                    previous.is_none_or(|prior| {
+                        prior == *tombstone && creation_height < executed.height
+                    }),
                     "revocation cannot replace a permanent tombstone"
                 );
                 ensure!(
@@ -842,14 +855,14 @@ impl<'a> GovernancePrepared<'a> {
     }
     fn local(
         self,
-        path: &Path,
+        control: &LocalControl,
         store: &mut Store,
         session: &mut Session,
         clock: &mut impl FnMut() -> Result<ClockHealth>,
     ) -> Result<Outcome> {
         let challenge = self.challenge.clone();
         let result = (|| {
-            let (reply, evidence) = self.exchange(path, store, clock)?;
+            let (reply, evidence) = self.exchange(control, store, clock)?;
             self.finish_evidence(reply, evidence, store, session, clock)
         })();
         if result.is_err() {
@@ -873,11 +886,10 @@ impl<'a> GovernancePrepared<'a> {
     }
     fn exchange(
         &self,
-        path: &Path,
+        control: &LocalControl,
         store: &Store,
         clock: &mut impl FnMut() -> Result<ClockHealth>,
     ) -> Result<(CertifiedReply, AncestryEvidence)> {
-        let control = LocalControl::open(path)?;
         let digest = wire::digest(&self.ordered);
         let mut bytes = control.exchange(&self.control(0, &self.ordered)?, self.deadline)?;
         let reply = loop {
@@ -909,7 +921,7 @@ impl<'a> GovernancePrepared<'a> {
             std::thread::sleep(Duration::from_millis(remaining(self.deadline)?.min(25)));
             bytes = control.exchange(&self.control(1, &digest)?, self.deadline)?;
         };
-        let evidence = AncestryEvidence::fetch(&control, store, &reply.node, self.deadline)?;
+        let evidence = AncestryEvidence::fetch(control, store, &reply.node, self.deadline)?;
         Ok((reply, evidence))
     }
 }

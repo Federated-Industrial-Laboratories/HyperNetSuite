@@ -17,6 +17,7 @@ use std::{
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 extern "C" fn interrupt(_: libc::c_int) {
     INTERRUPTED.store(true, Ordering::Relaxed);
+    crate::private_route_client::request_cancel();
 }
 
 pub enum Action {
@@ -670,6 +671,7 @@ impl Session {
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL)))
                 {
+                    crate::private_route_client::request_cancel();
                     return Ok(None);
                 }
             } else if INTERRUPTED.load(Ordering::Relaxed) {

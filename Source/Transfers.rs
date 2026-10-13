@@ -443,6 +443,7 @@ impl Transport {
                 transfer::RECEIPT_LIMIT,
             );
         }
+        crate::private_route_client::require_local_allowed()?;
         let service = self
             .service_directory
             .as_ref()

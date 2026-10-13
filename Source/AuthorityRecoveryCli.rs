@@ -521,6 +521,7 @@ pub fn run(command: Command) -> Result<()> {
                     required_publication_modes: old.required_publication_modes,
                     permit_network_search: old.permit_network_search,
                     recovery: None,
+                    joined: None,
                 };
                 // Preserve the client's minimum privacy and publication requirements before publishing anything.
                 verify_profile(&profile, &next, true)?;
