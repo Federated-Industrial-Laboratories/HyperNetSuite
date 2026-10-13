@@ -351,16 +351,13 @@ impl<'a> Prepared<'a> {
                 };
                 let mut entries = self.source.clone();
                 let cached = versions(&entries)?.contains(&reference);
-                let original_height = mutation
-                    .snapshot()
-                    .height
-                    .checked_add(1)
-                    .context("delegation height overflow")?;
+                let creation_height = record(&value, 201, 6)?[5].uint()?;
                 ensure!(
-                    executed.height >= original_height,
-                    "delegation certificate precedes its proposed state"
+                    creation_height > mutation.snapshot().height
+                        && creation_height <= executed.height,
+                    "delegation creation height differs from its causal floor or execution"
                 );
-                let replay = cached || executed.height > original_height;
+                let replay = executed.height > creation_height;
                 if replay && !cached {
                     entries.push(created.clone());
                     membership::sort_records(&mut entries)?;
@@ -383,8 +380,7 @@ impl<'a> Prepared<'a> {
                 refs.push(reference);
                 refs.sort_by_key(VersionRef::index);
                 ensure!(
-                    record(&value, 201, 5)?[4].bytes()? == created
-                        && parse_versions(&f[3])? == refs,
+                    f[4].bytes()? == created && parse_versions(&f[3])? == refs,
                     "delegation result differs from exact created grant"
                 );
                 if !cached && !replay {
@@ -442,17 +438,16 @@ impl<'a> Prepared<'a> {
                 } else if let Some(created) = operation.derive(intent)? {
                     let reference = versions(std::slice::from_ref(&created))?.remove(0);
                     let cached = versions(&entries)?.contains(&reference);
-                    let original_height = operation
+                    let snapshot_height = operation
                         .snapshot()
                         .context("mutation requires snapshot")?
-                        .height
-                        .checked_add(1)
-                        .context("application height overflow")?;
+                        .height;
+                    let creation_height = record(&value, 201, 6)?[5].uint()?;
                     ensure!(
-                        executed.height >= original_height,
-                        "application certificate precedes its proposed state"
+                        creation_height > snapshot_height && creation_height <= executed.height,
+                        "application creation height differs from its causal floor or execution"
                     );
-                    replay = cached || executed.height > original_height;
+                    replay = executed.height > creation_height;
                     if replay && !cached {
                         entries.push(created.clone());
                         membership::sort_records(&mut entries)?;
@@ -493,9 +488,14 @@ impl<'a> Prepared<'a> {
                     executed.evaluated_at_ms,
                     replay,
                 )?;
+                let evaluated_value = if operation.snapshot().is_some() {
+                    a(f[..5].to_vec())
+                } else {
+                    value.clone()
+                };
                 ensure!(
                     decision.code == 0
-                        && decision.value == value
+                        && decision.value == evaluated_value
                         && executed.expires_at_ms <= decision.expires_ms,
                     "application result differs from exact authorized lifecycle"
                 );
@@ -620,7 +620,7 @@ impl<'a> Prepared<'a> {
                     }
                     Request::Withdraw(reference) => {
                         let mut entries = self.source.clone();
-                        let created = record(&candidate.value, 201, 5)?[4].bytes()?.to_vec();
+                        let created = record(&candidate.value, 201, 6)?[4].bytes()?.to_vec();
                         if !entries.contains(&created) {
                             entries.push(created);
                             membership::sort_records(&mut entries)?;
@@ -643,7 +643,7 @@ impl<'a> Prepared<'a> {
     }
     fn local(
         self,
-        path: &Path,
+        control: &crate::authority_local_transport::LocalControl,
         store: &mut Store,
         session: &mut Session,
         clock: &mut impl FnMut() -> Result<ClockHealth>,
@@ -654,7 +654,7 @@ impl<'a> Prepared<'a> {
                 &self.descriptor,
                 &self.ordered,
                 self.deadline,
-                path,
+                control,
                 store,
                 clock,
             )?;
@@ -692,6 +692,7 @@ pub fn local(
             &mut clock,
         )?;
     }
+    let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
     let pending = Prepared::new(
         bootstrap,
         request,
@@ -702,7 +703,7 @@ pub fn local(
         session,
         clock()?,
     )?;
-    pending.local(path, store, session, &mut clock)
+    pending.local(&control, store, session, &mut clock)
 }
 #[cfg(test)]
 #[path = "AuthorityApplicationClientTests.rs"]
@@ -720,7 +721,7 @@ pub(super) fn exchange(
     descriptor: &TrustDescriptor,
     ordered: &[u8],
     deadline: u64,
-    path: &Path,
+    control: &crate::authority_local_transport::LocalControl,
     store: &Store,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
 ) -> Result<(CertifiedReply, AncestryEvidence)> {
@@ -728,7 +729,7 @@ pub(super) fn exchange(
         descriptor,
         ordered,
         deadline,
-        path,
+        control,
         store.prefix(),
         store.tree_head(),
         clock,

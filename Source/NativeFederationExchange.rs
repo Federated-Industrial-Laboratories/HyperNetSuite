@@ -3,6 +3,19 @@
 use super::*;
 use std::process::Command as Process;
 pub(super) fn exchange(route: &cli::Route, directory: &Path, packet: &[u8]) -> Result<Vec<u8>> {
+    let control = route
+        .service_socket
+        .as_deref()
+        .map(crate::authority_local_transport::LocalControl::open)
+        .transpose()?;
+    exchange_prepared(route, directory, packet, control.as_ref())
+}
+fn exchange_prepared(
+    route: &cli::Route,
+    directory: &Path,
+    packet: &[u8],
+    control: Option<&crate::authority_local_transport::LocalControl>,
+) -> Result<Vec<u8>> {
     files::private_directory(directory)?;
     ensure!(
         packet.len() <= wire::MAXIMUM,
@@ -12,8 +25,8 @@ pub(super) fn exchange(route: &cli::Route, directory: &Path, packet: &[u8]) -> R
         route.exchange_timeout_ms > 0,
         "bridge exchange timeout is zero"
     );
-    if let Some(socket) = &route.service_socket {
-        return crate::authority_local_transport::LocalControl::open(socket)?.exchange_limit(
+    if let Some(control) = control {
+        return control.exchange_limit(
             packet,
             crate::authority_challenge::boot_time_ms()?
                 .checked_add(route.exchange_timeout_ms)
@@ -21,6 +34,7 @@ pub(super) fn exchange(route: &cli::Route, directory: &Path, packet: &[u8]) -> R
             4 * wire::MAXIMUM,
         );
     }
+    crate::private_route_client::require_local_allowed()?;
     let service_directory = route
         .service_directory
         .as_ref()
@@ -91,13 +105,15 @@ pub(super) fn lease(
     page: Option<[u8; 16]>,
     revision: Option<VersionRef>,
     after: Option<Digest>,
+    access: (&VersionRef, u64),
 ) -> Result<fed::ForeignProof> {
-    Ok(lease_exchange(c, route, agreement, page, revision, after, false)?.0)
+    Ok(lease_exchange(c, route, agreement, page, revision, after, false, access)?.0)
 }
 pub(super) fn body(
     c: &Client,
     route: &cli::Route,
     revision: &fed::ForeignRevision,
+    access: (&VersionRef, u64),
 ) -> Result<Resolved> {
     let (proof, objects) = lease_exchange(
         c,
@@ -107,6 +123,7 @@ pub(super) fn body(
         Some(revision.native.clone()),
         None,
         true,
+        access,
     )?;
     let (share, metadata) = proof.exported_share_metadata()?;
     ensure!(
@@ -131,6 +148,7 @@ fn lease_exchange(
     revision: Option<VersionRef>,
     after: Option<Digest>,
     include_body: bool,
+    access: (&VersionRef, u64),
 ) -> Result<(fed::ForeignProof, Resolved)> {
     let cache = c.cache()?;
     let (n, i) = c.scope();
@@ -156,7 +174,41 @@ fn lease_exchange(
         V::Bytes(floor.bytes.clone()),
         V::Bool(include_body),
     ]))?;
-    let bytes = exchange(route, &c.directory, &packet)?;
+    let control = route
+        .service_socket
+        .as_deref()
+        .map(crate::authority_local_transport::LocalControl::open)
+        .transpose()?;
+    let wrapped = if let Some(endpoint) = control.as_ref().and_then(|c| c.route()) {
+        ensure!(
+            endpoint.protocol == 6,
+            "foreign reader requires a bridge reader route"
+        );
+        Some(crate::authority_route_reader::sign(
+            n,
+            i,
+            endpoint.destination.service,
+            access.0,
+            access.1,
+            c.clock
+                .health()?
+                .observe()?
+                .wall_ms
+                .checked_add(5000)
+                .context("reader route expiry overflow")?,
+            rand::random(),
+            &packet,
+            &c.key,
+        )?)
+    } else {
+        None
+    };
+    let bytes = exchange_prepared(
+        route,
+        &c.directory,
+        wrapped.as_deref().unwrap_or(&packet),
+        control.as_ref(),
+    )?;
     let proof = parse_lease_mode(
         &bytes,
         trust,

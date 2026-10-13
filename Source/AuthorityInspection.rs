@@ -364,10 +364,21 @@ impl ContextState {
         mut clock: impl FnMut() -> Result<ClockHealth>,
     ) -> Result<Inspection> {
         stream_client::ensure_stream(&self.descriptor, path, signer, store, session, &mut clock)?;
+        let control = LocalControl::prepare_authority(path, store)?;
+        self.inspect_prepared(&control, request, signer, store, session, clock)
+    }
+    fn inspect_prepared(
+        &self,
+        control: &LocalControl,
+        request: Request,
+        signer: &SigningKey,
+        store: &mut Store,
+        session: &mut Session,
+        mut clock: impl FnMut() -> Result<ClockHealth>,
+    ) -> Result<Inspection> {
         let pending = self.prepare(request, signer, store, session, clock()?)?;
         let challenge = pending.challenge.clone();
         let result = (|| {
-            let control = LocalControl::open(path)?;
             let digest = wire::digest(&pending.ordered);
             let mut response =
                 control.exchange(&pending.control(0, &pending.ordered)?, pending.deadline)?;
@@ -384,7 +395,7 @@ impl ContextState {
                 }
             };
             let evidence =
-                AncestryEvidence::fetch(&control, store, &certified.node, pending.deadline)?;
+                AncestryEvidence::fetch(control, store, &certified.node, pending.deadline)?;
             pending.finish_evidence(certified, evidence, store, session, &mut clock)
         })();
         if result.is_err() {

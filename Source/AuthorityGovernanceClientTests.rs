@@ -24,6 +24,12 @@ fn value(pending: &GovernancePrepared) -> V {
                 V::Text(REVOKE.into()),
                 a(refs.iter().map(version_value).collect()),
                 b(tombstone),
+                V::Uint(
+                    Intent::from_signed(&pending.intent)
+                        .unwrap()
+                        .minimum_policy_height
+                        + 1,
+                ),
             ])
         }
     }
@@ -404,7 +410,7 @@ fn exact_revocation_self_tombstone_is_durable_and_denies_subsequent_authority() 
 
 #[test]
 fn revocation_rejects_wrong_target_snapshot_record_and_missing_tombstone_reference() {
-    for case in 0..4 {
+    for case in 0..10 {
         let mut f = Fixture::new();
         let mut target = target(&f);
         if case == 0 {
@@ -442,6 +448,18 @@ fn revocation_rejects_wrong_target_snapshot_record_and_missing_tombstone_referen
                 unreachable!()
             };
             refs.pop();
+        } else if case >= 4 {
+            match case {
+                4 => fields[5] = V::Uint(0),
+                5 => fields[5] = V::Uint(f.store.prefix().height()),
+                6 => fields[5] = V::Uint(f.store.prefix().height() + 2),
+                7 => fields[5] = V::Bool(true),
+                8 => {
+                    fields.pop();
+                }
+                9 => fields.push(V::Null),
+                _ => unreachable!(),
+            }
         } else {
             let mut record = wire::decode(fields[4].bytes().unwrap()).unwrap();
             let V::Array(r) = &mut record else {

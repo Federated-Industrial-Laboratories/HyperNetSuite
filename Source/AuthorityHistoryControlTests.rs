@@ -353,3 +353,6 @@ fn malformed_short_history_response_cannot_start_checkpoint_repair() {
     assert_eq!(f.store.prefix().height(), 1);
     assert!(f.store.tree_head().is_none());
 }
+
+#[path = "AuthorityHistoryPrefetchTests.rs"]
+mod prefetch_tests;

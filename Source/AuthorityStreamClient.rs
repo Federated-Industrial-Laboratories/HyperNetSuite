@@ -68,11 +68,10 @@ impl ControlPrepared {
     }
     fn exchange(
         &self,
-        path: &Path,
+        control: &LocalControl,
         store: &Store,
         clock: &mut impl FnMut() -> Result<ClockHealth>,
     ) -> Result<(CertifiedReply, AncestryEvidence)> {
-        let control = LocalControl::open(path)?;
         let digest = wire::digest(&self.ordered);
         let mut bytes = control.exchange(&self.packet(0, &self.ordered)?, self.deadline)?;
         let reply = loop {
@@ -104,19 +103,19 @@ impl ControlPrepared {
             std::thread::sleep(Duration::from_millis(remaining(self.deadline)?.min(25)));
             bytes = control.exchange(&self.packet(1, &digest)?, self.deadline)?;
         };
-        let evidence = AncestryEvidence::fetch(&control, store, &reply.node, self.deadline)?;
+        let evidence = AncestryEvidence::fetch(control, store, &reply.node, self.deadline)?;
         Ok((reply, evidence))
     }
     fn local(
         self,
-        path: &Path,
+        control: &LocalControl,
         store: &mut Store,
         session: &mut Session,
         clock: &mut impl FnMut() -> Result<ClockHealth>,
     ) -> Result<StreamResponse> {
         let challenge = self.challenge.clone();
         let result = (|| {
-            let (reply, evidence) = self.exchange(path, store, clock)?;
+            let (reply, evidence) = self.exchange(control, store, clock)?;
             let verified = proof::verify_response(
                 &self.descriptor,
                 proof::ProofContext {
@@ -191,9 +190,10 @@ pub fn status_local(
         ]))?,
         signer,
     )?;
+    let control = LocalControl::prepare_authority(path, store)?;
     let prepared =
         ControlPrepared::new(descriptor, request, None, signer, store, session, clock()?)?;
-    match prepared.local(path, store, session, &mut clock)? {
+    match prepared.local(&control, store, session, &mut clock)? {
         StreamResponse::Status(metadata) => Ok(metadata),
         _ => bail!("status returned another control result"),
     }
@@ -234,6 +234,7 @@ pub fn fence_local(
         )?;
         store.prepare_fence(&request, metadata.canonical())?
     };
+    let control = LocalControl::prepare_authority(path, store)?;
     ControlPrepared::new(
         descriptor,
         prepared.signed().to_vec(),
@@ -243,7 +244,7 @@ pub fn fence_local(
         session,
         clock()?,
     )?
-    .local(path, store, session, &mut clock)
+    .local(&control, store, session, &mut clock)
 }
 
 /// Only authenticated own-stream metadata can distinguish original refusal from denied disclosure.

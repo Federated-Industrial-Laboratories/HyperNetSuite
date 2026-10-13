@@ -13,15 +13,148 @@ use std::{
     path::Path,
 };
 pub fn remaining(deadline: u64) -> Result<u64> {
+    crate::private_route_client::check_cancelled()?;
     let now = boot_time_ms()?;
     ensure!(now < deadline, "original inspection deadline expired");
     Ok(deadline - now)
 }
+enum Endpoint {
+    Local(OwnedControl),
+    Relay(Box<crate::private_route_client::Prepared>),
+}
 pub struct LocalControl {
+    endpoint: Endpoint,
+    history: Option<PrefetchedHistory>,
+}
+impl LocalControl {
+    /// The selected file is an explicit relay profile or an owned local socket; failures never switch transports.
+    pub fn open(path: &Path) -> Result<Self> {
+        use std::os::unix::fs::FileTypeExt;
+        let metadata = std::fs::symlink_metadata(path)?;
+        let endpoint = if metadata.file_type().is_socket() {
+            crate::private_route_client::require_local_allowed()?;
+            Endpoint::Local(OwnedControl::open(path)?)
+        } else {
+            ensure!(
+                metadata.is_file(),
+                "endpoint must be a private route file or owned Unix socket"
+            );
+            Endpoint::Relay(Box::new(
+                crate::private_route_client::Endpoint::load(path)?.prepare()?,
+            ))
+        };
+        Ok(Self {
+            endpoint,
+            history: None,
+        })
+    }
+    /// Historical continuity is verified before the caller samples its fresh challenge clock.
+    pub fn prepare_authority(path: &Path, store: &crate::authority_floor::Store) -> Result<Self> {
+        Self::open(path)?.prefetch_authority(store)
+    }
+    fn prefetch_authority(mut self, store: &crate::authority_floor::Store) -> Result<Self> {
+        let Endpoint::Relay(route) = &self.endpoint else {
+            return Ok(self);
+        };
+        ensure!(
+            route.route().protocol == 1
+                && route.route().network == store.prefix().scope().network
+                && route.route().incarnation == store.prefix().scope().incarnation,
+            "authority transport differs from retained network or protocol"
+        );
+        let prefix = store.prefix();
+        let head = store.tree_head();
+        let query = wire::encode(&a(vec![
+            V::Uint(prefix.height()),
+            b(prefix.node()),
+            V::Null,
+            V::Uint(head.map_or(0, |h| h.size())),
+            head.map_or(V::Null, |h| b(h.root())),
+        ]))?;
+        let bytes = self.exchange(
+            &HistoryEvidence::control(prefix, 4, &query)?,
+            route.setup_deadline(),
+        )?;
+        self.history = PrefetchedHistory::parse(store, &bytes)?;
+        Ok(self)
+    }
+    #[cfg(test)]
+    pub(crate) fn prepared_for_test(
+        route: crate::private_route_client::Prepared,
+        store: &crate::authority_floor::Store,
+    ) -> Result<Self> {
+        Self {
+            endpoint: Endpoint::Relay(Box::new(route)),
+            history: None,
+        }
+        .prefetch_authority(store)
+    }
+    #[cfg(test)]
+    pub(crate) fn validate_prefetch_for_test(
+        store: &crate::authority_floor::Store,
+        bytes: &[u8],
+    ) -> Result<bool> {
+        Ok(PrefetchedHistory::parse(store, bytes)?.is_some())
+    }
+    pub(crate) fn route(&self) -> Option<&crate::route_profile::Profile> {
+        match &self.endpoint {
+            Endpoint::Local(_) => None,
+            Endpoint::Relay(route) => Some(route.route()),
+        }
+    }
+    /// Validate a retained destination without spending a one-use route admission.
+    pub(crate) fn validate(path: &Path) -> Result<()> {
+        use std::os::unix::fs::FileTypeExt;
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_type().is_socket() {
+            crate::private_route_client::require_local_allowed()?;
+            OwnedControl::open(path)?;
+        } else {
+            ensure!(
+                metadata.is_file(),
+                "endpoint must be a private route file or owned Unix socket"
+            );
+            crate::private_route_client::Endpoint::load(path)?;
+        }
+        Ok(())
+    }
+    pub fn exchange(&self, request: &[u8], deadline: u64) -> Result<Vec<u8>> {
+        self.exchange_limit(request, deadline, wire::MAXIMUM)
+    }
+    pub(crate) fn exchange_limit(
+        &self,
+        request: &[u8],
+        deadline: u64,
+        maximum: usize,
+    ) -> Result<Vec<u8>> {
+        remaining(deadline)?;
+        let result = match &self.endpoint {
+            Endpoint::Local(local) => local.exchange_limit(request, deadline, maximum),
+            Endpoint::Relay(route) => route.exchange(request, deadline, maximum),
+        };
+        result.with_context(|| {
+            let operation = wire::decode(request).ok().and_then(|value| {
+                let fields = value.array(5).ok()?;
+                if fields[0].uint().ok()? != 41 || fields[1].uint().ok()? != 1 {
+                    return None;
+                }
+                fields[3].uint().ok()
+            });
+            match operation {
+                Some(0) => "private authority InitialSubmit failed",
+                Some(1) => "private authority ResultPoll failed",
+                Some(3) => "private authority Ancestry failed",
+                Some(4) => "private authority Checkpoint failed",
+                _ => "private application exchange failed",
+            }
+        })
+    }
+}
+struct OwnedControl {
     directory: File,
     name: CString,
 }
-impl LocalControl {
+impl OwnedControl {
     pub fn open(path: &Path) -> Result<Self> {
         let parent = path
             .parent()
@@ -129,9 +262,6 @@ impl LocalControl {
         );
         Ok(stream)
     }
-    pub fn exchange(&self, request: &[u8], deadline: u64) -> Result<Vec<u8>> {
-        self.exchange_limit(request, deadline, wire::MAXIMUM)
-    }
     pub(crate) fn exchange_limit(
         &self,
         request: &[u8],
@@ -169,9 +299,11 @@ fn ready(stream: &UnixStream, event: libc::c_short, deadline: u64) -> Result<()>
             events: event,
             revents: 0,
         };
-        let status =
-            unsafe { libc::poll(&mut descriptor, 1, remaining.min(i32::MAX as u64) as i32) };
+        let status = unsafe { libc::poll(&mut descriptor, 1, remaining.min(100) as i32) };
         if status < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if status == 0 {
             continue;
         }
         ensure!(
@@ -250,6 +382,62 @@ impl std::fmt::Display for HistoryOvertaken {
 }
 impl std::error::Error for HistoryOvertaken {}
 
+struct PrefetchedHistory {
+    validated: crate::authority_history::ValidatedHistory,
+    checkpoint: Vec<u8>,
+    history: Vec<u8>,
+}
+impl PrefetchedHistory {
+    fn parse(store: &crate::authority_floor::Store, bytes: &[u8]) -> Result<Option<Self>> {
+        let value = wire::decode(bytes)?;
+        let prefix = store.prefix();
+        if value.list(10)?.first() == Some(&V::Uint(42)) {
+            let fields = record(&value, 42, 10)?;
+            ensure!(
+                proof::Scope::parse(&fields[2])? == *prefix.scope()
+                    && fields[3].uint()? == 2
+                    && fields[4].uint()? == 1,
+                "checkpoint preparation refused without finite unavailable response"
+            );
+            for field in &fields[5..9] {
+                field.null()?;
+            }
+            fields[9].array(0)?;
+            return Ok(None);
+        }
+        let fields = record(&value, 54, 7)?;
+        ensure!(
+            proof::Scope::parse(&fields[2])? == *prefix.scope(),
+            "checkpoint preparation scope differs"
+        );
+        fields[6].array(0)?;
+        let checkpoint = fields[4].bytes()?.to_vec();
+        let history = fields[5].bytes()?.to_vec();
+        let checked = crate::authority_history::verify_checkpoint(store.descriptor(), &checkpoint)?;
+        ensure!(
+            !checked.terminal() && fields[3].fixed::<32>()? == *checked.node(),
+            "checkpoint preparation is terminal or substitutes its certified anchor"
+        );
+        // A newer retained floor needs no older checkpoint; the server reports finite unavailability.
+        ensure!(
+            checked.height() >= prefix.height(),
+            "checkpoint preparation is below retained floor"
+        );
+        let validated = crate::authority_history::verify_history(
+            &checked,
+            prefix,
+            store.tree_head(),
+            &history,
+        )?;
+        validated.ordinary_checkpoint()?;
+        Ok(Some(Self {
+            validated,
+            checkpoint,
+            history,
+        }))
+    }
+}
+
 pub struct HistoryEvidence {
     pub nodes: Vec<Vec<u8>>,
     history: Option<(Vec<u8>, Vec<u8>)>,
@@ -292,6 +480,38 @@ impl HistoryEvidence {
             node.scope() == prefix.scope() && node.height() >= prefix.height(),
             "catch-up target differs from retained authority"
         );
+        if let Some(prefetched) = &control.history {
+            ensure!(
+                prefetched.validated.from() == prefix && prefetched.validated.prior() == head,
+                "prepared history differs from the exact retained floor or head"
+            );
+            let anchor = prefetched.validated.ordinary_checkpoint()?.prefix();
+            if node.height() >= anchor.height() && node.height() - anchor.height() <= 128 {
+                if node.height() == anchor.height() {
+                    ensure!(
+                        node.digest() == anchor.node(),
+                        "result conflicts with prepared checkpoint"
+                    );
+                    return Ok(Self {
+                        nodes: vec![target.to_vec()],
+                        history: Some((prefetched.checkpoint.clone(), prefetched.history.clone())),
+                    });
+                }
+                let query = wire::encode(&a(vec![
+                    V::Uint(anchor.height()),
+                    b(anchor.node()),
+                    b(node.digest()),
+                ]))?;
+                let bytes = control.exchange(&Self::control(prefix, 3, &query)?, deadline)?;
+                if let Some(nodes) = Self::short_reply(&anchor, target, &node, &bytes)? {
+                    return Ok(Self {
+                        nodes,
+                        history: Some((prefetched.checkpoint.clone(), prefetched.history.clone())),
+                    });
+                }
+                // Only explicit unavailability permits the original exact-target proof path.
+            }
+        }
         let gap = node.height() - prefix.height();
         if gap <= 1 {
             return Ok(Self::direct(vec![target.to_vec()]));
@@ -303,36 +523,9 @@ impl HistoryEvidence {
                 b(node.digest()),
             ]))?;
             let bytes = control.exchange(&Self::control(prefix, 3, &query)?, deadline)?;
-            let value = wire::decode(&bytes)?;
-            if value.list(10)?.first() == Some(&V::Uint(43)) {
-                let f = record(&value, 43, 4)?;
-                ensure!(
-                    proof::Scope::parse(&f[2])? == *prefix.scope(),
-                    "ancestry scope differs"
-                );
-                let nodes = f[3]
-                    .list(128)?
-                    .iter()
-                    .map(|v| Ok(v.bytes()?.to_vec()))
-                    .collect::<Result<Vec<_>>>()?;
-                ensure!(
-                    nodes.len() as u64 == gap && nodes.last().is_some_and(|v| v == target),
-                    "short ancestry omits or substitutes the target"
-                );
+            if let Some(nodes) = Self::short_reply(prefix, target, &node, &bytes)? {
                 return Ok(Self::direct(nodes));
             }
-            // Only the finite unavailable reply permits a checkpoint query. Malformed proof data fails.
-            let f = record(&value, 42, 10)?;
-            ensure!(
-                proof::Scope::parse(&f[2])? == *prefix.scope()
-                    && f[3].uint()? == 2
-                    && f[4].uint()? == 1,
-                "short ancestry failed without an unavailable response"
-            );
-            for value in &f[5..9] {
-                value.null()?;
-            }
-            f[9].array(0)?;
         }
         let query = wire::encode(&a(vec![
             V::Uint(prefix.height()),
@@ -343,6 +536,44 @@ impl HistoryEvidence {
         ]))?;
         let bytes = control.exchange(&Self::control(prefix, 4, &query)?, deadline)?;
         Self::checkpoint_reply(prefix, target, &bytes)
+    }
+    fn short_reply(
+        prefix: &Prefix,
+        target: &[u8],
+        node: &proof::Node,
+        bytes: &[u8],
+    ) -> Result<Option<Vec<Vec<u8>>>> {
+        let value = wire::decode(bytes)?;
+        if value.list(10)?.first() == Some(&V::Uint(43)) {
+            let fields = record(&value, 43, 4)?;
+            ensure!(
+                proof::Scope::parse(&fields[2])? == *prefix.scope(),
+                "ancestry scope differs"
+            );
+            let nodes = fields[3]
+                .list(128)?
+                .iter()
+                .map(|v| Ok(v.bytes()?.to_vec()))
+                .collect::<Result<Vec<_>>>()?;
+            ensure!(
+                nodes.len() as u64 == node.height() - prefix.height()
+                    && nodes.last().is_some_and(|v| v == target),
+                "short ancestry omits or substitutes the target"
+            );
+            return Ok(Some(nodes));
+        }
+        let fields = record(&value, 42, 10)?;
+        ensure!(
+            proof::Scope::parse(&fields[2])? == *prefix.scope()
+                && fields[3].uint()? == 2
+                && fields[4].uint()? == 1,
+            "short ancestry failed without an unavailable response"
+        );
+        for field in &fields[5..9] {
+            field.null()?;
+        }
+        fields[9].array(0)?;
+        Ok(None)
     }
     pub fn checkpoint_reply(prefix: &Prefix, target: &[u8], bytes: &[u8]) -> Result<Self> {
         let value = wire::decode(bytes)?;
@@ -410,7 +641,7 @@ pub fn exchange(
     descriptor: &TrustDescriptor,
     ordered: &[u8],
     deadline: u64,
-    path: &Path,
+    control: &LocalControl,
     retained: &Prefix,
     head: Option<&TreeHead>,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
@@ -420,7 +651,7 @@ pub fn exchange(
         ordered,
         &crate::authority_objects::Resolved::default(),
         deadline,
-        path,
+        control,
         retained,
         head,
         clock,
@@ -435,7 +666,7 @@ pub fn exchange_with_inputs(
     ordered: &[u8],
     inputs: &crate::authority_objects::Resolved,
     deadline: u64,
-    path: &Path,
+    control: &LocalControl,
     retained: &Prefix,
     head: Option<&TreeHead>,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
@@ -445,7 +676,7 @@ pub fn exchange_with_inputs(
         ordered,
         inputs,
         deadline,
-        path,
+        control,
         retained,
         head,
         clock,
@@ -465,7 +696,7 @@ pub fn exchange_objects(
     ordered: &[u8],
     inputs: &crate::authority_objects::Resolved,
     deadline: u64,
-    path: &Path,
+    control: &LocalControl,
     retained: &Prefix,
     head: Option<&TreeHead>,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
@@ -484,7 +715,6 @@ pub fn exchange_objects(
             b(payload),
         ]))
     };
-    let control = LocalControl::open(path)?;
     let digest = wire::digest(ordered);
     let submission = wire::encode(&a(vec![b(ordered), inputs.value()]))?;
     let mut bytes = control.exchange(&request(0, &submission)?, deadline)?;
@@ -523,7 +753,7 @@ pub fn exchange_objects(
         std::thread::sleep(Duration::from_millis(remaining(deadline)?.min(25)));
         bytes = control.exchange(&request(1, &digest)?, deadline)?;
     };
-    let evidence = HistoryEvidence::fetch(&control, retained, head, &reply.node, deadline)?;
+    let evidence = HistoryEvidence::fetch(control, retained, head, &reply.node, deadline)?;
     remaining(deadline)?;
     Ok((reply, evidence, outputs))
 }

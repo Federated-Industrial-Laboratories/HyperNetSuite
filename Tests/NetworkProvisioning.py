@@ -189,7 +189,7 @@ def main():
                 and restricted['rootGrants'][0]['limits']['maxBytes'] == restricted['networkPolicy']['limits']['maxBytes'] == 4096,
                 'Same-administrator policy changes are hidden by inspection')
         join = run(['network', 'join', '--profile', profile], ok=False)
-        require(b'OnlineJoinUnavailable' in join.stderr, 'Join has wrong unavailable outcome')
+        require(b'--invitation' in join.stderr, 'Join must require explicit authenticated invitation material')
         run(['--config', profile, 'status'], ok=False)
         run(['network', 'prepare', '--bootstrap', bundle, '--fingerprint', pin, '--output', profile], ok=False)
         require(profile.read_bytes() == original, 'Retry changed existing identity')

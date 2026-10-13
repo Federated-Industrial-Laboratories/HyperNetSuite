@@ -329,10 +329,10 @@ impl<'a> Prepared<'a> {
             "deployment evaluation lies outside conservative challenge interval"
         );
         let value = wire::decode(&result.value)?;
-        let f = value.array(if matches!(self.request, Request::Get { .. }) {
-            9
-        } else {
-            5
+        let f = value.array(match self.request {
+            Request::Get { .. } => 9,
+            Request::Register { .. } | Request::Withdraw { .. } => 6,
+            Request::Context { .. } => 5,
         })?;
         ensure!(
             f[0].uint()? == 201 && f[1].uint()? == 1 && f[2].text()? == self.request.action(),
@@ -397,15 +397,14 @@ impl<'a> Prepared<'a> {
                     actual == created,
                     "deployment result differs from exact derived records"
                 );
-                let prior_height = operation
+                let snapshot_height = operation
                     .snapshot()
                     .context("deployment mutation lacks snapshot")?
-                    .height
-                    .checked_add(1)
-                    .context("deployment height overflow")?;
+                    .height;
+                let creation_height = f[5].uint()?;
                 ensure!(
-                    executed.height >= prior_height,
-                    "deployment certificate precedes proposed state"
+                    creation_height > snapshot_height && creation_height <= executed.height,
+                    "deployment creation height differs from its causal floor or execution"
                 );
                 let old = versions(scope, &source)?;
                 let created_refs = created
@@ -413,7 +412,7 @@ impl<'a> Prepared<'a> {
                     .map(|v| records::reference(v))
                     .collect::<Result<Vec<_>>>()?;
                 let cached = created_refs.iter().all(|r| old.contains(r));
-                replay = cached || executed.height > prior_height;
+                replay = executed.height > creation_height;
                 if replay && !cached {
                     source.extend(created.clone());
                     membership::sort_records(&mut source)?;
@@ -450,9 +449,14 @@ impl<'a> Prepared<'a> {
             replay,
             retained,
         )?;
+        let evaluated_value = if operation.snapshot().is_some() {
+            a(f[..5].to_vec())
+        } else {
+            value.clone()
+        };
         ensure!(
             decision.code == 0
-                && decision.value == value
+                && decision.value == evaluated_value
                 && executed.expires_at_ms <= decision.expires_ms,
             "deployment result differs from exact authorized lifecycle"
         );
@@ -595,6 +599,7 @@ pub fn local(
             &mut clock,
         )?;
     }
+    let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
     let pending = Prepared::new(
         bootstrap,
         request,
@@ -610,7 +615,7 @@ pub fn local(
             &pending.descriptor,
             &pending.ordered,
             pending.deadline,
-            path,
+            &control,
             store,
             &mut clock,
         )?;

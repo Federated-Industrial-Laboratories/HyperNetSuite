@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Member mutations use exact retained pre-state and publish local evidence before completion.
+// Member mutations retain exact dependencies and publish local evidence before completion.
 use super::*;
 use crate::authority_membership::{self as membership, Mutation, Reservations};
 
@@ -7,18 +7,22 @@ use crate::authority_membership::{self as membership, Mutation, Reservations};
 pub enum MemberMutation {
     Delegate { parent: VersionRef, child: V },
     Admit { grant: [u8; 32], accepted: Vec<u8> },
+    Redeem { grant: [u8; 32], accepted: Vec<u8> },
 }
 impl MemberMutation {
     fn action(&self) -> &'static str {
         match self {
             Self::Delegate { .. } => "AuthorityDelegateGrant",
             Self::Admit { .. } => "AuthorityAdmitMember",
+            Self::Redeem { .. } => "AuthorityRedeemMember",
         }
     }
     fn fields(&self) -> (V, V) {
         match self {
             Self::Delegate { parent, child } => (version_value(parent), child.clone()),
-            Self::Admit { grant, accepted } => (b(grant), b(accepted)),
+            Self::Admit { grant, accepted } | Self::Redeem { grant, accepted } => {
+                (b(grant), b(accepted))
+            }
         }
     }
     fn resource(&self, descriptor: &TrustDescriptor) -> Result<[u8; 32]> {
@@ -26,7 +30,7 @@ impl MemberMutation {
             Self::Delegate { child, .. } => {
                 membership::ChildSpec::parse(child, descriptor.scope().network)?.id
             }
-            Self::Admit { accepted, .. } => {
+            Self::Admit { accepted, .. } | Self::Redeem { accepted, .. } => {
                 membership::Acceptance::parse(
                     accepted,
                     descriptor.scope().network,
@@ -73,10 +77,11 @@ impl ContextState {
         session: &mut Session,
         mut clock: impl FnMut() -> Result<ClockHealth>,
     ) -> Result<CreatedRecord> {
-        // Discovery prepares the stream before capturing this snapshot. No ordered request intervenes here.
+        // Discovery prepares the stream before capturing the mutation's causal floor.
         self.current(store)?;
+        let control = LocalControl::prepare_authority(path, store)?;
         let pending = GovernancePrepared::member(self, request, signer, store, session, clock()?)?;
-        match pending.local(path, store, session, &mut clock)? {
+        match pending.local(&control, store, session, &mut clock)? {
             Outcome::Created(record) => Ok(*record),
             _ => bail!("unexpected member mutation result"),
         }
@@ -219,24 +224,20 @@ impl MemberPrepared<'_> {
         versions: &[VersionRef],
     ) -> Result<(Governance, crate::authority_governance::CapabilityDecision)> {
         let value = wire::decode(&result.value)?;
-        let f = record(&value, 201, 5)?;
+        let f = record(&value, 201, 6)?;
         ensure!(
             intent.action == self.action && f[4].bytes()? == self.created,
             "member result differs from its exact derived record"
         );
         let mut entries = records(&self.context.governance)?;
         let cached = self.context.governance.versions().contains(&self.reference);
-        let original_height = self
-            .mutation
-            .snapshot()
-            .height
-            .checked_add(1)
-            .context("membership commit height overflow")?;
+        let creation_height = f[5].uint()?;
         ensure!(
-            executed.height >= original_height,
-            "member result precedes its proposed state"
+            creation_height > self.mutation.snapshot().height && creation_height <= executed.height,
+            "member creation height differs from its causal floor or execution"
         );
-        let replay = executed.height > original_height || cached;
+        // The immutable result names the original commit, independently of intervening orders.
+        let replay = executed.height > creation_height;
         if replay && !cached {
             entries.push(self.created.clone());
             membership::sort_records(&mut entries)?;

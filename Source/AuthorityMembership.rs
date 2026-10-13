@@ -341,12 +341,16 @@ impl Mutation {
                     snapshot,
                 }
             }
-            "AuthorityAdmitMember" => {
+            "AuthorityAdmitMember" | "AuthorityRedeemMember" => {
                 let acceptance =
                     Acceptance::parse(f[4].bytes()?, intent.network, intent.incarnation, true)?;
                 ensure!(
                     acceptance.member_id == intent.resource
-                        && acceptance.administrator == intent.requester,
+                        && if intent.action == "AuthorityRedeemMember" {
+                            acceptance.candidate == intent.requester
+                        } else {
+                            acceptance.administrator == intent.requester
+                        },
                     "admission requester or resource differs"
                 );
                 Self::Admit {
@@ -517,7 +521,10 @@ impl Mutation {
             _ => (0, intent.network),
         };
         let requirement = Requirement {
-            subject: intent.requester,
+            subject: match self {
+                Self::Admit { acceptance, .. } => acceptance.administrator,
+                _ => intent.requester,
+            },
             actions: if kind == 102 { &[11] } else { &[10] },
             scope,
             namespace: None,

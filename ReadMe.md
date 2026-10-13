@@ -24,11 +24,11 @@ Set `HYPERNET_TEST_DIRECTORY` to another private persistent directory when neede
 See [Installation](Documentation/Installation.md) for signed offline packages and
 [Usage](Documentation/Usage.md) for identity creation and operator workflows.
 
-[Offline networks](Documentation/Networks.md) prepares authenticated trust and
-separate client keys. Preparation confers no membership. Online reader joining
-requires the approved privacy connector and remains unavailable. Current operator
-workflows use explicitly selected private control sockets; they do not bypass a
-reader's minimum relay requirement.
+[Networks](Documentation/Networks.md) prepares authenticated trust and separate
+client keys. [Private routes](Documentation/PrivateRoutes.md) joins through an
+approved relay, retains verified membership and supplies normal client commands
+with their selected network. Current operator workflows remain explicitly local.
+Reader failures, reconnection and cancellation never select a direct fallback.
 
 [Pages](Documentation/Pages.md) covers authoring, exact-content review and verified
 publication. [HyperPage](Documentation/HyperPage.md) defines responsive panels,
@@ -57,6 +57,5 @@ workflows and independently authenticated recovery.
 
 [Security](Documentation/Security.md), [supported platforms](Documentation/SupportedPlatforms.md)
 and [runtime contracts](Documentation/Contracts.md) state the boundaries and
-remaining qualification. Complete relay coverage, sealed publication and native
-ARM qualification remain pending. This prerelease is not a qualified production
+remaining qualification. Native ARM runtime qualification remains pending. This prerelease is not a qualified production
 Internet deployment. Licensed under the [MIT License](Licence.txt).

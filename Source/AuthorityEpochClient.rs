@@ -160,6 +160,7 @@ pub fn propose_local(
         )?
     };
     Declaration::from_intent(&Intent::from_signed(&intent)?)?;
+    let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
     let health = clock()?;
     let now = health.observe()?;
     let challenge = session.issue(&intent, signer, random_id()?, DURATION, health)?;
@@ -181,7 +182,7 @@ pub fn propose_local(
             &descriptor,
             &ordered,
             deadline,
-            path,
+            &control,
             store.prefix(),
             store.tree_head(),
             &mut clock,

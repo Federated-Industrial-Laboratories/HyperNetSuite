@@ -153,6 +153,7 @@ impl Transport {
                 mail::RECEIPT_LIMIT,
             );
         }
+        crate::private_route_client::require_local_allowed()?;
         let root = self
             .service_directory
             .as_ref()

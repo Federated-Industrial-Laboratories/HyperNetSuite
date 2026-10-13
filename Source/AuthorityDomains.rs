@@ -18,6 +18,8 @@ pub mod page;
 pub mod publication_modes;
 #[path = "AuthorityDomainResult.rs"]
 pub mod result;
+#[path = "AuthorityRoutes.rs"]
+pub mod routes;
 #[path = "AuthoritySealedIdentity.rs"]
 pub mod sealed_identity;
 #[path = "AuthoritySealedPublication.rs"]
@@ -44,7 +46,7 @@ pub(crate) fn id(value: &V) -> Result<Digest> {
 /// Domain references extend governance only with explicitly implemented record kinds.
 pub fn version(value: &V) -> Result<VersionRef> {
     let fields = value.array(4)?;
-    if !matches!(fields[0].uint()?, 104 | 107..=111 | 113 | 132..=164) {
+    if !matches!(fields[0].uint()?, 104 | 107..=111 | 113 | 132..=168) {
         return governance_version(value);
     }
     let reference = VersionRef {
@@ -146,6 +148,9 @@ impl Record {
                 federation::validate_record(kind, &f[7], network, incarnation, lookup, generation)?
             }
             164 => publication_modes::validate(&f[7], lookup)?,
+            165..=168 => {
+                routes::validate_record(kind, &f[7], network, incarnation, lookup, generation)?
+            }
             162..=163 => sealed_publication::validate_record(kind, &f[7], lookup)?,
             159..=161 => {
                 page::validate_record(kind, &f[7], network, incarnation, lookup, generation)?
@@ -330,7 +335,8 @@ impl State {
     }
     #[cfg(test)]
     pub fn requesters(&self) -> Vec<Key> {
-        self.keys
+        let mut requesters: Vec<_> = self
+            .keys
             .iter()
             .filter_map(|(key, (class, _))| {
                 matches!(
@@ -339,7 +345,11 @@ impl State {
                 )
                 .then_some(*key)
             })
-            .collect()
+            .collect();
+        requesters.extend(routes::requesters(self).expect("validated invitation records"));
+        requesters.sort();
+        requesters.dedup();
+        requesters
     }
     pub fn validate_roles(&self, records: &[Vec<u8>], base: &Reservations) -> Result<()> {
         let deployments = crate::authority_deployment_records::Index::parse(
@@ -374,6 +384,7 @@ impl State {
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    Route(routes::Command),
     SealedIdentity(sealed_identity::Command),
     SealedPublication(sealed_publication::Command),
     Ssh(ssh::Command),
@@ -381,6 +392,11 @@ pub enum Command {
     Mail(mail::Command),
     Page(page::Command),
     Federation(federation::Command),
+}
+impl From<routes::Command> for Command {
+    fn from(c: routes::Command) -> Self {
+        Self::Route(c)
+    }
 }
 impl From<sealed_publication::Command> for Command {
     fn from(c: sealed_publication::Command) -> Self {
@@ -438,7 +454,9 @@ impl Command {
     pub fn parse(value: &V, n: Digest, i: Digest) -> Result<Self> {
         let fields = value.list(10)?;
         let name = fields.first().context("empty domain command")?.text()?;
-        if name.starts_with("SealedPublication") {
+        if name.starts_with("Route") {
+            Ok(Self::Route(routes::Command::parse(value, n, i)?))
+        } else if name.starts_with("SealedPublication") {
             Ok(Self::SealedPublication(sealed_publication::Command::parse(
                 value, n, i,
             )?))
@@ -460,6 +478,7 @@ impl Command {
     }
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Route(c) => c.name(),
             Self::SealedPublication(c) => c.name(),
             Self::SealedIdentity(c) => c.name(),
             Self::Ssh(c) => c.name(),
@@ -471,6 +490,7 @@ impl Command {
     }
     pub fn value(&self) -> V {
         match self {
+            Self::Route(c) => c.value(),
             Self::SealedPublication(c) => c.value(),
             Self::SealedIdentity(c) => c.value(),
             Self::Ssh(c) => c.value(),
@@ -482,6 +502,7 @@ impl Command {
     }
     pub fn resource(&self) -> Digest {
         match self {
+            Self::Route(c) => c.resource(),
             Self::SealedPublication(c) => c.resource(),
             Self::SealedIdentity(c) => c.resource(),
             Self::Ssh(c) => c.resource(),
@@ -493,6 +514,7 @@ impl Command {
     }
     pub fn mutation(&self) -> bool {
         match self {
+            Self::Route(c) => c.mutation(),
             Self::SealedPublication(c) => c.mutation(),
             Self::SealedIdentity(c) => c.mutation(),
             Self::Ssh(c) => c.mutation(),
@@ -504,6 +526,7 @@ impl Command {
     }
     pub fn mutation_kind(&self) -> Option<u64> {
         match self {
+            Self::Route(c) => c.mutation_kind(),
             Self::Ssh(c) => {
                 if c.mutation() {
                     Some(
@@ -602,7 +625,7 @@ impl Operation {
     ) -> Result<Key> {
         match &self.command {
             Command::SealedPublication(_) | Command::SealedIdentity(_) => Ok(intent.requester),
-            Command::Ssh(_) => Ok(intent.requester),
+            Command::Ssh(_) | Command::Route(_) => Ok(intent.requester),
             Command::Mail(c) => mail::expected_recipient(c, state, records, reserved, intent),
             Command::Page(c) => page::expected_recipient(c, state, records, reserved, intent),
             Command::Federation(c) => {
@@ -665,6 +688,9 @@ impl Operation {
             "domain evaluation input closure differs"
         );
         match &self.command {
+            Command::Route(c) => {
+                routes::evaluate(self, c, state, records, reserved, intent, at, replay, exact)
+            }
             Command::SealedPublication(c) => sealed_publication::evaluate(
                 self, c, state, records, reserved, intent, at, replay, exact,
             ),

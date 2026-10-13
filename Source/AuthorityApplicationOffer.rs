@@ -324,13 +324,15 @@ pub fn confirm(
         },
         |_, result, executed| {
             let value = wire::decode(&result.value)?;
-            let r = record(&value, 201, 5)?;
+            let r = record(&value, 201, 6)?;
             ensure!(
                 result.disposition == Disposition::Permit
                     && executed.maximum_effect == 1
                     && r[2].text()? == intent.action
                     && parse_versions(&r[3])? == versions
                     && r[4].bytes()? == created
+                    && r[5].uint()? > intent.minimum_policy_height
+                    && r[5].uint()? <= executed.height
                     && executed.expires_at_ms
                         <= challenge
                             .evaluation_expiry(executed.evaluated_at_ms, executed.expires_at_ms)?,

@@ -66,6 +66,7 @@ impl Route {
                 Ok(Transport::socket(host, socket.clone()))
             }
             (None, Some(directory)) => {
+                crate::private_route_client::require_local_allowed()?;
                 ensure!(
                     directory.is_absolute(),
                     "installed content directory must be absolute"
@@ -91,7 +92,7 @@ pub fn retain(options: Options) -> Result<()> {
     };
     route.transport()?;
     if let Some(socket) = &route.service_socket {
-        crate::authority_local_transport::LocalControl::open(socket)?;
+        crate::authority_local_transport::LocalControl::validate(socket)?;
     }
     if let Some(path) = &route.service_directory {
         files::private_directory(path)?;
@@ -160,7 +161,7 @@ pub(crate) fn fetch_source_from(
             _ => anyhow::bail!("another request is pending before content fetch"),
         })
         .transpose()?;
-    let host=value.hosts.iter().find(|host|selected_host.is_none_or(|p|p==*host) && pending_host.as_ref().is_none_or(|p|p==*host) && routes.iter().any(|r|r.host==hex::encode(host.id))).context("no explicit local content route for this exact placement host; bind a host with pages content route")?;
+    let host=value.hosts.iter().find(|host|selected_host.is_none_or(|p|p==*host) && pending_host.as_ref().is_none_or(|p|p==*host) && routes.iter().any(|r|r.host==hex::encode(host.id))).context("no explicitly selected content route for this exact placement host; bind a host with pages content route")?;
     let route = routes
         .iter()
         .find(|r| r.host == hex::encode(host.id))

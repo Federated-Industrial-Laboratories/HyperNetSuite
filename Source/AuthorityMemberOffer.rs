@@ -261,6 +261,7 @@ pub(super) fn preflight_receipt(
         V::Text(intent.action.clone()),
         a(versions.iter().map(version_value).collect()),
         b(created),
+        V::Uint(u64::MAX),
     ]))?;
     let result = wire::encode(&a(vec![
         V::Uint(24),
@@ -384,15 +385,22 @@ pub fn confirm(
     )?;
     let scope = descriptor.scope();
     ensure!(
-        intent.action == "AuthorityAdmitMember"
-            && p[2].text()? == intent.action
+        matches!(
+            intent.action.as_str(),
+            "AuthorityAdmitMember" | "AuthorityRedeemMember"
+        ) && p[2].text()? == intent.action
             && intent.network == scope.network
             && intent.incarnation == scope.incarnation
-            && intent.requester == offer.inviter
+            && intent.requester
+                == if intent.action == "AuthorityRedeemMember" {
+                    offer.candidate
+                } else {
+                    offer.inviter
+                }
             && intent.resource == offer.member
             && intent.revision == 1
             && intent.profile_generation == 0
-            && challenge.recipient == offer.inviter
+            && challenge.recipient == intent.requester
             && p[4].bytes()? == offer.envelope,
         "historical admission differs from the exact accepted offer"
     );
@@ -446,13 +454,15 @@ pub fn confirm(
         },
         |_, result, executed| {
             let decoded = wire::decode(&result.value)?;
-            let value = record(&decoded, 201, 5)?;
+            let value = record(&decoded, 201, 6)?;
             ensure!(
                 result.disposition == Disposition::Permit
                     && executed.maximum_effect == 1
-                    && value[2].text()? == "AuthorityAdmitMember"
+                    && value[2].text()? == intent.action
                     && parse_versions(&value[3])? == versions
                     && value[4].bytes()? == created
+                    && value[5].uint()? > intent.minimum_policy_height
+                    && value[5].uint()? <= executed.height
                     && executed.expires_at_ms
                         <= challenge
                             .evaluation_expiry(executed.evaluated_at_ms, executed.expires_at_ms)?,

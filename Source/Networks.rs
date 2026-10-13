@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Offline governance preparation and private client profiles never connect to a network.
+// Independently pinned network profiles separate offline preparation from explicit relay access.
 use crate::{Identity, transfer_files as files, trust_bootstrap as trust, trust_wire};
 use anyhow::{Context, Result, ensure};
 use clap::Subcommand;
@@ -13,13 +13,22 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+#[path = "PrivateRouteOnboarding.rs"]
+mod onboarding;
 #[path = "AuthorityRecoveryCli.rs"]
 mod recovery;
+#[path = "PrivateRouteWorkflow.rs"]
+mod workflow;
 
 const PROFILE_LIMIT: usize = 600000;
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Observe local clock health without changing time or trusting a remote host boot.
+    Clock {
+        #[command(subcommand)]
+        command: crate::private_route_clock::Command,
+    },
     /// Propose, observe and independently accept a new network after authority loss.
     Recovery {
         #[command(subcommand)]
@@ -81,12 +90,32 @@ pub enum Command {
         #[arg(long)]
         profile: PathBuf,
     },
-    /// Online joining is unavailable until the privacy connector is implemented.
-    Join {
+    /// Publish only device and separate relay public keys for a candidate-specific invitation.
+    Request {
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Inspect a public request without granting membership or hosting rights.
+    InspectRequest {
+        #[arg(long)]
+        request: PathBuf,
+    },
+    /// Assemble already authorised candidate and relay material for independent delivery.
+    Invitation(onboarding::AssembleInvitation),
+    /// Accept an independently pinned invitation and join only through its approved relay.
+    Join(onboarding::Join),
+    /// Run a normal client command with this network's retained trust, identity and relay routes.
+    Connect(workflow::Connect),
+    /// Retain an authenticated relay route for an explicitly selected domain service.
+    RetainRoute(workflow::Retain),
+    /// Inspect retained route identities and the latest local connection observation.
+    Status {
         #[arg(long)]
         profile: PathBuf,
     },
-    /// Remove only this offline profile and its unused local keys.
+    /// Remove only this local profile; this does not revoke network rights.
     Remove {
         #[arg(long)]
         profile: PathBuf,
@@ -111,6 +140,8 @@ struct Profile {
     permit_network_search: bool,
     #[serde(default)]
     recovery: Option<recovery::Binding>,
+    #[serde(default)]
+    joined: Option<onboarding::Joined>,
 }
 
 fn time() -> Result<u64> {
@@ -161,7 +192,7 @@ fn report(checked: &trust::Verified) -> Result<()> {
         "privacyAssumption":if checked.summary.route.assurance == trust::Assurance::Independent {
             "Declared separate operators; actual independence and noncollusion are not proven"
         } else { "The organisation can correlate reader and destination activity" },
-        "join":"Unavailable: approved privacy connector is not implemented",
+        "join":"Requires an independently pinned invitation and explicit relay-only join",
     }))
 }
 fn verify_profile(profile: &Profile, bytes: &[u8], current: bool) -> Result<trust::Verified> {
@@ -266,15 +297,15 @@ fn load(path: &Path) -> Result<(Profile, trust::Verified)> {
 fn profile_report(profile: &Profile, checked: &trust::Verified) -> Result<()> {
     let current = trust::check(&hex::decode(&profile.bootstrap)?, true, time()?).is_ok();
     crate::print_value(
-        &json!({"state":"OfflinePrepared","fingerprint":profile.fingerprint,
+        &json!({"state":if profile.joined.as_ref().is_some_and(|j| j.admitted) { "Joined" } else { "OfflinePrepared" },"fingerprint":profile.fingerprint,
             "bootstrapTimeValid":current,
             "descriptorDigest":profile.descriptor_digest,"client":profile.client_id,
             "devicePublicKey":profile.device.public_key,"relayPublicKey":profile.relay_identity.public_key,
             "minimumRoute":profile.minimum_route,"effectiveMinimumRoute":profile.minimum_route.max(checked.summary.minimum_route),
             "acceptedRelayDomains":profile.accepted_relay_domains,"publicationModes":profile.required_publication_modes,
             "permitNetworkSearch":profile.permit_network_search,"trust":checked.summary,
-            "membership":false,"currentAuthority":false,"hostingRoles":[],"inboundListeners":false,
-            "networkUsed":false,"routeObserved":false,"join":"Unavailable: approved privacy connector is not implemented",
+            "membership":profile.joined.as_ref().is_some_and(|j| j.admitted),"currentAuthority":false,"hostingRoles":[],"inboundListeners":false,
+            "networkUsed":false,"routeObserved":false,"join":"Requires an independently pinned invitation and explicit relay-only join",
             "privacyAssumption":if checked.summary.route.assurance == trust::Assurance::Independent {
                 "Declared separate operators; actual independence and noncollusion are not proven"
             } else { "The organisation can correlate reader and destination activity" },
@@ -285,6 +316,7 @@ fn profile_report(profile: &Profile, checked: &trust::Verified) -> Result<()> {
 pub fn run(command: Command) -> Result<()> {
     match command {
         Command::Recovery { command } => recovery::run(command),
+        Command::Clock { command } => crate::private_route_clock::run(command),
         Command::Draft {
             spec,
             output: destination,
@@ -373,6 +405,7 @@ pub fn run(command: Command) -> Result<()> {
                 required_publication_modes: modes,
                 permit_network_search,
                 recovery: None,
+                joined: None,
             };
             let checked = verify_profile(&profile, &bytes, true)?;
             let encoded = Zeroizing::new(serde_json::to_vec(&profile)?);
@@ -384,12 +417,13 @@ pub fn run(command: Command) -> Result<()> {
             let (profile, checked) = load(&profile)?;
             profile_report(&profile, &checked)
         }
-        Command::Join { profile } => {
-            let _ = load(&profile)?;
-            anyhow::bail!(
-                "OnlineJoinUnavailable: the approved privacy connector is not implemented; no network connection was attempted"
-            )
-        }
+        Command::Request { profile, output } => onboarding::request(&profile, &output),
+        Command::InspectRequest { request } => onboarding::inspect_request(&request),
+        Command::Invitation(arguments) => onboarding::assemble(arguments),
+        Command::Join(arguments) => onboarding::join(arguments),
+        Command::Connect(arguments) => workflow::connect(arguments),
+        Command::RetainRoute(arguments) => workflow::retain(arguments),
+        Command::Status { profile } => workflow::status(&profile),
         Command::Remove {
             profile,
             fingerprint: pin,
@@ -412,4 +446,54 @@ pub fn run(command: Command) -> Result<()> {
             )
         }
     }
+}
+
+pub(crate) fn route_key(path: &Path, route: &crate::route_profile::Profile) -> Result<SigningKey> {
+    let (profile, checked) = load(path)?;
+    route.validate()?;
+    let required = profile.minimum_route.max(checked.summary.minimum_route);
+    let required = if required == trust::Assurance::Independent {
+        crate::route_profile::Assurance::Independent
+    } else {
+        crate::route_profile::Assurance::Organisation
+    };
+    ensure!(
+        route.network == trust::hex32(&checked.summary.network)?
+            && route.incarnation == trust::hex32(&checked.summary.incarnation)?
+            && route.relay.service == trust::hex32(&checked.summary.route.relay_service)?
+            && route.relay.transport_key
+                == trust::hex32(&checked.summary.route.relay_transport_key)?
+            && profile.accepted_relay_domains.contains(&route.relay_domain)
+            && checked
+                .summary
+                .allowed_relay_domains
+                .contains(&route.relay_domain)
+            && route.minimum_assurance >= required
+            && route.assurance >= required,
+        "selected relay conflicts with independently pinned network or client privacy minimum"
+    );
+    if route.protocol == 1 {
+        ensure!(
+            route.destination.service == trust::hex32(&checked.summary.route.admission_service)?
+                && route.destination.transport_key
+                    == trust::hex32(&checked.summary.route.admission_transport_key)?
+                && route.domain == checked.summary.route.admission_domain,
+            "authority route differs from independently pinned admission identity"
+        );
+    }
+    let record =
+        crate::authority_domains::Record::parse(&route.voucher, route.network, route.incarnation)?;
+    ensure!(
+        record.reference.kind == 166,
+        "selected route lacks a typed possession voucher"
+    );
+    let voucher = crate::authority_domains::routes::Voucher::parse(&record.payload)?;
+    ensure!(
+        voucher.possession == trust::hex32(&profile.relay_identity.public_key)?
+            && voucher.relay.id == route.relay.service
+            && voucher.destination.id == route.destination.service,
+        "selected route voucher differs from the client possession key or registered endpoints"
+    );
+    let secret = Zeroizing::new(trust::hex32(&profile.relay_identity.secret_key)?);
+    Ok(SigningKey::from_bytes(&secret))
 }

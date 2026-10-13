@@ -957,6 +957,26 @@ fn private_operator_workflow_returns_only_a_durable_verified_record() {
 }
 
 #[test]
+fn stream_transport_setup_failure_precedes_challenge_and_clock_sample() {
+    let mut f = Fixture::new();
+    let descriptor = f.bootstrap.descriptor().clone();
+    let prefix = f.store.prefix().clone();
+    let absent = f.directory.0.join("AbsentRoute.json");
+    let result = stream_client::status_local(
+        &descriptor,
+        &absent,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        || panic!("application challenge clock sampled before transport readiness"),
+    );
+    assert!(result.is_err());
+    assert_eq!(*f.store.prefix(), prefix);
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert!(f.store.resume_fence().unwrap().is_none());
+}
+
+#[test]
 fn immediate_stream_status_accepts_a_quick_certificate_without_challenge_ageing() {
     let mut f = Fixture::new();
     let socket = f.directory.0.join("Quick.sock");
