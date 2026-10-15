@@ -386,6 +386,7 @@ struct ContentPolicyFile {
     opaque: bool,
     failure_domain: String,
     reviewer_keys: Vec<String>,
+    search: bool,
 }
 fn content_policy_file(path: &std::path::Path) -> Result<page::ContentPolicy> {
     let p: ContentPolicyFile = serde_json::from_slice(&files::read_public_single(path, 4096)?)?;
@@ -402,6 +403,7 @@ fn content_policy_file(path: &std::path::Path) -> Result<page::ContentPolicy> {
             .iter()
             .map(|k| id(k))
             .collect::<Result<_>>()?,
+        search: p.search,
     };
     page::ContentPolicy::parse(&policy.value())
 }

@@ -42,14 +42,20 @@ impl Socket<'_> {
             ));
         }
         let now = boot_time_ms().map_err(io::Error::other)?;
-        self.deadline
+        let deadline = self
+            .deadline
             .min(self.operation_deadline.unwrap_or(u64::MAX))
-            .min(self.idle_deadline)
-            .checked_sub(now)
-            .filter(|n| *n > 0)
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::TimedOut, "private route deadline expired")
-            })
+            .min(self.idle_deadline);
+        deadline.checked_sub(now).filter(|n| *n > 0).ok_or_else(|| {
+            let message = if deadline == self.deadline {
+                "private route total deadline expired"
+            } else if self.operation_deadline == Some(deadline) {
+                "private route operation deadline expired"
+            } else {
+                "private route idle deadline expired"
+            };
+            io::Error::new(io::ErrorKind::TimedOut, message)
+        })
     }
     fn ready(&self, events: libc::c_short) -> io::Result<()> {
         loop {
@@ -420,7 +426,12 @@ mod tests {
             remaining_bytes: 12345,
             cancelled: &|| false,
         };
-        assert!(stream.check().is_err());
+        let error = stream.check().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            error.to_string(),
+            "private route operation deadline expired"
+        );
         stream.operation_deadline = Some(now + 5000);
         assert!(stream.check().unwrap() <= 5000);
         stream.operation_deadline = None;
@@ -428,6 +439,17 @@ mod tests {
         assert_eq!(stream.deadline, now + 60000);
         assert_eq!(stream.idle_deadline, now + 30000);
         assert_eq!(stream.remaining_bytes, 12345);
+        stream.deadline = now;
+        assert_eq!(
+            stream.check().unwrap_err().to_string(),
+            "private route total deadline expired"
+        );
+        stream.deadline = now + 60000;
+        stream.idle_deadline = now;
+        assert_eq!(
+            stream.check().unwrap_err().to_string(),
+            "private route idle deadline expired"
+        );
     }
     #[test]
     fn private_route_readiness_cannot_extend_original_socket_limits() {

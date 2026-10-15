@@ -75,6 +75,7 @@ impl Fixture {
                 quarantine_bytes: 1024 * 1024,
                 maximum_objects: 128,
                 opaque: true,
+                search: false,
                 failure_domain: [91; 32],
                 reviewers: vec![public(5)],
             }),

@@ -27,8 +27,25 @@ pub(super) struct SavedRoute {
     pub service: String,
     pub subject: String,
     pub protocol: u64,
+    pub route_digest: String,
 }
-fn routes(directory: &Path) -> Result<Vec<SavedRoute>> {
+impl SavedRoute {
+    fn digest(route: &crate::route_profile::Profile) -> Result<String> {
+        Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(
+            route,
+        )?)))
+    }
+    fn checked_subject(&self, route: &crate::route_profile::Profile) -> Result<[u8; 32]> {
+        ensure!(
+            self.service == hex::encode(route.destination.service)
+                && self.protocol == route.protocol
+                && self.route_digest == Self::digest(route)?,
+            "route differs from the explicitly retained subject binding"
+        );
+        trust::hex32(&self.subject)
+    }
+}
+fn inventory(directory: &Path) -> Result<Vec<SavedRoute>> {
     let path = directory.join("Routes.json");
     let bytes = files::read_single(&path, 65536, true)?;
     let routes: Vec<SavedRoute> = serde_json::from_slice(&bytes)?;
@@ -39,15 +56,35 @@ fn routes(directory: &Path) -> Result<Vec<SavedRoute>> {
     for route in &routes {
         trust::hex32(&route.service)?;
         trust::hex32(&route.subject)?;
+        trust::hex32(&route.route_digest)?;
         ensure!((1..=6).contains(&route.protocol), "invalid route protocol");
-        let endpoint = Endpoint::load(&route_path(directory, &route.service))?;
-        ensure!(
-            hex::encode(endpoint.route.destination.service) == route.service
-                && endpoint.route.protocol == route.protocol,
-            "route inventory differs from retained endpoint"
-        );
     }
     Ok(routes)
+}
+fn routes(directory: &Path) -> Result<Vec<SavedRoute>> {
+    let routes = inventory(directory)?;
+    for route in &routes {
+        let endpoint = Endpoint::load(&route_path(directory, &route.service))?;
+        route.checked_subject(&endpoint.route)?;
+    }
+    Ok(routes)
+}
+pub(super) fn route_subject(
+    profile: &Path,
+    route: &crate::route_profile::Profile,
+) -> Result<[u8; 32]> {
+    let (profile, _) = load(profile)?;
+    let joined = profile
+        .joined
+        .as_ref()
+        .filter(|j| j.admitted)
+        .context("search requires an explicitly retained joined-network route")?;
+    files::private_directory(&joined.directory)?;
+    inventory(&joined.directory)?
+        .iter()
+        .find(|saved| saved.service == hex::encode(route.destination.service))
+        .context("search route has no explicitly retained subject binding")?
+        .checked_subject(route)
 }
 fn route_path(directory: &Path, service: &str) -> PathBuf {
     directory.join("Routes").join(format!("{service}.json"))
@@ -143,7 +180,9 @@ fn online_defaults(
         "clock-witness",
         joined.clock_witness.clone(),
     );
-    append(argv, available, "key", joined.directory.join("Device.json"));
+    if !has(argv, "device") {
+        append(argv, available, "key", joined.directory.join("Device.json"));
+    }
     append(
         argv,
         available,
@@ -175,6 +214,7 @@ pub fn connect(arguments: Connect) -> Result<()> {
                     | "federation"
                     | "applications"
                     | "authority-inspection"
+                    | "search"
             )
         ),
         "network connect requires a normal client command"
@@ -208,11 +248,21 @@ pub fn connect(arguments: Connect) -> Result<()> {
         "bridge-directory",
         "bridge-core",
         "core",
+        "local-diagnostics",
     ] {
         ensure!(
             !has(&argv, forbidden),
             "network connect controls --{forbidden}; a transport or trust override is not allowed"
         );
+    }
+    let local_search = argv.first().is_some_and(|v| v == "search")
+        && argv
+            .get(1)
+            .is_some_and(|v| matches!(v.to_str(), Some("init" | "local" | "forget")));
+    if local_search {
+        online_defaults(&mut argv, &available, &checked, joined)?;
+        argv.insert(0, "HyperNetSuite".into());
+        return crate::dispatch(crate::Options::try_parse_from(argv)?.command);
     }
     let _selection = Selection::new(&arguments.profile)?;
     let known = routes(&joined.directory)?;
@@ -376,6 +426,7 @@ pub(super) fn retain_route(
     };
     let service = hex::encode(route.destination.service);
     let protocol = route.protocol;
+    let route_digest = SavedRoute::digest(&route)?;
     let endpoint = Endpoint {
         format: "HyperNetRelayEndpoint/1".into(),
         profile: profile.canonicalize()?,
@@ -397,6 +448,7 @@ pub(super) fn retain_route(
         service: service.clone(),
         subject: hex::encode(subject),
         protocol,
+        route_digest,
     });
     inventory.sort_by(|a, b| a.service.cmp(&b.service));
     ensure!(

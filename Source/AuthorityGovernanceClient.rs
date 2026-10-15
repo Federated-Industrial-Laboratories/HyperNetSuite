@@ -7,8 +7,12 @@ const REVOKE: &str = "AuthorityRevokeGrant";
 const CACHE: &str = "Governance.cbor";
 const CONTEXT_LIMIT: usize = crate::authority_capacity::MAX_STATE_BYTES;
 use crate::authority_capacity::MAX_RECORDS;
+#[path = "AuthorityGrantClient.rs"]
+pub(crate) mod grant;
 #[path = "AuthorityContextPaging.rs"]
 mod paging;
+#[path = "AuthorityTierClient.rs"]
+pub(crate) mod tier;
 fn governance_kind(kind: u64) -> bool {
     matches!(
         kind,
@@ -84,11 +88,12 @@ impl ContextState {
         let directory = files::private_directory(directory)?;
         let bytes = files::read_at(&directory, OsStr::new(CACHE), CONTEXT_LIMIT, true)?;
         let decoded = wire::decode_state(&bytes)?;
-        let values = decoded
+        let mut values = decoded
             .list(MAX_RECORDS)?
             .iter()
             .map(|v| Ok(v.bytes()?.to_vec()))
             .collect::<Result<Vec<_>>>()?;
+        tier::refresh_cached_tiers(bootstrap, store, &mut values)?;
         Self::retained(bootstrap, store, &values)
     }
     /// The floor already authenticates every cached digest; the cache never confers authority itself.
@@ -192,6 +197,8 @@ impl CreatedRecord {
     reason = "Bounded records are processed individually without an additional allocation."
 )]
 enum Mode<'a> {
+    Grant(grant::Prepared),
+    Tier(tier::Prepared),
     Refresh {
         minimum: Vec<VersionRef>,
         pages: Option<paging::Pages>,
@@ -214,6 +221,8 @@ struct GovernancePrepared<'a> {
     deadline: u64,
 }
 enum Outcome {
+    Grant(grant::ResultState),
+    Tier(tier::ResultState),
     Context(Box<ContextState>),
     Page,
     Revoked(Box<CreatedRecord>),
@@ -435,6 +444,12 @@ impl<'a> GovernancePrepared<'a> {
             canonical,
         } = parameters;
         let (action, resource, revision) = match &mode {
+            Mode::Grant(grant) => (
+                grant.action(),
+                grant.proposal.resource,
+                grant.proposal.revision,
+            ),
+            Mode::Tier(tier) => (tier.action(), tier.resource(), tier.revision()?),
             Mode::Refresh { .. } => (CONTEXT, descriptor.scope().network, 0),
             Mode::Revoke { target, .. } => (REVOKE, target.id, target.generation),
             Mode::Member(member) => (member.action, member.reference.id, 1),
@@ -492,6 +507,8 @@ impl<'a> GovernancePrepared<'a> {
     }
     fn action(&self) -> &'static str {
         match self.mode {
+            Mode::Grant(ref grant) => grant.action(),
+            Mode::Tier(ref tier) => tier.action(),
             Mode::Refresh { .. } => CONTEXT,
             Mode::Revoke { .. } => REVOKE,
             Mode::Member(ref member) => member.action,
@@ -520,7 +537,14 @@ impl<'a> GovernancePrepared<'a> {
             "governance evaluation lies outside its conservative interval"
         );
         let value = wire::decode(&result.value)?;
+        if let Mode::Grant(grant) = &self.mode {
+            return grant.candidate(intent, &value, executed);
+        }
+        if let Mode::Tier(tier) = &self.mode {
+            return tier.candidate(intent, &value, executed);
+        }
         let arity = match self.mode {
+            Mode::Tier(_) | Mode::Grant(_) => unreachable!(),
             Mode::Member(_) | Mode::Revoke { .. } => 6,
             Mode::Refresh { .. } => 5,
         };
@@ -545,6 +569,7 @@ impl<'a> GovernancePrepared<'a> {
         proof::validate_versions(&versions, MAX_RECORDS)?;
         let scope = self.descriptor.scope();
         let (governance, decision) = match &self.mode {
+            Mode::Tier(_) | Mode::Grant(_) => unreachable!(),
             Mode::Member(member) => member.candidate(intent, result, executed, &versions)?,
             Mode::Refresh { minimum, pages } => {
                 let encoded = wire::encode(&a(vec![
@@ -705,8 +730,9 @@ impl<'a> GovernancePrepared<'a> {
             "governance actions have no pending result"
         );
         let candidate = self.candidate(intent, result, executed)?;
-        match self.mode {
+        match &self.mode {
             Mode::Refresh { .. } => ActionValidation::governance_context(candidate.versions),
+            Mode::Tier(tier) => tier.validation(candidate.versions),
             _ => ActionValidation::new(candidate.versions),
         }
     }
@@ -788,6 +814,11 @@ impl<'a> GovernancePrepared<'a> {
             )?;
         }
         let prefix = verified.point().prefix().clone();
+        let tier_value = if matches!(self.mode, Mode::Tier(_) | Mode::Grant(_)) {
+            Some(wire::decode(&verified.result.value)?)
+        } else {
+            None
+        };
         let receipt = if matches!(self.mode, Mode::Member(_)) {
             member_offer::receipt(&self.intent, &self.challenge, &self.ordered, &reply)?
         } else {
@@ -808,6 +839,22 @@ impl<'a> GovernancePrepared<'a> {
                 Ok(())
             },
             |_, accepted_store| {
+                if let Mode::Grant(_) = &self.mode {
+                    let value = tier_value.context("grant result is absent")?;
+                    if let Some(governance) = candidate.governance {
+                        ContextState {
+                            descriptor: self.descriptor.clone(),
+                            governance,
+                        }
+                        .save(accepted_store)?;
+                    }
+                    return Ok(Outcome::Grant(grant::ResultState { value, prefix }));
+                }
+                if let Mode::Tier(tier) = &self.mode {
+                    let value = tier_value.context("tier result is absent")?;
+                    tier.retain(accepted_store, &value)?;
+                    return Ok(Outcome::Tier(tier::ResultState { value, prefix }));
+                }
                 if let Some(pages) = &candidate.pages {
                     pages.save(&self.descriptor, self.grant, accepted_store)?;
                     if candidate.governance.is_none() {
@@ -822,6 +869,7 @@ impl<'a> GovernancePrepared<'a> {
                 };
                 context.save(accepted_store)?;
                 match self.mode {
+                    Mode::Tier(_) | Mode::Grant(_) => unreachable!(),
                     Mode::Refresh { .. } => Ok(Outcome::Context(Box::new(context))),
                     Mode::Member(member) => {
                         if let Some(path) = member.receipt {

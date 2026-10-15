@@ -30,6 +30,7 @@ mod context;
 mod review;
 #[path = "AuthoritySealedPagesView.rs"]
 mod view;
+pub(crate) use view::retain;
 
 #[derive(Clone, ValueEnum)]
 pub enum Mode {

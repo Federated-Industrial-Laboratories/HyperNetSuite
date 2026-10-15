@@ -9,6 +9,18 @@ use crate::{
 const CACHE: &str = "DomainState.cbor";
 const CACHE_LIMIT: usize = crate::authority_capacity::MAX_STATE_BYTES;
 
+/// A refusal returned only after the authority response and ancestry are verified.
+#[derive(Debug)]
+pub(crate) struct Refusal {
+    pub code: u64,
+}
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "authority domain refused with code {}", self.code)
+    }
+}
+impl std::error::Error for Refusal {}
+
 #[derive(Clone)]
 pub struct Cache {
     pub state: State,
@@ -80,7 +92,7 @@ impl Cache {
             CACHE_LIMIT,
             true,
         );
-        let result = match bytes {
+        let mut result = match bytes {
             Ok(bytes) => {
                 let value = wire::decode_state(&bytes)?;
                 let f = value.array(5)?;
@@ -101,6 +113,11 @@ impl Cache {
             }
             Err(error) => return Err(error),
         };
+        crate::authority_inspection::tier::refresh_cached_tiers(
+            bootstrap,
+            store,
+            &mut result.records,
+        )?;
         let pending = store
             .resume_ordinary()?
             .map(|p| Intent::from_signed(p.signed()))
@@ -207,6 +224,10 @@ pub struct ResultState {
     pub value: V,
     pub prefix: Prefix,
     pub cache: Cache,
+    pub(crate) evaluated_at_ms: u64,
+    pub(crate) expires_at_ms: u64,
+    pub(crate) deadline_boot_ms: u64,
+    pub(crate) receipt: Vec<u8>,
 }
 struct Candidate {
     value: V,
@@ -232,6 +253,22 @@ fn evaluation_inputs(
 ) -> Result<crate::authority_objects::Resolved> {
     domains::result::inputs(command, state, objects)
 }
+fn refreshable_page_query(command: &Command) -> bool {
+    use domains::page::{Command as Page, content::Command as Content};
+    !command.mutation()
+        && !command.serving()
+        && matches!(
+            command,
+            Command::Page(
+                Page::Context { .. }
+                    | Page::Read { .. }
+                    | Page::List { .. }
+                    | Page::SearchList { .. }
+                    | Page::LocalSearchLease { .. }
+                    | Page::Content(Content::Get { .. })
+            )
+        )
+}
 impl<'a> Prepared<'a> {
     #[cfg(test)]
     fn new(
@@ -251,7 +288,7 @@ impl<'a> Prepared<'a> {
             store,
             session,
             vec![],
-            health,
+            &mut || Ok(health),
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -263,7 +300,7 @@ impl<'a> Prepared<'a> {
         store: &mut Store,
         session: &mut Session,
         objects: Vec<crate::authority_objects::Object>,
-        health: ClockHealth,
+        clock: &mut impl FnMut() -> Result<ClockHealth>,
     ) -> Result<Self> {
         ensure!(
             bootstrap.fully_accepted()
@@ -276,7 +313,10 @@ impl<'a> Prepared<'a> {
             "domain store belongs to another accepted bootstrap"
         );
         let descriptor = store.descriptor().clone();
-        let now = health.observe()?;
+        let now = clock()
+            .context("domain preflight clock unavailable")?
+            .observe()
+            .context("domain preflight clock invalid")?;
         let scope = descriptor.scope();
         let intent = if let Some(pending) = store.resume_ordinary()? {
             request.pending(&Intent::from_signed(pending.signed())?)?;
@@ -332,7 +372,13 @@ impl<'a> Prepared<'a> {
                 &probe.parameters,
             )?
         };
-        let challenge = session.issue(&intent, signer, random_id()?, DURATION, health)?;
+        // Persisting the immutable request can outlive a clock witness. A new challenge
+        // starts only after that work, with a current observation and its own fixed deadline.
+        let health = clock().context("domain challenge clock unavailable")?;
+        let issued = health.observe().context("domain challenge clock invalid")?;
+        let challenge = session
+            .issue(&intent, signer, random_id()?, DURATION, health)
+            .context("domain challenge issuance failed")?;
         let parsed = Challenge::from_signed(&challenge)?;
         let ordered = wire::encode(&a(vec![
             V::Uint(22),
@@ -351,11 +397,52 @@ impl<'a> Prepared<'a> {
             intent,
             challenge,
             ordered,
-            deadline: now
+            deadline: issued
                 .boot_ms
                 .checked_add(DURATION)
                 .context("domain deadline overflow")?,
         })
+    }
+    fn exchange_with_history<T, C: FnMut() -> Result<ClockHealth>>(
+        &mut self,
+        signer: &SigningKey,
+        session: &mut Session,
+        clock: &mut C,
+        exchange: &mut impl FnMut(&Self, &mut C) -> Result<T>,
+    ) -> Result<T> {
+        loop {
+            match exchange(self, clock) {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    if !error.is::<crate::authority_local_transport::HistoryOvertaken>()
+                        || !refreshable_page_query(&self.request.command)
+                    {
+                        return Err(error);
+                    }
+                    // No result was accepted. Only these read-only queries may request
+                    // another evaluation of the exact intent on the existing connection.
+                    session.discard(&self.challenge)?;
+                    let health = clock().context("domain history refresh clock unavailable")?;
+                    let duration = self
+                        .deadline
+                        .checked_sub(health.observe()?.boot_ms)
+                        .filter(|remaining| *remaining > 0)
+                        .context("original domain query deadline expired")?;
+                    self.challenge = session
+                        .issue(&self.intent, signer, random_id()?, duration, health)
+                        .context("domain history refresh challenge issuance failed")?;
+                    let parsed = Challenge::from_signed(&self.challenge)?;
+                    self.ordered = wire::encode(&a(vec![
+                        V::Uint(22),
+                        V::Uint(1),
+                        self.descriptor.scope().value(),
+                        b(&self.intent),
+                        b(&self.challenge),
+                        V::Uint(parsed.expires_at_ms),
+                    ]))?;
+                }
+            }
+        }
     }
     fn candidate(
         &self,
@@ -391,7 +478,7 @@ impl<'a> Prepared<'a> {
         intent: &Intent,
         result: &OperationResult,
         executed: &ExecutedResult,
-    ) -> Result<ActionValidation> {
+    ) -> Result<(ActionValidation, Option<Candidate>)> {
         if result.disposition == Disposition::Refuse {
             let value = wire::decode(&result.value)?;
             let f = record(&value, 201, 4)?;
@@ -401,10 +488,12 @@ impl<'a> Prepared<'a> {
                     && executed.maximum_effect == 0,
                 "invalid domain refusal"
             );
-            return ActionValidation::new(vec![]);
+            return Ok((ActionValidation::new(vec![])?, None));
         }
         let candidate = self.candidate(intent, result, executed)?;
-        ActionValidation::mutation(candidate.versions, candidate.updates)
+        let validation =
+            ActionValidation::mutation(candidate.versions.clone(), candidate.updates.clone())?;
+        Ok((validation, Some(candidate)))
     }
     #[cfg(test)]
     fn finish(
@@ -465,6 +554,7 @@ impl<'a> Prepared<'a> {
             evidence.nodes.last().is_some_and(|v| *v == reply.node),
             "domain ancestry differs from certified node"
         );
+        let mut candidate = None;
         let verified = proof::verify_response(
             &self.descriptor,
             proof::ProofContext {
@@ -481,47 +571,73 @@ impl<'a> Prepared<'a> {
                 certificate: &reply.certificate,
                 ancestry: &evidence.nodes,
             },
-            |i, r, e| self.validate(i, r, e),
+            |i, r, e| {
+                let (validation, validated) = self.validate(i, r, e)?;
+                candidate = validated;
+                Ok(validation)
+            },
         )?;
         let verified = evidence.attach(store, verified)?;
         if verified.disposition() != Disposition::Permit {
             let code = verified.code();
             store.observe(verified)?;
             session.discard(&self.challenge)?;
-            bail!("authority domain refused with code {code}");
+            return Err(Refusal { code }.into());
         }
-        let candidate = self.candidate(
-            verified.request().ordinary()?,
-            &verified.result,
-            &verified.executed,
-        )?;
+        let candidate = candidate.context("permitted domain result lacks validated candidate")?;
         minimum(&candidate.versions, store.generations())?;
         let prefix = verified.point().prefix().clone();
+        let evaluated_at_ms = verified.executed.evaluated_at_ms;
+        let expires_at_ms = verified.executed.expires_at_ms;
         remaining(self.deadline)?;
-        let permit = store.accept(verified, session, clock()?, 0)?;
+        let permit = store
+            .accept(
+                verified,
+                session,
+                clock().context("domain acceptance clock unavailable")?,
+                0,
+            )
+            .context("domain durable authority acceptance failed")?;
         let deadline = self.deadline;
-        let result = permit.perform(
-            store,
-            session,
-            clock()?,
-            1,
-            |r| {
-                ensure!(*r == Restrictions::default(), "domain restrictions changed");
-                Ok(())
-            },
-            |_, store| {
-                candidate.cache.save(store)?;
-                remaining(deadline)?;
-                Ok((
-                    ResultState {
-                        value: candidate.value,
-                        prefix,
-                        cache: candidate.cache,
-                    },
-                    outputs,
-                ))
-            },
-        )?;
+        let receipt = wire::encode(&a(vec![
+            V::Uint(201),
+            V::Uint(1),
+            V::Text("AuthorityDomainReceipt".into()),
+            b(&self.intent),
+            b(&self.challenge),
+            b(&self.ordered),
+            b(&reply.result),
+            b(&reply.certificate),
+            b(&reply.node),
+        ]))?;
+        let result = permit
+            .perform(
+                store,
+                session,
+                clock().context("domain result publication clock unavailable")?,
+                1,
+                |r| {
+                    ensure!(*r == Restrictions::default(), "domain restrictions changed");
+                    Ok(())
+                },
+                |_, store| {
+                    candidate.cache.save(store)?;
+                    remaining(deadline)?;
+                    Ok((
+                        ResultState {
+                            value: candidate.value,
+                            prefix,
+                            cache: candidate.cache,
+                            evaluated_at_ms,
+                            expires_at_ms,
+                            deadline_boot_ms: deadline,
+                            receipt,
+                        },
+                        outputs,
+                    ))
+                },
+            )
+            .context("domain durable result publication failed")?;
         remaining(deadline)?;
         Ok(result)
     }
@@ -569,7 +685,7 @@ pub fn local_with_objects(
     stream_client::ensure_stream(&descriptor, path, signer, store, session, &mut clock)?;
     let cache = Cache::load(bootstrap, store)?;
     let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
-    let prepared = Prepared::new_with_objects(
+    let mut prepared = Prepared::new_with_objects(
         bootstrap,
         request,
         cache,
@@ -577,9 +693,10 @@ pub fn local_with_objects(
         store,
         session,
         inputs.objects().cloned().collect(),
-        clock()?,
-    )?;
-    let challenge = prepared.challenge.clone();
+        &mut clock,
+    )
+    .context("domain request preparation failed")?;
+    let mut challenge = prepared.challenge.clone();
     let result = (|| {
         let intent = Intent::from_signed(&prepared.intent)?;
         let command_refs = prepared.request.command.command_inputs();
@@ -592,20 +709,25 @@ pub fn local_with_objects(
                 .cloned()
                 .collect(),
         )?;
-        let (reply, evidence, outputs) = crate::authority_local_transport::exchange_objects(
-            &descriptor,
-            &prepared.ordered,
-            &submission,
-            prepared.deadline,
-            &control,
-            store.prefix(),
-            store.tree_head(),
-            &mut clock,
-            &mut |result| {
-                let result = OperationResult::parse(result)?;
-                domains::response_inputs(&intent, &wire::decode(&result.value)?)
-            },
-        )?;
+        let exchange =
+            prepared.exchange_with_history(signer, session, &mut clock, &mut |attempt, clock| {
+                crate::authority_local_transport::exchange_objects(
+                    &descriptor,
+                    &attempt.ordered,
+                    &submission,
+                    attempt.deadline,
+                    &control,
+                    store.prefix(),
+                    store.tree_head(),
+                    clock,
+                    &mut |result| {
+                        let result = OperationResult::parse(result)?;
+                        domains::response_inputs(&intent, &wire::decode(&result.value)?)
+                    },
+                )
+            });
+        challenge = prepared.challenge.clone();
+        let (reply, evidence, outputs) = exchange?;
         prepared.finish_with_objects(
             reply,
             AncestryEvidence::from_shared(evidence),

@@ -59,7 +59,10 @@ fn certified_context(f: &SourceFixture, raw: [u8; 16], action: u64) -> (State, V
 }
 
 fn imported() -> (SourceFixture, [u8; 16], VersionRef, ForeignReview) {
-    let mut f = destination();
+    imported_with_search(false)
+}
+fn imported_with_search(search: bool) -> (SourceFixture, [u8; 16], VersionRef, ForeignReview) {
+    let mut f = destination_with_search(search);
     let raw = [194; 16];
     // A distinct host grant must be returned even when the participant already knows its own grant.
     let g = Governance::parse(f.state.network, f.state.incarnation, &f.records).unwrap();
@@ -162,6 +165,141 @@ fn imported() -> (SourceFixture, [u8; 16], VersionRef, ForeignReview) {
 }
 
 #[test]
+fn cold_search_inventory_requires_local_page_context_before_exact_listing() {
+    let (mut f, raw, asset, review) = imported_with_search(true);
+    let mut evidence = page::Evidence::parse(
+        &f.state.record(145, asset.id).unwrap().payload,
+        f.state.network,
+        f.state.incarnation,
+    )
+    .unwrap();
+    evidence.inspections.push(page::Inspection {
+        reviewer: review.reviewer,
+        grant: review.grant.clone(),
+        application: None,
+        intent: [197; 32],
+        expires_ms: 12000,
+    });
+    insert(&mut f.state, 145, asset.id, evidence.value());
+    let published = insert(&mut f.state, 156, review.revision.id, review.value()).reference;
+    let qualified = qualified_page(f.treaty.id, &f.treaty.source, raw).unwrap();
+    let mut head = ForeignPage::parse(&f.state.record(154, qualified).unwrap().payload).unwrap();
+    head.published = Some(published);
+    head.pending = None;
+    insert(&mut f.state, 154, qualified, head.value());
+
+    let (intent, _, inventory) = f.evaluate(
+        Command::InventoryContext {
+            agreement: f.treaty.id,
+            action: 1,
+        }
+        .into(),
+        vec![],
+        5,
+        Some(f.grant.clone()),
+    );
+    assert_eq!(inventory.code, 0);
+    let (cold, records) = f.context(&inventory.value);
+    assert!(
+        !cold
+            .records
+            .keys()
+            .any(|(kind, _)| matches!(kind, 154..=156))
+    );
+
+    // Exercise the production listing evaluator at its already-verified foreign-proof seam.
+    let (mut foreign, _) = exported_media(&f, raw, 1);
+    let admission_request = Operation {
+        command: admission(&f, None).into(),
+        grant: None,
+        snapshot: snapshot(&deployment::snapshot(&[])).unwrap(),
+    };
+    let signed = deployment::signed(
+        &deployment::key(106),
+        "AuthorityDomain",
+        admission_request.command.resource(),
+        0,
+        wire::decode(&admission_request.parameters().unwrap()).unwrap(),
+        vec![],
+    );
+    let Command::Export {
+        admission,
+        include_bundle,
+        ..
+    } = &mut foreign.command
+    else {
+        unreachable!()
+    };
+    *include_bundle = false;
+    admission.ordered = wire::encode(&a(vec![
+        V::Uint(22),
+        V::Uint(1),
+        f.local.scope.value(),
+        b(&signed),
+        V::Null,
+        V::Uint(20000),
+    ]))
+    .unwrap();
+    let operation = Operation {
+        command: Command::SearchList {
+            agreement: f.treaty.id,
+            export: admission.clone(),
+        }
+        .into(),
+        grant: Some(f.grant.clone()),
+        snapshot: snapshot(&deployment::snapshot(&[])).unwrap(),
+    };
+    let listing = |state: &State, records: &[Vec<u8>]| {
+        let mut c = evaluation(&f, state, records);
+        let agreement = c.select(151, f.treaty.id).unwrap();
+        c.federation_agreement(&agreement.reference).unwrap();
+        list(
+            &mut c,
+            &intent,
+            &operation,
+            &f.treaty,
+            &foreign,
+            state,
+            &BTreeSet::new(),
+            &mut None,
+        )
+        .unwrap();
+        sorted(&mut c.dependencies).unwrap();
+        (c.dependencies, c.selected)
+    };
+    let (cold_dependencies, cold_selected) = listing(&cold, &records);
+    let (required, selected) = listing(&f.state, &f.records);
+    assert_ne!(
+        cold_dependencies, required,
+        "cold preflight must not sign an incomplete closure"
+    );
+    assert!(!cold_selected.contains_key(&(154, qualified)));
+    assert!(selected.contains_key(&(154, qualified)));
+
+    let (hydrated, records, _) = certified_context(&f, raw, 1);
+    let (dependencies, selected) = listing(&hydrated, &records);
+    assert_eq!(
+        dependencies, required,
+        "hydration must preserve exact mutation preconditions"
+    );
+    for kind in [154, 155, 156] {
+        assert!(selected.keys().any(|(k, _)| *k == kind));
+    }
+    let (_, _, absent) = f.evaluate(
+        Command::PageContext {
+            agreement: f.treaty.id,
+            page: [198; 16],
+            action: 1,
+        }
+        .into(),
+        vec![],
+        5,
+        Some(f.grant.clone()),
+    );
+    assert_eq!(absent.code, 3);
+}
+
+#[test]
 fn page_context_hydrates_cold_reviewer_media_approval_and_reader_dependencies() {
     let (mut f, raw, asset, review) = imported();
     let (cold, records, _) = certified_context(&f, raw, 3);
@@ -185,6 +323,7 @@ fn page_context_hydrates_cold_reviewer_media_approval_and_reader_dependencies() 
         value.page,
         raw,
         media.manifest.bytes,
+        true,
     )
     .unwrap();
     c.application(
@@ -242,6 +381,7 @@ fn page_context_hydrates_cold_reviewer_media_approval_and_reader_dependencies() 
         value.page,
         raw,
         media.manifest.bytes,
+        true,
     )
     .unwrap();
     c.application(

@@ -44,6 +44,16 @@ impl Location {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Preview complete delegation or revocation impact before applying the exact reviewed change.
+    Grants {
+        #[command(subcommand)]
+        command: grant_cli::Command,
+    },
+    /// Inspect tiers and apply complete reviewed policy changes.
+    Tiers {
+        #[command(subcommand)]
+        command: tier_cli::Command,
+    },
     /// Manage recipient roots, devices, contact trust and publication audiences.
     Recipients {
         #[command(subcommand)]
@@ -192,6 +202,8 @@ pub(crate) fn signer(path: &std::path::Path) -> Result<SigningKey> {
 }
 pub fn run(command: Command) -> Result<()> {
     match command {
+        Command::Grants { command } => grant_cli::run(command),
+        Command::Tiers { command } => tier_cli::run(command),
         Command::Recipients { command } => sealed_cli::run(command),
         Command::Epoch { command } => epoch_cli::run(command),
         Command::Ssh { command } => domain_cli::run(command),
@@ -373,8 +385,12 @@ pub fn run(command: Command) -> Result<()> {
 #[path = "AuthorityInspectionCliTests.rs"]
 mod tests;
 
+#[path = "AuthorityGrantCli.rs"]
+mod grant_cli;
 #[path = "AuthorityMemberCli.rs"]
 mod member_cli;
+#[path = "AuthorityTierCli.rs"]
+mod tier_cli;
 
 #[path = "AuthorityDeploymentCli.rs"]
 mod deployment_cli;

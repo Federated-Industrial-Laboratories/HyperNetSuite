@@ -150,3 +150,11 @@ the immutable outbox entry before sending. Changed content or placement requires
 new review. Cancellation sends nothing and retains the draft for the Forms CLI.
 A failed send reports the exact message identity to resume with `forms send`;
 closing the terminal does not cancel an already confirmed transmission.
+
+## Catalogue discovery
+
+Use [Search](Search.md) to find verified native or approved imported publications,
+or to query an encrypted explicitly retained local corpus. Local and Network are
+explicit command scopes; a failed local query never becomes a network request.
+Search results include provenance and native Page URIs suitable for subsequent
+explicit navigation. Search does not submit forms or activate media effects.

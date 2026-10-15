@@ -114,3 +114,6 @@ HyperNet credential or executable tool surface.
 The client escapes terminal controls in JSON, errors and path output. Commands
 return nonzero on failure. Missing quorum, stale state, unknown clock health and
 incompatible routes refuse the operation without relaxing security policy.
+
+[Catalogue and search](Search.md) describes explicit network queries, query-free
+retention and synchronisation, encrypted local matching, and Historical access.

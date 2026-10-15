@@ -215,6 +215,13 @@ fingerprint and domain subject. The destination identifier selects a registered
 route; the subject identifies the Page host, media host, mailbox store or transfer
 store from the domain metadata.
 
+The private retained inventory binds that subject to a SHA-256 digest of the
+complete parsed route profile, including its TLS identities and possession
+voucher. Search checks this pin against the actual loaded endpoint before
+connecting, then compares the subject with current certified application metadata.
+Missing pins or changed routes are refused; accepting a replacement requires
+another explicit `retain-route` invocation with its authenticated fingerprint.
+
 ```sh
 HyperNetSuite network retain-route --profile /Private/Client/Profile.json \
   --route-profile PageHost.json --fingerprint VERIFIED_ROUTE_DIGEST \

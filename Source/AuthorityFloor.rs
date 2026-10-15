@@ -851,9 +851,11 @@ impl DurablePermit {
         effect: impl FnOnce(&OperationResult, &Store) -> Result<T>,
         once: bool,
     ) -> Result<T> {
-        self.check(store, session, health, requested_effect)?;
+        self.check(store, session, health, requested_effect)
+            .context("authority publication initial check failed")?;
         check_current_restrictions(&self.result.executed.restrictions)?;
-        self.save_body(store, session, health, requested_effect)?;
+        self.save_body(store, session, health, requested_effect)
+            .context("authority publication body persistence failed")?;
         let request = self.result.request().digest();
         let ordinary = matches!(self.result.request(), proof::SignedRequest::Intent(_));
         if ordinary {
@@ -872,9 +874,12 @@ impl DurablePermit {
             let next = store.stored.tracker.effect(request, true)?;
             store.local(next, transaction::Transition::Claim { request }, false)?;
         }
-        self.check(store, session, health, requested_effect)?;
+        self.check(store, session, health, requested_effect)
+            .context("authority publication after-body check failed")?;
         check_current_restrictions(&self.result.executed.restrictions)?;
-        let consumption = session.consume(&self.result, self.not_before_ms, health)?;
+        let consumption = session
+            .consume(&self.result, self.not_before_ms, health)
+            .context("authority publication challenge consumption failed")?;
         let value = effect(&self.result.result, store)?;
         if ordinary
             && !store
@@ -891,7 +896,9 @@ impl DurablePermit {
         // The callback and final durable publication consume the original validity interval.
         self.check_floor(store, requested_effect)?;
         check_current_restrictions(&self.result.executed.restrictions)?;
-        let now = session.finish_consumption(consumption, health)?;
+        let now = session
+            .finish_consumption(consumption, health)
+            .context("authority publication after-completion check failed")?;
         ensure!(
             now.wall_ms >= self.wall_floor_ms.max(store.stored.wall_floor_ms),
             "wall clock fell below durable floor before return"

@@ -29,9 +29,17 @@ pub struct LocalControl {
 impl LocalControl {
     /// The selected file is an explicit relay profile or an owned local socket; failures never switch transports.
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_checked(path, |_| Ok(()))
+    }
+    /// Bind the actual selected transport before connection preparation or application frames.
+    pub(crate) fn open_checked(
+        path: &Path,
+        check: impl FnOnce(Option<&crate::private_route_client::Endpoint>) -> Result<()>,
+    ) -> Result<Self> {
         use std::os::unix::fs::FileTypeExt;
         let metadata = std::fs::symlink_metadata(path)?;
         let endpoint = if metadata.file_type().is_socket() {
+            check(None)?;
             crate::private_route_client::require_local_allowed()?;
             Endpoint::Local(OwnedControl::open(path)?)
         } else {
@@ -39,12 +47,23 @@ impl LocalControl {
                 metadata.is_file(),
                 "endpoint must be a private route file or owned Unix socket"
             );
-            Endpoint::Relay(Box::new(
-                crate::private_route_client::Endpoint::load(path)?.prepare()?,
-            ))
+            return Self::from_relay_checked(
+                crate::private_route_client::Endpoint::load(path)?,
+                check,
+            );
         };
         Ok(Self {
             endpoint,
+            history: None,
+        })
+    }
+    pub(crate) fn from_relay_checked(
+        selected: crate::private_route_client::Endpoint,
+        check: impl FnOnce(Option<&crate::private_route_client::Endpoint>) -> Result<()>,
+    ) -> Result<Self> {
+        check(Some(&selected))?;
+        Ok(Self {
+            endpoint: Endpoint::Relay(Box::new(selected.prepare()?)),
             history: None,
         })
     }

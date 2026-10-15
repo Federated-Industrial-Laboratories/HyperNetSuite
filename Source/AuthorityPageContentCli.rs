@@ -9,6 +9,7 @@ mod progress;
 use progress::Progress;
 #[path = "AuthorityPageContentRoutes.rs"]
 mod routes;
+pub(crate) use routes::search_route;
 pub(crate) use routes::{fetch_source, fetch_source_from, upload_source};
 #[derive(Args)]
 pub struct PlacementRef {

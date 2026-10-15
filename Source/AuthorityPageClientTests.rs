@@ -199,7 +199,7 @@ fn page_source_metadata_survives_floor_before_cache_interruption() {
         &mut f.store,
         &mut f.session,
         objects(),
-        f.issued,
+        &mut || Ok(f.issued),
     )
     .unwrap();
     let original = prepared.intent.clone();
@@ -243,7 +243,7 @@ fn page_source_metadata_survives_floor_before_cache_interruption() {
         &mut f.store,
         &mut f.session,
         objects(),
-        f.issued,
+        &mut || Ok(f.issued),
     )
     .unwrap();
     assert_eq!(prepared.intent, original);

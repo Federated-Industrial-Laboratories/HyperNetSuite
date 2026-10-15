@@ -339,7 +339,7 @@ fn profile_summary(p: &fed::BridgeProfile) -> Result<()> {
     crate::print_value(
         &json!({"status":"BridgeProfile","currentAuthority":false,"service":hex::encode(p.service),
         "operator":hex::encode(p.manifest.operator),"deployment":hex::encode(p.manifest.deployment),"volume":hex::encode(p.volume),
-        "stateBytes":p.state_bytes,"agreements":p.agreements.iter().map(|(id,d)|json!({"id":hex::encode(id),"digest":hex::encode(d)})).collect::<Vec<_>>()}),
+        "stateBytes":p.state_bytes,"search":p.search,"agreements":p.agreements.iter().map(|(id,d)|json!({"id":hex::encode(id),"digest":hex::encode(d)})).collect::<Vec<_>>()}),
     )
 }
 pub(super) fn bridge(command: BridgeCommand) -> Result<()> {
@@ -352,6 +352,7 @@ pub(super) fn bridge(command: BridgeCommand) -> Result<()> {
             volume,
             treaty,
             state_bytes,
+            search,
             output,
         } => {
             let bootstrap = control::bootstrap(&location)?;
@@ -391,6 +392,7 @@ pub(super) fn bridge(command: BridgeCommand) -> Result<()> {
                 volume: id(&volume)?,
                 agreements,
                 state_bytes,
+                search,
                 envelope: vec![],
             };
             p.envelope = wire::sign_envelope(&p.payload()?, &signer)?;

@@ -6,9 +6,9 @@ pub(crate) struct Client {
     pub directory: PathBuf,
     pub key: SigningKey,
     pub store: Store,
-    pub(super) session: Session,
-    pub(super) clock: authority_clock::Source,
-    pub(super) socket: PathBuf,
+    pub(crate) session: Session,
+    pub(crate) clock: authority_clock::Source,
+    pub(crate) socket: PathBuf,
 }
 impl Client {
     pub fn new(online: &Online) -> Result<Self> {

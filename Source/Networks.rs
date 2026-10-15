@@ -313,6 +313,20 @@ fn profile_report(profile: &Profile, checked: &trust::Verified) -> Result<()> {
     )
 }
 
+pub(crate) fn require_network_search(path: &Path) -> Result<()> {
+    let (profile, _) = load(path)?;
+    ensure!(
+        profile.permit_network_search,
+        "this network profile does not permit disclosure of search terms"
+    );
+    Ok(())
+}
+pub(crate) fn route_subject(
+    path: &Path,
+    route: &crate::route_profile::Profile,
+) -> Result<[u8; 32]> {
+    workflow::route_subject(path, route)
+}
 pub fn run(command: Command) -> Result<()> {
     match command {
         Command::Recovery { command } => recovery::run(command),

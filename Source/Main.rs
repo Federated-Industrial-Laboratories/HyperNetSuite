@@ -31,6 +31,8 @@ mod authority_epoch;
 mod authority_floor;
 #[path = "AuthorityGovernance.rs"]
 mod authority_governance;
+#[path = "AuthorityGrantReview.rs"]
+mod authority_grant_review;
 #[path = "AuthorityInspection.rs"]
 mod authority_inspection;
 #[path = "AuthorityInspectionCli.rs"]
@@ -50,6 +52,8 @@ mod authority_recipient;
 mod authority_recovery;
 #[path = "AuthorityRuntimeActivation.rs"]
 mod authority_runtime_activation;
+#[path = "AuthorityTiers.rs"]
+mod authority_tiers;
 // Independent signed HyperNet command client and local device-key management.
 #[path = "AdapterFiles.rs"]
 mod adapter_files;
@@ -107,6 +111,10 @@ mod route_profile;
 mod route_protocol;
 #[path = "RouteTls.rs"]
 mod route_tls;
+#[path = "Search.rs"]
+mod search;
+#[path = "SearchText.rs"]
+mod search_text;
 #[path = "Services.rs"]
 mod services;
 #[path = "SshProof.rs"]
@@ -165,6 +173,9 @@ enum Command {
     Routes(private_route_commands::Command),
     /// Browse the configured network catalogue or a verified page address.
     Browse(authority_pages::Browse),
+    /// Search an explicitly selected network or encrypted retained content.
+    #[command(subcommand)]
+    Search(search::Command),
     /// Fill and exchange explicitly accepted encrypted form submissions.
     Forms(authority_mail::FormsArguments),
     /// Manage separate least-privilege application credentials.
@@ -275,6 +286,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Network(command) => networks::run(command),
         Command::Routes(command) => private_route_commands::run(command),
         Command::Browse(arguments) => authority_pages::browse(arguments),
+        Command::Search(command) => search::run(command),
         Command::Applications(command) => applications::run(command),
         Command::Adapters(command) => authority_pages::adapters::run(command),
         Command::Transfers(arguments) => transfers::run(None, arguments),
