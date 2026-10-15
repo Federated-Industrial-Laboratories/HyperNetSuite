@@ -162,11 +162,12 @@ impl Host {
     }
 }
 
-pub const APPLICATION_PERMISSIONS: [&str; 7] = [
+pub const APPLICATION_PERMISSIONS: [&str; 8] = [
     "MediaInspect",
     "MediaRead",
     "MediaSubmit",
     "PagesRead",
+    "PagesSearch",
     "PagesSubmit",
     "ReviewDecide",
     "ReviewInspect",
@@ -246,7 +247,7 @@ impl ApplicationPolicy {
             Some(pages)
         };
         let permissions = f[11]
-            .list(7)?
+            .list(APPLICATION_PERMISSIONS.len())?
             .iter()
             .map(|v| Ok(v.text()?.to_owned()))
             .collect::<Result<Vec<_>>>()?;

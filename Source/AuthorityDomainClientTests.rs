@@ -56,6 +56,102 @@ fn reply(p: &Prepared, f: &Fixture) -> (CertifiedReply, AncestryEvidence) {
         AncestryEvidence::direct(vec![node]),
     )
 }
+
+#[test]
+fn domain_challenge_refreshes_clock_after_durable_intent_preparation() {
+    let mut f = Fixture::with_actions(vec![0, 20]);
+    let now = f.issued.observe().unwrap();
+    let preflight = ClockHealth::new(now.wall_ms, now.boot_ms, now.boot_ms + 1000, 100)
+        .unwrap()
+        .frozen();
+    let issued = ClockHealth::new(
+        now.wall_ms + 1500,
+        now.boot_ms + 1500,
+        now.boot_ms + 2500,
+        100,
+    )
+    .unwrap()
+    .frozen();
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    let request = domain_request(&f);
+    let mut calls = 0;
+    let prepared = Prepared::new_with_objects(
+        &f.bootstrap,
+        request,
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        vec![],
+        &mut || {
+            calls += 1;
+            Ok(if calls == 1 { preflight } else { issued })
+        },
+    )
+    .unwrap();
+    assert_eq!(calls, 2);
+    let challenge = Challenge::from_signed(&prepared.challenge).unwrap();
+    assert_eq!(challenge.created_at_ms, now.wall_ms + 1500);
+    assert_eq!(challenge.expires_at_ms, now.wall_ms + 1500 + DURATION);
+    assert_eq!(prepared.deadline, now.boot_ms + 1500 + DURATION);
+    assert_eq!(
+        f.store.resume_ordinary().unwrap().unwrap().signed(),
+        prepared.intent
+    );
+}
+
+#[test]
+fn unavailable_issuance_clock_keeps_exact_pending_domain_intent() {
+    let mut f = Fixture::with_actions(vec![0, 20]);
+    let now = f.issued.observe().unwrap();
+    let invalid = ClockHealth::new(
+        now.wall_ms + 1500,
+        now.boot_ms + 1500,
+        now.boot_ms + 1500,
+        100,
+    )
+    .unwrap()
+    .frozen();
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    let request = domain_request(&f);
+    let mut calls = 0;
+    let result = Prepared::new_with_objects(
+        &f.bootstrap,
+        request,
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        vec![],
+        &mut || {
+            calls += 1;
+            Ok(if calls == 1 { f.issued } else { invalid })
+        },
+    );
+    let error = result.err().unwrap();
+    assert!(format!("{error:#}").contains("clock health is stale or invalid"));
+    assert_eq!(calls, 2);
+    let original = f
+        .store
+        .resume_ordinary()
+        .unwrap()
+        .unwrap()
+        .signed()
+        .to_vec();
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    let request = domain_request(&f);
+    let prepared = Prepared::new(
+        &f.bootstrap,
+        request,
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.current,
+    )
+    .unwrap();
+    assert_eq!(prepared.intent, original);
+}
 #[test]
 fn cache_failure_reopens_and_retries_the_exact_original_domain_request() {
     let mut f = Fixture::with_actions(vec![0, 20]);

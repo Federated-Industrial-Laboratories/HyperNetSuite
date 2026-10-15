@@ -19,7 +19,10 @@ fn insert(state: &mut State, kind: u64, id: Digest, value: V) -> Record {
 }
 
 fn destination() -> SourceFixture {
-    let mut f = SourceFixture::configured(true);
+    destination_with_search(false)
+}
+fn destination_with_search(search: bool) -> SourceFixture {
+    let mut f = SourceFixture::configured_with_search(true, search);
     let bridge = Bridge::parse(
         &f.state
             .record(152, f.treaty.destination_bridge)

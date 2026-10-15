@@ -172,7 +172,15 @@ impl SourceFixture {
         Self::configured(false)
     }
     pub(super) fn configured(destination: bool) -> Self {
-        let local = deployment::Fixture::with_actions(vec![0, 2, 3, 4, 5, 10, 11, 12, 13, 22, 26]);
+        Self::configured_with_search(destination, false)
+    }
+    pub(super) fn configured_with_search(destination: bool, search: bool) -> Self {
+        let mut actions = vec![0, 2, 3, 4, 5, 10, 11, 12, 13, 22, 26];
+        if search {
+            actions.extend([1, 7]);
+            actions.sort();
+        }
+        let local = deployment::Fixture::with_actions(actions);
         let foreign =
             deployment::Fixture::with_network(vec![0, 10, 11, 12, 13, 22, 26], [71; 32], [72; 32]);
         let own = crate::trust_bootstrap::inspect(&local.bootstrap, true).unwrap();
@@ -252,6 +260,7 @@ impl SourceFixture {
             volume: [107; 32],
             agreements: vec![(out.treaty.id, out.treaty.digest().unwrap())],
             state_bytes: 8 * 1024 * 1024,
+            search,
             envelope: vec![],
         };
         profile.envelope =

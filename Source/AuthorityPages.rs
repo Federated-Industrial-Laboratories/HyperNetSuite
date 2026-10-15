@@ -49,7 +49,7 @@ pub(crate) mod media;
 #[path = "AuthorityPagePublication.rs"]
 pub(crate) mod publication;
 #[path = "AuthoritySealedPages.rs"]
-mod sealed;
+pub(crate) mod sealed;
 #[path = "AuthorityPageStatements.rs"]
 mod statements;
 #[path = "AuthorityPageView.rs"]

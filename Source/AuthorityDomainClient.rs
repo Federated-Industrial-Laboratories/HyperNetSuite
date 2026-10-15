@@ -9,6 +9,18 @@ use crate::{
 const CACHE: &str = "DomainState.cbor";
 const CACHE_LIMIT: usize = crate::authority_capacity::MAX_STATE_BYTES;
 
+/// A refusal returned only after the authority response and ancestry are verified.
+#[derive(Debug)]
+pub(crate) struct Refusal {
+    pub code: u64,
+}
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "authority domain refused with code {}", self.code)
+    }
+}
+impl std::error::Error for Refusal {}
+
 #[derive(Clone)]
 pub struct Cache {
     pub state: State,
@@ -80,7 +92,7 @@ impl Cache {
             CACHE_LIMIT,
             true,
         );
-        let result = match bytes {
+        let mut result = match bytes {
             Ok(bytes) => {
                 let value = wire::decode_state(&bytes)?;
                 let f = value.array(5)?;
@@ -101,6 +113,11 @@ impl Cache {
             }
             Err(error) => return Err(error),
         };
+        crate::authority_inspection::tier::refresh_cached_tiers(
+            bootstrap,
+            store,
+            &mut result.records,
+        )?;
         let pending = store
             .resume_ordinary()?
             .map(|p| Intent::from_signed(p.signed()))
@@ -207,6 +224,10 @@ pub struct ResultState {
     pub value: V,
     pub prefix: Prefix,
     pub cache: Cache,
+    pub(crate) evaluated_at_ms: u64,
+    pub(crate) expires_at_ms: u64,
+    pub(crate) deadline_boot_ms: u64,
+    pub(crate) receipt: Vec<u8>,
 }
 struct Candidate {
     value: V,
@@ -251,7 +272,7 @@ impl<'a> Prepared<'a> {
             store,
             session,
             vec![],
-            health,
+            &mut || Ok(health),
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -263,7 +284,7 @@ impl<'a> Prepared<'a> {
         store: &mut Store,
         session: &mut Session,
         objects: Vec<crate::authority_objects::Object>,
-        health: ClockHealth,
+        clock: &mut impl FnMut() -> Result<ClockHealth>,
     ) -> Result<Self> {
         ensure!(
             bootstrap.fully_accepted()
@@ -276,7 +297,10 @@ impl<'a> Prepared<'a> {
             "domain store belongs to another accepted bootstrap"
         );
         let descriptor = store.descriptor().clone();
-        let now = health.observe()?;
+        let now = clock()
+            .context("domain preflight clock unavailable")?
+            .observe()
+            .context("domain preflight clock invalid")?;
         let scope = descriptor.scope();
         let intent = if let Some(pending) = store.resume_ordinary()? {
             request.pending(&Intent::from_signed(pending.signed())?)?;
@@ -332,7 +356,13 @@ impl<'a> Prepared<'a> {
                 &probe.parameters,
             )?
         };
-        let challenge = session.issue(&intent, signer, random_id()?, DURATION, health)?;
+        // Persisting the immutable request can outlive a clock witness. A new challenge
+        // starts only after that work, with a current observation and its own fixed deadline.
+        let health = clock().context("domain challenge clock unavailable")?;
+        let issued = health.observe().context("domain challenge clock invalid")?;
+        let challenge = session
+            .issue(&intent, signer, random_id()?, DURATION, health)
+            .context("domain challenge issuance failed")?;
         let parsed = Challenge::from_signed(&challenge)?;
         let ordered = wire::encode(&a(vec![
             V::Uint(22),
@@ -351,7 +381,7 @@ impl<'a> Prepared<'a> {
             intent,
             challenge,
             ordered,
-            deadline: now
+            deadline: issued
                 .boot_ms
                 .checked_add(DURATION)
                 .context("domain deadline overflow")?,
@@ -488,7 +518,7 @@ impl<'a> Prepared<'a> {
             let code = verified.code();
             store.observe(verified)?;
             session.discard(&self.challenge)?;
-            bail!("authority domain refused with code {code}");
+            return Err(Refusal { code }.into());
         }
         let candidate = self.candidate(
             verified.request().ordinary()?,
@@ -497,31 +527,57 @@ impl<'a> Prepared<'a> {
         )?;
         minimum(&candidate.versions, store.generations())?;
         let prefix = verified.point().prefix().clone();
+        let evaluated_at_ms = verified.executed.evaluated_at_ms;
+        let expires_at_ms = verified.executed.expires_at_ms;
         remaining(self.deadline)?;
-        let permit = store.accept(verified, session, clock()?, 0)?;
+        let permit = store
+            .accept(
+                verified,
+                session,
+                clock().context("domain acceptance clock unavailable")?,
+                0,
+            )
+            .context("domain durable authority acceptance failed")?;
         let deadline = self.deadline;
-        let result = permit.perform(
-            store,
-            session,
-            clock()?,
-            1,
-            |r| {
-                ensure!(*r == Restrictions::default(), "domain restrictions changed");
-                Ok(())
-            },
-            |_, store| {
-                candidate.cache.save(store)?;
-                remaining(deadline)?;
-                Ok((
-                    ResultState {
-                        value: candidate.value,
-                        prefix,
-                        cache: candidate.cache,
-                    },
-                    outputs,
-                ))
-            },
-        )?;
+        let receipt = wire::encode(&a(vec![
+            V::Uint(201),
+            V::Uint(1),
+            V::Text("AuthorityDomainReceipt".into()),
+            b(&self.intent),
+            b(&self.challenge),
+            b(&self.ordered),
+            b(&reply.result),
+            b(&reply.certificate),
+            b(&reply.node),
+        ]))?;
+        let result = permit
+            .perform(
+                store,
+                session,
+                clock().context("domain result publication clock unavailable")?,
+                1,
+                |r| {
+                    ensure!(*r == Restrictions::default(), "domain restrictions changed");
+                    Ok(())
+                },
+                |_, store| {
+                    candidate.cache.save(store)?;
+                    remaining(deadline)?;
+                    Ok((
+                        ResultState {
+                            value: candidate.value,
+                            prefix,
+                            cache: candidate.cache,
+                            evaluated_at_ms,
+                            expires_at_ms,
+                            deadline_boot_ms: deadline,
+                            receipt,
+                        },
+                        outputs,
+                    ))
+                },
+            )
+            .context("domain durable result publication failed")?;
         remaining(deadline)?;
         Ok(result)
     }
@@ -577,8 +633,9 @@ pub fn local_with_objects(
         store,
         session,
         inputs.objects().cloned().collect(),
-        clock()?,
-    )?;
+        &mut clock,
+    )
+    .context("domain request preparation failed")?;
     let challenge = prepared.challenge.clone();
     let result = (|| {
         let intent = Intent::from_signed(&prepared.intent)?;

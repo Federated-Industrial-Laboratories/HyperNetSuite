@@ -3,6 +3,84 @@
 use super::*;
 
 #[test]
+fn retained_subject_pins_complete_route_before_connection_preparation() {
+    use crate::{
+        authority_local_transport::LocalControl,
+        route_profile::{Assurance, Identity, Limits},
+    };
+    let identity = |service, transport| Identity {
+        service: [service; 32],
+        server_name: "Search.invalid".into(),
+        transport_key: [transport; 32],
+        leaf_der: vec![transport],
+        certificate_authority_pem: "Pinned authority".into(),
+    };
+    for protocol in [2, 6] {
+        let route = crate::route_profile::Profile {
+            version: 1,
+            network: [1; 32],
+            incarnation: [2; 32],
+            relay_address: "127.0.0.1:1".parse().unwrap(),
+            relay: identity(3, 4),
+            destination: identity(5, 6),
+            domain: "Destination".into(),
+            relay_domain: "Relay".into(),
+            protocol,
+            assurance: Assurance::Independent,
+            minimum_assurance: Assurance::Independent,
+            limits: Limits {
+                bytes: 16384,
+                duration_ms: 1000,
+                idle_ms: 1000,
+            },
+            voucher: vec![8],
+        };
+        let pinned = SavedRoute {
+            service: hex::encode(route.destination.service),
+            subject: hex::encode([7; 32]),
+            protocol,
+            route_digest: SavedRoute::digest(&route).unwrap(),
+        };
+        assert_ne!(route.destination.service, [7; 32]);
+        assert_eq!(pinned.checked_subject(&route).unwrap(), [7; 32]);
+        let mut unpinned = serde_json::to_value(&pinned).unwrap();
+        unpinned.as_object_mut().unwrap().remove("routeDigest");
+        assert!(serde_json::from_value::<SavedRoute>(unpinned).is_err());
+        for changed in 0..8 {
+            let mut selected = route.clone();
+            match changed {
+                0 => selected.destination.service = [9; 32],
+                1 => selected.destination.transport_key = [9; 32],
+                2 => selected.destination.leaf_der.push(9),
+                3 => selected.destination.certificate_authority_pem.push('9'),
+                4 => selected.destination.server_name = "Other.invalid".into(),
+                5 => selected.voucher.push(9),
+                6 => selected.limits.bytes += 1,
+                _ => selected.relay.transport_key = [9; 32],
+            }
+            let endpoint = Endpoint {
+                format: "HyperNetRelayEndpoint/1".into(),
+                profile: PathBuf::from("/AbsentSearchRouteProfile.json"),
+                route: selected,
+            };
+            let result = LocalControl::from_relay_checked(endpoint, |loaded| {
+                assert_eq!(
+                    loaded.unwrap().profile,
+                    PathBuf::from("/AbsentSearchRouteProfile.json")
+                );
+                pinned.checked_subject(&loaded.unwrap().route)?;
+                Ok(())
+            });
+            let error = result.err().unwrap().to_string();
+            assert!(
+                error.contains("explicitly retained subject binding"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
 fn connected_route_command_accepts_the_bootstrap_file_digest() {
     let fixture = crate::authority_deployment_tests::Fixture::new();
     let checked = trust::inspect(&fixture.bootstrap, true).unwrap();

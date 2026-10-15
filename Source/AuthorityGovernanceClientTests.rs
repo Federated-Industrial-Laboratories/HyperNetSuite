@@ -5,6 +5,9 @@ use super::*;
 use ed25519_dalek::Signer;
 fn value(pending: &GovernancePrepared) -> V {
     match &pending.mode {
+        Mode::Tier(_) | Mode::Grant(_) => {
+            panic!("reviewed changes require their exact certified preview")
+        }
         Mode::Member(_) => panic!("membership requires its exact derived record"),
         Mode::Refresh { .. } => panic!("context fixture must supply its exact source records"),
         Mode::Revoke {

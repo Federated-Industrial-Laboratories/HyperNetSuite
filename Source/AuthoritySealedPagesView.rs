@@ -128,6 +128,26 @@ fn fetch(
     device_id: Digest,
     object: Digest,
 ) -> Result<Frame> {
+    Ok(acquire(c, grant, vault, key, device_id, object)?.0)
+}
+pub(crate) fn retain(
+    c: &mut Client,
+    grant: &VersionRef,
+    vault: &Vault,
+    device: Digest,
+    object: Digest,
+) -> Result<crate::search::library::Entry> {
+    let key = vault.device_identity(device)?;
+    Ok(acquire(c, grant, vault, &key, device, object)?.1)
+}
+fn acquire(
+    c: &mut Client,
+    grant: &VersionRef,
+    vault: &Vault,
+    key: &age::x25519::Identity,
+    device_id: Digest,
+    object: Digest,
+) -> Result<(Frame, crate::search::library::Entry)> {
     resume(c, grant, device_id, object)?;
     let result = c.domain_action(
         identity::Command::Context {
@@ -206,21 +226,51 @@ fn fetch(
         },
     )?;
     let document = data::verify_container(&content, &outer, &policy, now(c)?)?;
-    Ok(Frame {
-        document,
-        content,
-        metadata: vec![
-            "Sealed publication; author and reviewer signatures verified at fetch".into(),
-            format!(
-                "Object {} revision {} encryption generation {}",
-                hex::encode(object),
-                outer.revision,
-                outer.encryption_generation
-            ),
-            format!("Publication {}", hex::encode(outer.reference.digest)),
-            "Plaintext is held in this process; fresh access requires current authority".into(),
-        ],
-    })
+    let placement = page::content::Placement::parse(
+        &result.cache.state.record(159, state.placement.id)?.payload,
+    )?;
+    ensure!(
+        page::namespace_id(&placement.namespace)? == policy.namespace,
+        "sealed retained namespace differs from approved policy"
+    );
+    let entry = crate::search::library::Entry {
+        id: object,
+        namespace: placement.namespace,
+        grant: grant.clone(),
+        publication: outer.reference.clone(),
+        retained_at_ms: result.evaluated_at_ms,
+        source: crate::search::library::Source::Sealed {
+            ciphertext,
+            outer: result
+                .cache
+                .state
+                .record(113, outer.reference.id)?
+                .bytes
+                .clone(),
+            policy: result.cache.state.record(104, object)?.bytes.clone(),
+            binding: result.cache.state.record(108, device_id)?.bytes.clone(),
+            device: device_id,
+        },
+        lease: None,
+    };
+    Ok((
+        Frame {
+            document,
+            content,
+            metadata: vec![
+                "Sealed publication; author and reviewer signatures verified at fetch".into(),
+                format!(
+                    "Object {} revision {} encryption generation {}",
+                    hex::encode(object),
+                    outer.revision,
+                    outer.encryption_generation
+                ),
+                format!("Publication {}", hex::encode(outer.reference.digest)),
+                "Plaintext is held in this process; fresh access requires current authority".into(),
+            ],
+        },
+        entry,
+    ))
 }
 
 fn resume(c: &mut Client, grant: &VersionRef, device: Digest, object: Digest) -> Result<()> {

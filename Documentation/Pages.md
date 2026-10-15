@@ -177,8 +177,10 @@ Physical storage admission includes both crash-safe banks and their metadata.
 
 For durable Page source or sealed ciphertext, add `--content-policy ContentPolicy.json`
 to the role1 profile. The JSON fields are `metadataBytes`, `dataBytes`,
-`stagingBytes`, `quarantineBytes`, `maximumObjects`, `opaque`, `failureDomain`
-and `reviewerKeys`. IDs and keys are canonical hexadecimal; reviewer keys are
+`stagingBytes`, `quarantineBytes`, `maximumObjects`, `opaque`, `search`,
+`failureDomain` and `reviewerKeys`. Set `search` explicitly: `true` opts this
+exact signed host profile into network indexing, which separately requires
+current `IndexPages` authority; `false` permits ordinary reads without indexing. IDs and keys are canonical hexadecimal; reviewer keys are
 sorted and unique. Opaque hosting must also be permitted by the deployment
 manifest. Partition admission includes both metadata banks and per-object file
 overhead, within `--state-bytes`; a media-only profile omits this option.

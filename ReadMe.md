@@ -34,7 +34,8 @@ Reader failures, reconnection and cancellation never select a direct fallback.
 publication. [HyperPage](Documentation/HyperPage.md) defines responsive panels,
 rows, scroll boxes, borders, colours and explicit local controls without scripts.
 [Browser](Documentation/Browser.md) covers terminal navigation and recoverable
-errors. [Media](Documentation/Media.md) adds isolated bitmap/SVG import, explicit
+errors. [Search](Documentation/Search.md) provides explicit selected-network
+queries and encrypted retained local catalogues, including sealed publications. [Media](Documentation/Media.md) adds isolated bitmap/SVG import, explicit
 asset inspection, terminal graphics and bounded client-side motion.
 [Examples](Examples/ReadMe.md) contains fictional businesses for local preview.
 
@@ -51,6 +52,7 @@ author sharing and destination review without merging network membership.
 [Adapters](Documentation/Adapters.md) cover separately consented credentials and
 explicit data disclosure. Model recommendations remain inert data.
 [Authority inspection](Documentation/AuthorityInspection.md),
+[tier and grant administration](Documentation/Administration.md),
 [committee replacement](Documentation/AuthorityEpochs.md) and
 [network recovery](Documentation/NetworkRecovery.md) describe installed control
 workflows and independently authenticated recovery.

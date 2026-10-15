@@ -756,6 +756,7 @@ mod tests;
 #[path = "AuthorityGovernanceClient.rs"]
 mod governance_client;
 pub use governance_client::{MemberMutation, MemberRequest, RevokeRequest};
+pub(crate) use governance_client::{grant, tier};
 
 #[path = "AuthorityMemberOffer.rs"]
 pub(crate) mod member_offer;

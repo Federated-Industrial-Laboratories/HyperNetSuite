@@ -172,3 +172,11 @@ consent and governance dependencies, namespace placement policy and existing
 state for that exact qualified import. The Bridge verifies this context before
 Import, including after restart. Inventory Admission does not return unrelated
 imported Pages, and ordinary certified-result size limits remain in force.
+
+## Search consent
+
+`federation bridge profile --search` explicitly includes network indexing in
+the operator's signed consent. [Search](Search.md) uses the destination's retained
+approved import and fresh bilateral evidence; query terms are never forwarded
+to the source network. Query-free retention and local derivation continue to use
+ordinary read consent and separate current reader search permission.

@@ -54,6 +54,41 @@ fn load(directory: &std::fs::File) -> Result<Vec<Route>> {
         Err(error) => Err(error),
     }
 }
+pub(crate) fn search_route(
+    c: &Client,
+    placement: &content::Placement,
+    search: bool,
+) -> Result<(VersionRef, PathBuf)> {
+    let directory = files::private_directory(&c.directory)?;
+    let routes = load(&directory)?;
+    let cache = c.cache()?;
+    for host in &placement.hosts {
+        let record = cache.state.record(147, host.id)?;
+        ensure!(record.reference == *host, "search content host changed");
+        let configured = page::Host::parse(
+            &record.payload,
+            cache.state.network,
+            cache.state.incarnation,
+        )?;
+        if configured.withdrawn
+            || !configured
+                .profile
+                .content
+                .as_ref()
+                .is_some_and(|p| !search || p.search)
+        {
+            continue;
+        }
+        if let Some(path) = routes
+            .iter()
+            .find(|r| r.host == hex::encode(host.id))
+            .and_then(|r| r.service_socket.clone())
+        {
+            return Ok((host.clone(), path));
+        }
+    }
+    anyhow::bail!("no exact consenting search host has an explicit service route")
+}
 impl Route {
     fn transport(&self) -> Result<Transport> {
         let host = id(&self.host)?;

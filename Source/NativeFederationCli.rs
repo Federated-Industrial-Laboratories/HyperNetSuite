@@ -198,6 +198,9 @@ pub enum BridgeCommand {
         treaty: Vec<PathBuf>,
         #[arg(long)]
         state_bytes: u64,
+        /// Explicit operator consent for destination-local publication search.
+        #[arg(long)]
+        search: bool,
         #[arg(long)]
         output: PathBuf,
     },

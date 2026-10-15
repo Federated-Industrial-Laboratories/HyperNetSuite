@@ -121,7 +121,7 @@ fn show(bytes: &[u8], bootstrap: &Verified) -> Result<()> {
     crate::print_value(
         &json!({"status":"PageApplicationConsent","currentPermission":false,
         "sha256":hex::encode(digest(bytes)),"application":hex::encode(f[5].fixed::<32>()?),"owner":hex::encode(f[6].fixed::<32>()?),
-        "namespaces":strings(&f[9],8)?,"pages":pages,"permissions":strings(&f[11],7)?,"review":review,"expiresMs":f[13].uint()?,
+        "namespaces":strings(&f[9],8)?,"pages":pages,"permissions":strings(&f[11],8)?,"review":review,"expiresMs":f[13].uint()?,
         "signers":signatures.iter().map(|s|hex::encode(s.0)).collect::<Vec<_>>()}),
     )
 }
