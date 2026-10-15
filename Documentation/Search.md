@@ -70,11 +70,19 @@ TLS identities and voucher; a valid route for another service cannot receive ter
 Failures identify the catalogue, Page context, content placement, stream preparation,
 content exchange or completion phase. These fixed diagnostic labels contain no
 query terms or publication identifiers. Route timeout errors separately identify
-the operation, total-connection or idle deadline; diagnosis does not extend a
-deadline or retry an unresolved operation.
+the operation, total-connection or idle deadline. These errors do not trigger a
+retry or extend a deadline.
 Domain request preparation obtains a fresh clock observation after persisting the
 exact request and before issuing its challenge. An unavailable observation refuses
 issuance while preserving the pending request for exact recovery.
+
+If checkpoint compaction overtakes a returned authority result, selected read-only
+Page queries can request a fresh evaluation of the same signed intent. This applies
+only to Page context, read, catalogue, local-search lease and content-placement
+queries. It uses the same connection and only the time remaining before the
+original five-second deadline. The overtaken result grants no permission and
+advances no retained floor. Invalid proofs, other failures, mutations and serving
+authorisations never trigger this recovery.
 
 ## Retained local search
 

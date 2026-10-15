@@ -253,6 +253,22 @@ fn evaluation_inputs(
 ) -> Result<crate::authority_objects::Resolved> {
     domains::result::inputs(command, state, objects)
 }
+fn refreshable_page_query(command: &Command) -> bool {
+    use domains::page::{Command as Page, content::Command as Content};
+    !command.mutation()
+        && !command.serving()
+        && matches!(
+            command,
+            Command::Page(
+                Page::Context { .. }
+                    | Page::Read { .. }
+                    | Page::List { .. }
+                    | Page::SearchList { .. }
+                    | Page::LocalSearchLease { .. }
+                    | Page::Content(Content::Get { .. })
+            )
+        )
+}
 impl<'a> Prepared<'a> {
     #[cfg(test)]
     fn new(
@@ -386,6 +402,47 @@ impl<'a> Prepared<'a> {
                 .checked_add(DURATION)
                 .context("domain deadline overflow")?,
         })
+    }
+    fn exchange_with_history<T, C: FnMut() -> Result<ClockHealth>>(
+        &mut self,
+        signer: &SigningKey,
+        session: &mut Session,
+        clock: &mut C,
+        exchange: &mut impl FnMut(&Self, &mut C) -> Result<T>,
+    ) -> Result<T> {
+        loop {
+            match exchange(self, clock) {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    if !error.is::<crate::authority_local_transport::HistoryOvertaken>()
+                        || !refreshable_page_query(&self.request.command)
+                    {
+                        return Err(error);
+                    }
+                    // No result was accepted. Only these read-only queries may request
+                    // another evaluation of the exact intent on the existing connection.
+                    session.discard(&self.challenge)?;
+                    let health = clock().context("domain history refresh clock unavailable")?;
+                    let duration = self
+                        .deadline
+                        .checked_sub(health.observe()?.boot_ms)
+                        .filter(|remaining| *remaining > 0)
+                        .context("original domain query deadline expired")?;
+                    self.challenge = session
+                        .issue(&self.intent, signer, random_id()?, duration, health)
+                        .context("domain history refresh challenge issuance failed")?;
+                    let parsed = Challenge::from_signed(&self.challenge)?;
+                    self.ordered = wire::encode(&a(vec![
+                        V::Uint(22),
+                        V::Uint(1),
+                        self.descriptor.scope().value(),
+                        b(&self.intent),
+                        b(&self.challenge),
+                        V::Uint(parsed.expires_at_ms),
+                    ]))?;
+                }
+            }
+        }
     }
     fn candidate(
         &self,
@@ -625,7 +682,7 @@ pub fn local_with_objects(
     stream_client::ensure_stream(&descriptor, path, signer, store, session, &mut clock)?;
     let cache = Cache::load(bootstrap, store)?;
     let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
-    let prepared = Prepared::new_with_objects(
+    let mut prepared = Prepared::new_with_objects(
         bootstrap,
         request,
         cache,
@@ -636,7 +693,7 @@ pub fn local_with_objects(
         &mut clock,
     )
     .context("domain request preparation failed")?;
-    let challenge = prepared.challenge.clone();
+    let mut challenge = prepared.challenge.clone();
     let result = (|| {
         let intent = Intent::from_signed(&prepared.intent)?;
         let command_refs = prepared.request.command.command_inputs();
@@ -649,20 +706,25 @@ pub fn local_with_objects(
                 .cloned()
                 .collect(),
         )?;
-        let (reply, evidence, outputs) = crate::authority_local_transport::exchange_objects(
-            &descriptor,
-            &prepared.ordered,
-            &submission,
-            prepared.deadline,
-            &control,
-            store.prefix(),
-            store.tree_head(),
-            &mut clock,
-            &mut |result| {
-                let result = OperationResult::parse(result)?;
-                domains::response_inputs(&intent, &wire::decode(&result.value)?)
-            },
-        )?;
+        let exchange =
+            prepared.exchange_with_history(signer, session, &mut clock, &mut |attempt, clock| {
+                crate::authority_local_transport::exchange_objects(
+                    &descriptor,
+                    &attempt.ordered,
+                    &submission,
+                    attempt.deadline,
+                    &control,
+                    store.prefix(),
+                    store.tree_head(),
+                    clock,
+                    &mut |result| {
+                        let result = OperationResult::parse(result)?;
+                        domains::response_inputs(&intent, &wire::decode(&result.value)?)
+                    },
+                )
+            });
+        challenge = prepared.challenge.clone();
+        let (reply, evidence, outputs) = exchange?;
         prepared.finish_with_objects(
             reply,
             AncestryEvidence::from_shared(evidence),
