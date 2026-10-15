@@ -478,7 +478,7 @@ impl<'a> Prepared<'a> {
         intent: &Intent,
         result: &OperationResult,
         executed: &ExecutedResult,
-    ) -> Result<ActionValidation> {
+    ) -> Result<(ActionValidation, Option<Candidate>)> {
         if result.disposition == Disposition::Refuse {
             let value = wire::decode(&result.value)?;
             let f = record(&value, 201, 4)?;
@@ -488,10 +488,12 @@ impl<'a> Prepared<'a> {
                     && executed.maximum_effect == 0,
                 "invalid domain refusal"
             );
-            return ActionValidation::new(vec![]);
+            return Ok((ActionValidation::new(vec![])?, None));
         }
         let candidate = self.candidate(intent, result, executed)?;
-        ActionValidation::mutation(candidate.versions, candidate.updates)
+        let validation =
+            ActionValidation::mutation(candidate.versions.clone(), candidate.updates.clone())?;
+        Ok((validation, Some(candidate)))
     }
     #[cfg(test)]
     fn finish(
@@ -552,6 +554,7 @@ impl<'a> Prepared<'a> {
             evidence.nodes.last().is_some_and(|v| *v == reply.node),
             "domain ancestry differs from certified node"
         );
+        let mut candidate = None;
         let verified = proof::verify_response(
             &self.descriptor,
             proof::ProofContext {
@@ -568,7 +571,11 @@ impl<'a> Prepared<'a> {
                 certificate: &reply.certificate,
                 ancestry: &evidence.nodes,
             },
-            |i, r, e| self.validate(i, r, e),
+            |i, r, e| {
+                let (validation, validated) = self.validate(i, r, e)?;
+                candidate = validated;
+                Ok(validation)
+            },
         )?;
         let verified = evidence.attach(store, verified)?;
         if verified.disposition() != Disposition::Permit {
@@ -577,11 +584,7 @@ impl<'a> Prepared<'a> {
             session.discard(&self.challenge)?;
             return Err(Refusal { code }.into());
         }
-        let candidate = self.candidate(
-            verified.request().ordinary()?,
-            &verified.result,
-            &verified.executed,
-        )?;
+        let candidate = candidate.context("permitted domain result lacks validated candidate")?;
         minimum(&candidate.versions, store.generations())?;
         let prefix = verified.point().prefix().clone();
         let evaluated_at_ms = verified.executed.evaluated_at_ms;
