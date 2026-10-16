@@ -8,7 +8,6 @@ use crate::{
     private_route_client::{ContentPool, Endpoint},
     trust_bootstrap as bootstrap,
 };
-use sha2::Digest as _;
 
 fn content_profile(
     root: &Path,
