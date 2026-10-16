@@ -188,10 +188,16 @@ this command. A system administrator can instead provide a correctly protected
 local observation through the same existing clock-health contract.
 
 A healthy observation expires after one second and is bound to the current boot.
-The monitor refreshes it while running. `clock observe` produces one observation
-for diagnostics. Missing authentication, stale observations, a clock step, suspend
-or a restart fail closed until a new valid observation is available. No fixed
-accuracy assertion or server witness replaces these checks.
+The monitor refreshes it while running. It publishes each observation atomically
+and checks the original expiry before and after publication. These short-lived
+files do not require durable disk writes; a lost or stale observation refuses.
+All chrony queries for one probe share its 500-millisecond budget. The monitor
+never extends a sample's timestamps to compensate for delayed work.
+
+`clock observe` produces one observation for diagnostics. Missing authentication,
+stale observations, a clock step, suspend or a restart fail closed until a new
+valid observation is available. No fixed accuracy assertion or server witness
+replaces these checks.
 
 ## Browse and select services
 

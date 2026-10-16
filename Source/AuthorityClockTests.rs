@@ -214,6 +214,194 @@ fn private_bytes(now: Observation) -> Vec<u8> {
         "validUntilBootMs":now.boot_ms+1000,"maximumErrorMs":20,"source":"162.159.200.1"
     })).unwrap()
 }
+fn clock_bytes(private: bool, now: Observation) -> Vec<u8> {
+    if private {
+        private_bytes(now)
+    } else {
+        encoded(fields(now))
+    }
+}
+fn validate_clock_bytes(private: bool, bytes: &[u8], now: Observation) -> Result<ClockHealth> {
+    if private {
+        let witness: Witness = serde_json::from_slice(bytes)?;
+        let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+        witness.health(boot.trim(), now)
+    } else {
+        signed(bytes, key().verifying_key().to_bytes(), BOOT, now)
+    }
+}
+
+#[test]
+fn only_an_expired_replaced_inode_is_reread_once() {
+    for private in [false, true] {
+        for replaced in [false, true] {
+            let directory = Directory::new();
+            let parent = transfer_files::directory(&directory.0).unwrap();
+            let path = directory.0.join("ClockObservation");
+            transfer_files::write_new(&path, &clock_bytes(private, sample())).unwrap();
+            let opened = open_observation(&path, private).unwrap();
+            let now = Observation {
+                wall_ms: 11000,
+                boot_ms: 3000,
+            };
+            if replaced {
+                transfer_files::atomic_at(
+                    &parent,
+                    path.file_name().unwrap(),
+                    &clock_bytes(private, now),
+                    true,
+                )
+                .unwrap();
+                assert_eq!(opened.metadata().unwrap().nlink(), 0);
+            }
+            let mut calls = 0;
+            let result = validate_opened_observation(&path, private, opened, |bytes| {
+                calls += 1;
+                validate_clock_bytes(private, bytes, now)
+            });
+            assert_eq!(result.is_ok(), replaced);
+            assert_eq!(calls, if replaced { 2 } else { 1 });
+            if !replaced {
+                assert!(result.unwrap_err().is::<ObservationExpired>());
+            }
+        }
+    }
+}
+
+#[test]
+fn an_expired_replacement_cannot_trigger_a_third_read() {
+    for private in [false, true] {
+        let directory = Directory::new();
+        let parent = transfer_files::directory(&directory.0).unwrap();
+        let path = directory.0.join("ClockObservation");
+        transfer_files::write_new(&path, &clock_bytes(private, sample())).unwrap();
+        let opened = open_observation(&path, private).unwrap();
+        transfer_files::atomic_at(
+            &parent,
+            path.file_name().unwrap(),
+            &clock_bytes(
+                private,
+                Observation {
+                    wall_ms: 11000,
+                    boot_ms: 3000,
+                },
+            ),
+            true,
+        )
+        .unwrap();
+        let now = Observation {
+            wall_ms: 12000,
+            boot_ms: 4000,
+        };
+        let mut calls = 0;
+        let error = validate_opened_observation(&path, private, opened, |bytes| {
+            calls += 1;
+            if calls == 2 {
+                transfer_files::atomic_at(
+                    &parent,
+                    path.file_name().unwrap(),
+                    &clock_bytes(private, now),
+                    true,
+                )?;
+            }
+            validate_clock_bytes(private, bytes, now)
+        })
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.is::<ObservationExpired>());
+        assert!(validate_clock_bytes(private, &std::fs::read(&path).unwrap(), now).is_ok());
+    }
+}
+
+#[test]
+fn replacement_never_masks_invalid_opened_metadata_boot_pin_or_error() {
+    for private in [false, true] {
+        for invalid in [
+            "Malformed",
+            "Boot",
+            "Error",
+            "Progression",
+            "Oversized",
+            "Permissions",
+            "Pin",
+        ] {
+            if private && invalid == "Pin" || !private && invalid == "Permissions" {
+                continue;
+            }
+            let directory = Directory::new();
+            let parent = transfer_files::directory(&directory.0).unwrap();
+            let path = directory.0.join("ClockObservation");
+            let mut bytes = clock_bytes(private, sample());
+            match invalid {
+                "Malformed" => bytes = b"invalid".to_vec(),
+                "Oversized" => bytes = vec![0; 4097],
+                "Boot" | "Error" | "Progression" if private => {
+                    let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    match invalid {
+                        "Boot" => {
+                            value["kernelBoot"] =
+                                serde_json::json!("22345678-1234-1234-1234-123456789abc")
+                        }
+                        "Error" => value["maximumErrorMs"] = serde_json::json!(251),
+                        _ => value["sampleWallMs"] = serde_json::json!(9000),
+                    }
+                    bytes = serde_json::to_vec(&value).unwrap();
+                }
+                "Boot" | "Error" | "Progression" => {
+                    let mut value = fields(sample());
+                    match invalid {
+                        "Boot" => value[2] = V::Text("22345678-1234-1234-1234-123456789abc".into()),
+                        "Error" => value[6] = V::Uint(251),
+                        _ => value[3] = V::Uint(9000),
+                    }
+                    bytes = encoded(value);
+                }
+                "Pin" => {
+                    bytes = wire::sign_envelope(
+                        &wire::encode(&V::Array(fields(sample()))).unwrap(),
+                        &SigningKey::from_bytes(&[62; 32]),
+                    )
+                    .unwrap()
+                }
+                _ => {}
+            }
+            transfer_files::write_new(&path, &bytes).unwrap();
+            let opened = open_observation(&path, private).unwrap();
+            let now = Observation {
+                wall_ms: 11000,
+                boot_ms: 3000,
+            };
+            transfer_files::atomic_at(
+                &parent,
+                path.file_name().unwrap(),
+                &clock_bytes(private, now),
+                true,
+            )
+            .unwrap();
+            if invalid == "Permissions" {
+                opened
+                    .set_permissions(std::fs::Permissions::from_mode(0o644))
+                    .unwrap();
+            }
+            let mut calls = 0;
+            let error = validate_opened_observation(&path, private, opened, |bytes| {
+                calls += 1;
+                validate_clock_bytes(private, bytes, now)
+            })
+            .unwrap_err();
+            assert!(!error.is::<ObservationExpired>(), "{invalid}");
+            assert_eq!(
+                calls,
+                if matches!(invalid, "Oversized" | "Permissions") {
+                    0
+                } else {
+                    1
+                },
+                "{invalid}"
+            );
+        }
+    }
+}
 
 #[test]
 fn atomic_clock_replacement_preserves_opened_observations_without_extending_validity() {
@@ -247,7 +435,7 @@ fn atomic_clock_replacement_preserves_opened_observations_without_extending_vali
         ),
     ] {
         assert_eq!(file.metadata().unwrap().nlink(), 0);
-        let bytes = read_opened_observation(file, false).unwrap();
+        let bytes = read_opened_observation(&file, false).unwrap();
         assert_eq!(bytes, original);
         assert_eq!(signed(&bytes, pin, BOOT, now).is_ok(), expected);
     }
@@ -265,7 +453,7 @@ fn atomic_clock_replacement_preserves_opened_observations_without_extending_vali
     .unwrap();
     assert_eq!(valid.metadata().unwrap().nlink(), 0);
     let witness: Witness =
-        serde_json::from_slice(&read_opened_observation(valid, true).unwrap()).unwrap();
+        serde_json::from_slice(&read_opened_observation(&valid, true).unwrap()).unwrap();
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
     assert!(witness.health(boot.trim(), sample()).is_ok());
     assert!(witness.health(boot.trim(), later).is_err());
@@ -273,7 +461,7 @@ fn atomic_clock_replacement_preserves_opened_observations_without_extending_vali
         .set_permissions(std::fs::Permissions::from_mode(0o644))
         .unwrap();
     assert_eq!(exposed.metadata().unwrap().nlink(), 0);
-    assert!(read_opened_observation(exposed, true).is_err());
+    assert!(read_opened_observation(&exposed, true).is_err());
 }
 
 #[test]
