@@ -12,11 +12,17 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / 'Tools/Bundle.py'
 BINARY = None
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / 'Tools'))
+import Bundle
+import PackageTrust
 
 
 class BundleTests(unittest.TestCase):
@@ -30,6 +36,13 @@ class BundleTests(unittest.TestCase):
             subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
         cls.archive = cls.root / 'Suite.tar'
         cls.call('Create', '--binary', str(BINARY), '--output', str(cls.archive), '--signing-key', str(cls.key))
+        cls.policy = cls.root / 'Target.json'
+        cls.call('Authorise', '--archive', str(cls.archive), '--signature', str(cls.archive) + '.sig',
+                 '--public-key', str(cls.key) + '.pub', '--signing-key', str(cls.key),
+                 '--output', str(cls.policy), '--version-floor', '0.7.5',
+                 '--state-contract', 'HyperNet080Client1', '--root-generation', '1',
+                 '--sequence', '1', '--not-before', str(int(time.time()) - 1),
+                 '--expires', str(int(time.time()) + 3600))
         with tarfile.open(cls.archive) as archive:
             cls.entries = [(item, archive.extractfile(item).read()) for item in archive.getmembers()]
 
@@ -55,8 +68,14 @@ class BundleTests(unittest.TestCase):
                          '--public-key', str(key or self.key) + '.pub', success=success)
 
     def install(self):
+        trust = self.prefix().with_name(self.prefix().name + 'Trust')
+        self.call('TrustInit', '--trust-directory', str(trust), '--public-key', str(self.key) + '.pub',
+                  '--root-pin', PackageTrust.pin(Bundle.public_key(str(self.key) + '.pub')),
+                  '--root-generation', '1', '--version-floor', '0.7.5', '--state-contract', 'HyperNet080Client1')
         self.call('Install', '--archive', str(self.archive), '--signature', str(self.archive) + '.sig',
-                  '--public-key', str(self.key) + '.pub', '--prefix', str(self.prefix()))
+                  '--public-key', str(self.key) + '.pub', '--prefix', str(self.prefix()),
+                  '--trust-directory', str(trust), '--policy', str(self.policy),
+                  '--policy-signature', str(self.policy) + '.sig')
 
     def lifecycle(self, command, success=True):
         return self.call(command, '--prefix', str(self.prefix()), '--public-key', str(self.key) + '.pub', success=success)
@@ -161,6 +180,23 @@ class BundleTests(unittest.TestCase):
                   '--public-key', str(self.key) + '.pub', '--prefix', str(self.prefix()), success=False)
         self.assertEqual(list(self.prefix().iterdir()), [])
 
+    def test_interrupted_publication_retains_floor_and_exact_retry_succeeds(self):
+        trust = self.prefix().with_name(self.prefix().name + 'Trust')
+        self.call('TrustInit', '--trust-directory', str(trust), '--public-key', str(self.key) + '.pub',
+                  '--root-pin', PackageTrust.pin(Bundle.public_key(str(self.key) + '.pub')),
+                  '--root-generation', '1', '--version-floor', '0.7.5', '--state-contract', 'HyperNet080Client1')
+        args = argparse.Namespace(archive=self.archive, signature=str(self.archive) + '.sig',
+            public_key=str(self.key) + '.pub', prefix=self.prefix(), trust_directory=trust,
+            policy=self.policy, policy_signature=str(self.policy) + '.sig', ssh_keygen='/usr/bin/ssh-keygen')
+        with patch.object(Bundle, 'rename_new', side_effect=OSError('Interrupted publication')):
+            with self.assertRaises(OSError):
+                Bundle.install(args)
+        self.assertFalse(self.prefix().exists())
+        self.assertEqual(json.loads((trust / 'Trust.json').read_bytes())['sequence'], 1)
+        Bundle.install(args)
+        self.lifecycle('VerifyInstalled')
+        self.lifecycle('Remove')
+
     def test_modified_inventory_refuses_removal(self):
         self.install()
         binary = self.prefix() / 'Bin/HyperNetSuite'
@@ -186,6 +222,127 @@ class BundleTests(unittest.TestCase):
         self.lifecycle('Remove', success=False)
         extra.unlink()
         self.lifecycle('Remove')
+
+
+class OfflineUpdates(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='PackageUpdateTests')
+        self.root = Path(self.temporary.name)
+        self.key, self.other = self.root / 'Signer', self.root / 'NextSigner'
+        for key in (self.key, self.other):
+            subprocess.run(['/usr/bin/ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
+        self.trust = self.root / 'Trust'
+        self.contract = PackageTrust.CONTRACTS[Bundle.PRODUCT]
+        self.init = argparse.Namespace(command='TrustInit', trust_directory=self.trust,
+            public_key=str(self.key) + '.pub', root_pin=PackageTrust.pin(Bundle.public_key(str(self.key) + '.pub')),
+            root_generation=1, version_floor='0.7.5', state_contract=self.contract)
+        PackageTrust.trust_command(Bundle, self.init)
+        self.archive = self.root / 'Archive.tar'
+        self.archive.write_bytes(b'Exact synthetic archive identity')
+        self.manifest = {'version': '0.7.5', 'architecture': Bundle.architecture(),
+                         'files': [{'path': 'Tools/PackageTrust.py'}]}
+        self.original = Bundle.encode(self.manifest)
+        self.now = int(time.time())
+        self.target = {'format': 1, 'product': Bundle.PRODUCT, 'architecture': Bundle.architecture(),
+            'version': '0.7.5', 'versionFloor': '0.7.5', 'stateContract': self.contract,
+            'rootGeneration': 1, 'rootPin': self.init.root_pin, 'sequence': 1,
+            'notBefore': self.now - 1, 'expires': self.now + 60,
+            'archiveSha256': Bundle.digest_file(self.archive), 'archiveBytes': self.archive.stat().st_size,
+            'manifestSha256': hashlib.sha256(self.original).hexdigest()}
+        self.serial = 0
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def policy(self, changes=None, key=None):
+        self.serial += 1
+        policy = self.root / ('Target' + str(self.serial) + '.json')
+        policy.write_bytes(Bundle.encode(dict(self.target, **(changes or {}))))
+        subprocess.run(['/usr/bin/ssh-keygen', '-Y', 'sign', '-n', Bundle.PRODUCT + 'Update1',
+                        '-f', str(key or self.key), str(policy)], check=True, capture_output=True)
+        return argparse.Namespace(trust_directory=self.trust, policy=policy,
+            policy_signature=str(policy) + '.sig', public_key=str(key or self.key) + '.pub',
+            ssh_keygen='/usr/bin/ssh-keygen')
+
+    def accept(self, args, commit=True):
+        with PackageTrust.Admission(Bundle, args) as admission:
+            with tempfile.TemporaryDirectory(dir=self.root) as scratch:
+                admission.check(self.archive, self.manifest, self.original, Path(scratch))
+                if commit:
+                    admission.commit()
+                return admission.target_digest
+
+    def state(self):
+        return json.loads((self.trust / 'Trust.json').read_bytes())
+
+    def test_update_floor_exact_retry_equivocation_and_rollback(self):
+        first = self.policy()
+        self.accept(first)
+        self.assertEqual(self.accept(first), self.state()['targetDigest'])
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            self.accept(self.policy({'expires': self.now + 61}))
+        self.accept(self.policy({'sequence': 2}))
+        with self.assertRaisesRegex(ValueError, 'below the retained floor'):
+            self.accept(first)
+        self.assertEqual(self.state()['sequence'], 2)
+
+    def test_update_expiry_scope_contract_and_numeric_bounds_fail_closed(self):
+        for changes in ({'expires': self.now}, {'notBefore': self.now + 30},
+                        {'rootGeneration': 2}, {'rootPin': '0' * 64},
+                        {'stateContract': 'Other'}, {'product': 'Other'},
+                        {'architecture': 'Other'}, {'sequence': True},
+                        {'sequence': 1 << 63}, {'archiveBytes': True},
+                        {'versionFloor': '0.7.6'}, {'archiveSha256': '0' * 64}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.accept(self.policy(changes))
+        self.assertEqual(self.state()['sequence'], 0)
+        self.assertIsNone(self.state()['targetDigest'])
+
+    def test_update_rechecks_expiry_at_floor_and_publication_boundaries(self):
+        args = self.policy()
+        with PackageTrust.Admission(Bundle, args) as admission:
+            with tempfile.TemporaryDirectory(dir=self.root) as scratch:
+                admission.check(self.archive, self.manifest, self.original, Path(scratch))
+            with patch.object(PackageTrust.time, 'time', return_value=self.now + 60):
+                with self.assertRaisesRegex(ValueError, 'not currently valid'):
+                    admission.commit()
+            self.assertEqual(self.state()['sequence'], 0)
+            admission.commit()
+            with patch.object(PackageTrust.time, 'time', return_value=self.now + 60):
+                with self.assertRaisesRegex(ValueError, 'not currently valid'):
+                    admission.fresh()
+        self.assertEqual(self.state()['sequence'], 1)
+
+    def test_update_root_rotation_preserves_floor_and_requires_new_sequence(self):
+        self.accept(self.policy())
+        before = self.state()
+        args = argparse.Namespace(command='TrustRotate', trust_directory=self.trust,
+            expected_trust_digest=PackageTrust.digest(Bundle, before), public_key=str(self.other) + '.pub',
+            root_pin=PackageTrust.pin(Bundle.public_key(str(self.other) + '.pub')), root_generation=2)
+        with patch.object(args, 'root_pin', '0' * 64), self.assertRaises(ValueError):
+            PackageTrust.trust_command(Bundle, args)
+        PackageTrust.trust_command(Bundle, args)
+        self.assertEqual(self.state()['sequence'], before['sequence'])
+        self.assertEqual(self.state()['targetDigest'], before['targetDigest'])
+        self.assertEqual(self.state()['versionFloor'], before['versionFloor'])
+        with self.assertRaisesRegex(ValueError, 'changed since inspection'):
+            PackageTrust.trust_command(Bundle, args)
+        with self.assertRaisesRegex(ValueError, 'differs from retained'):
+            self.accept(self.policy())
+        changes = {'rootGeneration': 2, 'rootPin': args.root_pin}
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            self.accept(self.policy(changes, self.other))
+        self.accept(self.policy(dict(changes, sequence=2), self.other))
+
+    def test_update_lock_clock_floor_and_missing_policy_refuse(self):
+        args = self.policy()
+        with PackageTrust.locked(Bundle, self.trust), self.assertRaises(BlockingIOError):
+            self.accept(args)
+        with patch.object(PackageTrust.time, 'time', return_value=self.state()['lastTime'] - 1):
+            with self.assertRaisesRegex(ValueError, 'clock moved'):
+                self.accept(args)
+        with self.assertRaisesRegex(ValueError, 'requires retained trust'):
+            PackageTrust.Admission(Bundle, argparse.Namespace())
 
 
 if __name__ == '__main__':

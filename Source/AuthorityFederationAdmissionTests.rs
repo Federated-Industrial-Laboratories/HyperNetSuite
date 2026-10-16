@@ -48,7 +48,10 @@ fn destination_with_search(search: bool) -> SourceFixture {
     let host =
         page::HostProfile::parse(&host.envelope, f.state.network, f.state.incarnation).unwrap();
     f.apply(
-        page::Command::HostRegister { profile: host }.into(),
+        page::Command::HostRegister {
+            profile: Box::new(host),
+        }
+        .into(),
         vec![],
         5,
         Some(f.grant.clone()),

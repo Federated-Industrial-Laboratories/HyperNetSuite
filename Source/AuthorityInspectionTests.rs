@@ -1169,7 +1169,9 @@ fn delayed_refusal_advances_the_floor_without_a_live_clock_or_payload_output() {
 #[path = "AuthorityHistoryControlTests.rs"]
 mod history_control;
 
-fn receive_control(listener: &std::os::unix::net::UnixListener) -> (UnixStream, Vec<u8>) {
+pub(super) fn receive_control(
+    listener: &std::os::unix::net::UnixListener,
+) -> (UnixStream, Vec<u8>) {
     listener.set_nonblocking(true).unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     let mut stream = loop {
@@ -1196,13 +1198,13 @@ fn receive_control(listener: &std::os::unix::net::UnixListener) -> (UnixStream, 
     stream.read_exact(&mut bytes).unwrap();
     (stream, bytes)
 }
-fn send_control(mut stream: UnixStream, response: &[u8]) {
+pub(super) fn send_control(mut stream: UnixStream, response: &[u8]) {
     stream
         .write_all(&(response.len() as u32).to_be_bytes())
         .unwrap();
     stream.write_all(response).unwrap();
 }
-fn submitted(bytes: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+pub(super) fn submitted(bytes: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let value = wire::decode(bytes).unwrap();
     let f = record(&value, 41, 5).unwrap();
     assert_eq!(f[3], V::Uint(0));
@@ -1218,14 +1220,14 @@ fn submitted(bytes: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         f[4].bytes().unwrap().to_vec(),
     )
 }
-fn mature(challenge: &[u8]) -> u64 {
+pub(super) fn mature(challenge: &[u8]) -> u64 {
     let start = Challenge::from_signed(challenge).unwrap().created_at_ms;
     while wall() < start + crate::authority_governance::UNCERTAINTY_MS {
         std::thread::sleep(Duration::from_millis(5));
     }
     wall()
 }
-fn live_clock() -> Result<ClockHealth> {
+pub(super) fn live_clock() -> Result<ClockHealth> {
     let boot = boot_time_ms()?;
     // Synthetic health spans bounded persistence work; each request still expires after five seconds.
     ClockHealth::new(wall(), boot, boot + 30000, 100)

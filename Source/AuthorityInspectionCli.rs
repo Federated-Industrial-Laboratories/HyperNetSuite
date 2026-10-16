@@ -44,10 +44,20 @@ impl Location {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Manage named encrypted content archives and current-authority restore.
+    Backup {
+        #[command(subcommand)]
+        command: backup_cli::Command,
+    },
     /// Preview complete delegation or revocation impact before applying the exact reviewed change.
     Grants {
         #[command(subcommand)]
         command: grant_cli::Command,
+    },
+    /// Inspect network policies, replace custody and explicitly accept changed trust.
+    Policy {
+        #[command(subcommand)]
+        command: policy_cli::Command,
     },
     /// Inspect tiers and apply complete reviewed policy changes.
     Tiers {
@@ -204,6 +214,8 @@ pub fn run(command: Command) -> Result<()> {
     match command {
         Command::Grants { command } => grant_cli::run(command),
         Command::Tiers { command } => tier_cli::run(command),
+        Command::Policy { command } => policy_cli::run(command),
+        Command::Backup { command } => backup_cli::run(command),
         Command::Recipients { command } => sealed_cli::run(command),
         Command::Epoch { command } => epoch_cli::run(command),
         Command::Ssh { command } => domain_cli::run(command),
@@ -385,10 +397,14 @@ pub fn run(command: Command) -> Result<()> {
 #[path = "AuthorityInspectionCliTests.rs"]
 mod tests;
 
+#[path = "AuthorityBackupCli.rs"]
+mod backup_cli;
 #[path = "AuthorityGrantCli.rs"]
 mod grant_cli;
 #[path = "AuthorityMemberCli.rs"]
 mod member_cli;
+#[path = "AuthorityPolicyCli.rs"]
+mod policy_cli;
 #[path = "AuthorityTierCli.rs"]
 mod tier_cli;
 

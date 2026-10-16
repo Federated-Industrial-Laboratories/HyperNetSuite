@@ -84,6 +84,61 @@ fn elapsed_health(health: ClockHealth, elapsed: u64) -> ClockHealth {
 }
 
 #[test]
+fn own_backup_metadata_finishes_without_inventing_a_discretionary_policy_dependency() {
+    let mut f = Fixture::with_actions(vec![0, 20]);
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    let prepared = Prepared::new(
+        &f.bootstrap,
+        Request {
+            command: domains::backup::Command::List { after: None }.into(),
+            grant: None,
+        },
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    assert!(
+        Intent::from_signed(&prepared.intent)
+            .unwrap()
+            .expected
+            .is_empty()
+    );
+    let (certified, evidence) = reply(&prepared, &f);
+    prepared
+        .finish(
+            certified,
+            evidence,
+            &mut f.store,
+            &mut f.session,
+            &mut || Ok(f.current),
+        )
+        .unwrap();
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+
+    let expected = policy::current_reference(&f.bootstrap, &f.store).unwrap();
+    let request = page_query(&f);
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    f.issued = f.current;
+    let prepared = Prepared::new(
+        &f.bootstrap,
+        request,
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    assert_eq!(
+        Intent::from_signed(&prepared.intent).unwrap().expected,
+        vec![expected]
+    );
+}
+
+#[test]
 fn page_history_refresh_keeps_exact_intent_and_original_deadline() {
     let mut f = Fixture::with_actions(vec![0, 20]);
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();

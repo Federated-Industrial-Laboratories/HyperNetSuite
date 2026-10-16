@@ -167,6 +167,12 @@ impl<'a> Prepared<'a> {
                 && bootstrap.descriptor().canonical() == store.initial_descriptor().canonical(),
             "application bootstrap differs from current floor"
         );
+        if !matches!(
+            request,
+            Request::Get(_) | Request::List | Request::Withdraw(_)
+        ) {
+            crate::authority_inspection::policy::require_accepted(bootstrap, store)?;
+        }
         store.require_requester(signer.verifying_key().to_bytes())?;
         let source = if let Some(context) = context {
             context.current(store)?;
@@ -176,6 +182,11 @@ impl<'a> Prepared<'a> {
         } else {
             Vec::new()
         };
+        if context.is_some() && !matches!(request, Request::Withdraw(_)) {
+            crate::authority_inspection::policy::require_records_accepted(
+                bootstrap, store, &source,
+            )?;
+        }
         let selection = context.map(|c| c.selection.clone());
         let now = health.observe()?;
         let descriptor = store.descriptor().clone();
@@ -590,6 +601,14 @@ impl<'a> Prepared<'a> {
         if matches!(self.request, Request::List) {
             check_list_cache(store, &candidate.value)?;
         }
+        let discovery = matches!(self.request, Request::Context(_));
+        if !discovery && let Some(context) = &candidate.context {
+            crate::authority_inspection::policy::require_records_accepted(
+                self.bootstrap,
+                store,
+                &context.entries,
+            )?;
+        }
         let prefix = verified.point().prefix().clone();
         let receipt = if self.receipt.is_some() {
             application_offer::receipt(&self.intent, &self.challenge, &self.ordered, &reply)?
@@ -598,7 +617,7 @@ impl<'a> Prepared<'a> {
         };
         let permit = store.accept(verified, session, clock()?, 0)?;
         remaining(self.deadline)?;
-        permit.perform(
+        let outcome = permit.perform(
             store,
             session,
             clock()?,
@@ -612,6 +631,11 @@ impl<'a> Prepared<'a> {
             },
             |_, accepted_store| {
                 if let Some(context) = &candidate.context {
+                    crate::authority_inspection::policy::retain_records(
+                        self.bootstrap,
+                        accepted_store,
+                        &context.entries,
+                    )?;
                     context.save(accepted_store)?;
                 }
                 match &self.request {
@@ -639,7 +663,11 @@ impl<'a> Prepared<'a> {
                     context: candidate.context,
                 })
             },
-        )
+        )?;
+        if discovery {
+            crate::authority_inspection::policy::require_accepted(self.bootstrap, store)?;
+        }
+        Ok(outcome)
     }
     fn local(
         self,
@@ -681,6 +709,11 @@ pub fn local(
     session: &mut Session,
     mut clock: impl FnMut() -> Result<ClockHealth>,
 ) -> Result<ResultState> {
+    if context.is_none() && matches!(request, Request::Context(_)) {
+        crate::authority_inspection::policy::refresh_before_request(
+            bootstrap, path, signer, store, session, &mut clock,
+        )?;
+    }
     // Context discovery already owns the stream; do not order a status between snapshot and mutation.
     if context.is_none() {
         stream_client::ensure_stream(

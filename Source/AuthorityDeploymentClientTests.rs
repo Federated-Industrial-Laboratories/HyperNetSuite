@@ -210,6 +210,7 @@ fn register(f: &mut Fixture, context: &Cache, offer: Offer) -> Cache {
     let p = Prepared::new(
         &f.bootstrap,
         Request::Register {
+            historical: false,
             grant: context.version(102, [23; 32]).unwrap(),
             offer,
         },
@@ -326,6 +327,7 @@ fn registration_resume_preserves_original_intent_and_refuses_changed_offer() {
     let p = Prepared::new(
         &f.bootstrap,
         Request::Register {
+            historical: false,
             grant: grant.clone(),
             offer: offer.clone(),
         },
@@ -345,6 +347,7 @@ fn registration_resume_preserves_original_intent_and_refuses_changed_offer() {
         Prepared::new(
             &f.bootstrap,
             Request::Register {
+                historical: false,
                 grant: grant.clone(),
                 offer: changed
             },
@@ -358,7 +361,11 @@ fn registration_resume_preserves_original_intent_and_refuses_changed_offer() {
     );
     let p = Prepared::new(
         &f.bootstrap,
-        Request::Register { grant, offer },
+        Request::Register {
+            grant,
+            offer,
+            historical: false,
+        },
         Some(&context),
         &f.signer,
         &mut f.store,
@@ -384,7 +391,7 @@ fn local_withdrawal_receipt_binds_profile_and_accepts_unfinished_cleanup() {
         b(&m.incarnation),
         b(&m.deployment),
         b(&m.operator),
-        b(&r.profile.digest),
+        b(&m.operational_digest().unwrap()),
         V::Uint(2),
         V::Bool(false),
     ];
@@ -530,6 +537,7 @@ fn withdrawal_cache_failure_reopens_and_completes_the_same_request() {
             b(&offer.consent),
             offer.possessions_value(),
             vectors::snapshot(refs),
+            V::Bool(false),
         ]);
         Intent::from_signed(&vectors::signed(
             &vectors::key(5),
@@ -585,6 +593,30 @@ fn withdrawal_cache_failure_reopens_and_completes_the_same_request() {
         .unwrap()
         .frozen();
     advance(&mut f, 2000);
+    // Loss of the optional acceptance record cannot trap an operator's terminal veto.
+    files::atomic_at(
+        f.store.profile_directory(),
+        std::ffi::OsStr::new("AcceptedPolicy.cbor"),
+        b"Unavailable acceptance record",
+        true,
+    )
+    .unwrap();
+    assert!(crate::authority_inspection::policy::require_accepted(&f.bootstrap, &f.store).is_err());
+    assert!(
+        Prepared::new(
+            &f.bootstrap,
+            Request::Get {
+                deployment: [60; 32],
+                grant: Some(grant.id),
+            },
+            None,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            f.issued,
+        )
+        .is_err()
+    );
     let p = Prepared::new(
         &f.bootstrap,
         Request::Get {
@@ -1167,4 +1199,193 @@ fn activation_completion_after_a_later_refusal_requires_exact_status_reconciliat
         .complete_activation(report, |_| panic!("known original must stay offline"))
         .unwrap();
     assert_eq!(f.store.prefix().height(), height);
+}
+
+#[test]
+fn operational_successor_prepares_from_certified_context_and_replaces_cached_generations() {
+    let mut f = fixture();
+    let context = discover(&mut f);
+    let initial = offer_for_roles(&f, &[1]);
+    let state = register(&mut f, &context, initial.clone());
+    let mut manifest = initial.manifest.clone();
+    manifest.generation = 2;
+    manifest.previous_profile = Some(wire::digest(&initial.manifest.desired().unwrap()));
+    manifest.previous_consent = Some(wire::digest(&initial.manifest.unsigned_consent(0).unwrap()));
+    let now = f.current.observe().unwrap().wall_ms;
+    manifest.validity.1 = now + 3600000;
+    let consent = wire::sign_envelope(
+        &manifest.unsigned_consent(0).unwrap(),
+        &crate::authority_deployment_tests::key(90),
+    )
+    .unwrap();
+    let successor = Offer::parse(&manifest.encode().unwrap(), &consent, &a(vec![])).unwrap();
+    assert!(
+        successor
+            .current(f.issued.observe().unwrap().wall_ms)
+            .unwrap()
+    );
+    assert!(successor.current(now).unwrap());
+    let current = register(&mut f, &state, successor);
+    let network = f.bootstrap.descriptor().scope().network;
+    assert_eq!(
+        current.version(100, network).unwrap(),
+        context.version(100, network).unwrap()
+    );
+    for kind in [105, 117, 129] {
+        assert_eq!(
+            current
+                .version(kind, manifest.deployment)
+                .unwrap()
+                .generation,
+            2
+        );
+    }
+    let cached = Cache::load(&f.bootstrap, &f.store, manifest.deployment, None).unwrap();
+    let (retained, _) = cached.provenance().unwrap();
+    assert_eq!(retained, manifest);
+    assert!(state.current(&f.store).is_err());
+    for kind in [105, 117, 129] {
+        assert!(
+            f.store
+                .generations()
+                .contains(&current.version(kind, manifest.deployment).unwrap())
+        );
+    }
+}
+
+#[test]
+fn successor_cache_failure_reopens_and_completes_the_exact_registration() {
+    let mut f = fixture();
+    let context = discover(&mut f);
+    let initial = offer_for_roles(&f, &[1]);
+    let state = register(&mut f, &context, initial.clone());
+    let mut manifest = initial.manifest.clone();
+    manifest.generation = 2;
+    manifest.previous_profile = Some(wire::digest(&initial.manifest.desired().unwrap()));
+    manifest.previous_consent = Some(wire::digest(&initial.manifest.unsigned_consent(0).unwrap()));
+    manifest.validity.1 += 2000;
+    let consent = wire::sign_envelope(
+        &manifest.unsigned_consent(0).unwrap(),
+        &crate::authority_deployment_tests::key(90),
+    )
+    .unwrap();
+    let offer = Offer::parse(&manifest.encode().unwrap(), &consent, &a(vec![])).unwrap();
+    let request = || Request::Register {
+        historical: false,
+        grant: context.version(102, [23; 32]).unwrap(),
+        offer: offer.clone(),
+    };
+    let p = Prepared::new(
+        &f.bootstrap,
+        request(),
+        Some(&state),
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    let original = p.intent.clone();
+    let intent = Intent::from_signed(&original).unwrap();
+    let operation = Operation::parse(&intent).unwrap();
+    let reservations = Reservations(f.bootstrap.reservations().to_vec());
+    let decision = operation
+        .authorise(
+            &p.source,
+            &reservations,
+            &intent,
+            f.current.observe().unwrap().wall_ms,
+            false,
+            None,
+        )
+        .unwrap();
+    assert_eq!(decision.code, 0);
+    let (reply, evidence) = certified(
+        &p,
+        decision.value,
+        f.current.observe().unwrap().wall_ms,
+        &f.store,
+    );
+    let path = f.directory.0.join(format!(
+        "DeploymentContext{}{}.cbor",
+        hex::encode(manifest.deployment),
+        hex::encode([23; 32])
+    ));
+    let backup = f.directory.0.join("PriorDeploymentContext.cbor");
+    std::fs::rename(&path, &backup).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let error = p
+        .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
+            Ok(f.current)
+        })
+        .err()
+        .expect("Cache destination must reject publication");
+    assert!(
+        format!("{error:#}")
+            .contains("cannot publish file without changing the destination policy")
+    );
+    assert!(state.current(&f.store).is_err());
+    assert_eq!(
+        f.store.resume_ordinary().unwrap().unwrap().signed(),
+        original
+    );
+    for bytes in operation.derive(&intent).unwrap() {
+        assert!(
+            f.store
+                .generations()
+                .contains(&records::reference(&bytes).unwrap())
+        );
+    }
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&backup, &path).unwrap();
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    f.session = Session::new().unwrap();
+    let recovered =
+        Cache::load(&f.bootstrap, &f.store, manifest.deployment, Some([23; 32])).unwrap();
+    for kind in [105, 117, 129] {
+        assert_eq!(
+            recovered
+                .version(kind, manifest.deployment)
+                .unwrap()
+                .generation,
+            2
+        );
+    }
+    advance(&mut f, 2000);
+    let p = Prepared::new(
+        &f.bootstrap,
+        request(),
+        Some(&recovered),
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    assert_eq!(p.intent, original);
+    let decision = operation
+        .authorise(
+            &p.source,
+            &reservations,
+            &intent,
+            f.current.observe().unwrap().wall_ms,
+            true,
+            None,
+        )
+        .unwrap();
+    assert_eq!(decision.code, 0);
+    let (reply, evidence) = certified(
+        &p,
+        decision.value,
+        f.current.observe().unwrap().wall_ms,
+        &f.store,
+    );
+    p.finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
+        Ok(f.current)
+    })
+    .unwrap();
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    let saved = Cache::load(&f.bootstrap, &f.store, manifest.deployment, None).unwrap();
+    assert_eq!(saved.provenance().unwrap().0, manifest);
 }

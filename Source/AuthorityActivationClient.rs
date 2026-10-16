@@ -17,9 +17,11 @@ pub fn prepare(
             && bootstrap.descriptor().canonical() == store.initial_descriptor().canonical(),
         "activation bootstrap and requester floor differ"
     );
+    crate::authority_inspection::policy::require_accepted(bootstrap, store)?;
     store.require_requester(signer.verifying_key().to_bytes())?;
     cache.current(store)?;
     let records = merged(bootstrap, &cache.entries)?;
+    crate::authority_inspection::policy::require_records_accepted(bootstrap, store, &records)?;
     let registration = records::Index::parse(
         &records,
         &Reservations(bootstrap.reservations().to_vec()),

@@ -90,7 +90,7 @@ fn imported_with_search(search: bool) -> (SourceFixture, [u8; 16], VersionRef, F
     f.state.records.remove(&(143, host)).unwrap();
     f.apply(
         page::Command::HostRegister {
-            profile: configured.profile,
+            profile: Box::new(configured.profile),
         }
         .into(),
         vec![],

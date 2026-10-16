@@ -668,3 +668,71 @@ fn offline_offer_rejects_malformed_grants_even_when_owner_signs_their_exact_dige
         "acceptance naming another grant generation was accepted"
     );
 }
+
+#[test]
+fn weaker_policy_discovery_finishes_metadata_before_requiring_explicit_acceptance() {
+    let mut f = Fixture::new();
+    let p = Prepared::new(
+        &f.bootstrap,
+        Request::Context(selection()),
+        None,
+        None,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    let intent = Intent::from_signed(&p.intent).unwrap();
+    let mut records = f.bootstrap.governance_records().to_vec();
+    for bytes in &mut records {
+        let value = wire::decode(bytes).unwrap();
+        if value.list(32).unwrap()[0] != V::Uint(100) {
+            continue;
+        }
+        let mut fields = value.array(17).unwrap().to_vec();
+        fields[4] = V::Uint(2);
+        fields[5] = b(&wire::digest(bytes));
+        fields[8] = V::Uint(0);
+        fields[16] = a(vec![
+            point(f.store.prefix()),
+            a(f.context
+                .governance
+                .versions()
+                .iter()
+                .map(version_value)
+                .collect()),
+        ]);
+        *bytes = wire::encode(&a(fields)).unwrap();
+    }
+    let decision = Operation::parse(&intent)
+        .unwrap()
+        .authorise(
+            &records,
+            &Reservations(f.bootstrap.reservations().to_vec()),
+            &intent,
+            f.current.observe().unwrap().wall_ms,
+            false,
+        )
+        .unwrap();
+    assert_eq!(decision.code, 0);
+    let (reply, evidence) = certified(
+        &p,
+        decision.value,
+        f.current.observe().unwrap().wall_ms,
+        &f.store,
+    );
+    assert!(
+        p.finish(reply, evidence, &mut f.store, &mut f.session, &mut || Ok(
+            f.current
+        ))
+        .is_err()
+    );
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    let digest =
+        crate::authority_inspection::policy::acceptance_digest(&f.bootstrap, &f.store).unwrap();
+    assert!(crate::authority_inspection::policy::require_accepted(&f.bootstrap, &f.store).is_err());
+    crate::authority_inspection::policy::accept(&f.bootstrap, &f.store, digest).unwrap();
+    crate::authority_inspection::policy::require_accepted(&f.bootstrap, &f.store).unwrap();
+    DelegationContext::load(&f.bootstrap, &f.store, selection()).unwrap();
+}

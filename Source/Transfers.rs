@@ -400,6 +400,7 @@ impl Client {
         apply: impl FnOnce(&transfer::Request, &[u8]) -> Result<()>,
     ) -> Result<V> {
         transfer_client::ensure(
+            &self.bootstrap,
             &mut self.store,
             &self.authority,
             &self.key,
@@ -1094,9 +1095,14 @@ pub fn run(_configuration: Option<&Path>, arguments: Arguments) -> Result<()> {
                     .transpose()?
                     .unwrap_or_default()
             };
-            transfer_client::ensure(&mut c.store, &c.authority, &c.key, &mut c.session, || {
-                c.clock.health()
-            })?;
+            transfer_client::ensure(
+                &c.bootstrap,
+                &mut c.store,
+                &c.authority,
+                &c.key,
+                &mut c.session,
+                || c.clock.health(),
+            )?;
             ensure!(
                 (e == Effect::Put && data.len() as u64 == bytes)
                     || (e != Effect::Put && data.is_empty()),

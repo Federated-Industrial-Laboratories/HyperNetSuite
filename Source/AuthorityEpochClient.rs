@@ -16,6 +16,7 @@ pub fn draft(
     deployments: &[[u8; 32]],
     health: ClockHealth,
 ) -> Result<Declaration> {
+    crate::authority_inspection::policy::require_accepted(bootstrap, store)?;
     context.current(store)?;
     ensure!(
         store.initial_descriptor().canonical() == bootstrap.descriptor().canonical()
@@ -41,6 +42,7 @@ pub fn draft(
         },
     )?;
     let records = context.current_records(store)?;
+    crate::authority_inspection::policy::require_records_accepted(bootstrap, store, &records)?;
     let index = Index::parse(
         &records,
         &Reservations(bootstrap.reservations().to_vec()),

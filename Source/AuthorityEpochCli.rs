@@ -224,6 +224,7 @@ pub fn run(command: Command) -> Result<()> {
             )?)?;
             let key = signer(&key)?;
             let mut session = Session::new()?;
+            crate::authority_inspection::policy::require_accepted(&bootstrap, &store)?;
             let prefix = client::propose_local(
                 &declaration,
                 &socket,

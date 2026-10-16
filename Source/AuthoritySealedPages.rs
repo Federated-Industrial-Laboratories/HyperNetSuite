@@ -77,6 +77,9 @@ pub enum Command {
         hosts: Vec<String>,
         #[arg(long = "volume", required = true)]
         volumes: Vec<String>,
+        /// Explicit named cold destinations permitted for the approved ciphertext.
+        #[arg(long = "backup")]
+        backups: Vec<String>,
         #[arg(long)]
         copies: u64,
         #[arg(long)]

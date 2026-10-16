@@ -10,6 +10,7 @@ fn deployment_creation_height_distinguishes_delayed_execution_from_uncached_repl
     let mut p = Prepared::new(
         &f.bootstrap,
         Request::Register {
+            historical: false,
             grant: context.version(102, [23; 32]).unwrap(),
             offer,
         },

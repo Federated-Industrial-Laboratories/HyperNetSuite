@@ -157,6 +157,15 @@ pub enum Command {
         #[arg(long)]
         offer: PathBuf,
     },
+    /// Commit retained signed operational successors in order, including expired non-serving intermediates.
+    Synchronise {
+        #[command(flatten)]
+        online: Online,
+        #[arg(long)]
+        grant: String,
+        #[arg(long)]
+        offers_directory: PathBuf,
+    },
     /// Inspect as a current registrar, or omit grant for the recorded operator.
     Get {
         #[command(flatten)]
@@ -391,6 +400,7 @@ fn connected(online: Online, work: Work) -> Result<()> {
             )?;
             let request = Request::Register {
                 grant: context.version(102, grant)?,
+                historical: false,
                 offer,
             };
             (
@@ -521,6 +531,125 @@ fn connected(online: Online, work: Work) -> Result<()> {
     };
     crate::print_value(
         &json!({"status":status,"deployment":hex::encode(result.cache.deployment),"committedHeight":result.prefix.height(),"value":diagnostic(result.value),"currentPermission":false}),
+    )
+}
+fn synchronise(online: Online, grant: [u8; 32], directory: &Path) -> Result<()> {
+    let verified = bootstrap(&online.location)?;
+    let signer = deployment_signer(&online.key)?;
+    let mut store = Store::open(&online.location.directory, verified.descriptor().clone())?;
+    store.require_requester(signer.verifying_key().to_bytes())?;
+    let source = clock(&online.location, store.descriptor().voters())?;
+    let mut session = Session::new()?;
+    let mut paths = std::fs::read_dir(directory)?
+        .map(|entry| Ok(entry?.path()))
+        .collect::<Result<Vec<_>>>()?;
+    paths.sort();
+    let mut target = None;
+    let mut previous: Option<Manifest> = None;
+    let mut final_generation = 0;
+    for path in paths {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .context("Invalid retained offer filename")?;
+        ensure!(
+            name.starts_with("Generation") && name.ends_with(".cbor"),
+            "Unexpected retained offer entry"
+        );
+        let offer = offer(&files::read_public_single(&path, 98304)?)?;
+        bind(
+            &offer.manifest,
+            &verified,
+            id(&online.location.bootstrap_digest)?,
+        )?;
+        if let Some(old) = &previous {
+            offer.manifest.successor_of(old)?;
+        }
+        ensure!(
+            target.is_none_or(|id| id == offer.manifest.deployment),
+            "Offer history contains different deployments"
+        );
+        target = Some(offer.manifest.deployment);
+        let context = scoped(
+            &verified,
+            &online,
+            offer.manifest.deployment,
+            grant,
+            Some("AuthorityDeploymentRegister"),
+            &signer,
+            &mut store,
+            &mut session,
+            &source,
+        )?;
+        let current = context.version(129, offer.manifest.deployment).ok();
+        let resumed = if let Some(pending) = store.resume_ordinary()? {
+            let intent = Intent::from_signed(pending.signed())?;
+            let crate::authority_deployments::Operation::Register {
+                offer: retained,
+                historical,
+                ..
+            } = crate::authority_deployments::Operation::parse(&intent)?
+            else {
+                bail!("Pending deployment synchronisation has another operation");
+            };
+            (retained.manifest.generation == offer.manifest.generation).then_some(historical)
+        } else {
+            None
+        };
+        if resumed.is_none()
+            && current
+                .as_ref()
+                .is_some_and(|r| r.generation >= offer.manifest.generation)
+        {
+            if current
+                .as_ref()
+                .is_some_and(|r| r.generation == offer.manifest.generation)
+            {
+                ensure!(
+                    context.version(117, offer.manifest.deployment)?.digest
+                        == wire::digest(&offer.manifest.desired()?),
+                    "Retained offer conflicts with current admitted generation"
+                );
+            }
+        } else {
+            ensure!(
+                resumed.is_some()
+                    || current.as_ref().is_some_and(
+                        |r| r.generation.checked_add(1) == Some(offer.manifest.generation)
+                    ),
+                "Initial admission or a missing predecessor must be completed before operational synchronisation"
+            );
+            let historical = match resumed {
+                Some(value) => value,
+                None => source.health()?.observe()?.wall_ms >= offer.manifest.validity.1,
+            };
+            let request = Request::Register {
+                grant: context.version(102, grant)?,
+                offer: offer.clone(),
+                historical,
+            };
+            client::local(
+                &verified,
+                request,
+                Some(&context),
+                &online.socket,
+                &signer,
+                &mut store,
+                &mut session,
+                || source.health(),
+            )?;
+        }
+        final_generation = offer.manifest.generation;
+        previous = Some(offer.manifest);
+    }
+    ensure!(
+        store.resume_ordinary()?.is_none(),
+        "Retained offer history did not complete the exact pending registration"
+    );
+    let final_manifest = previous.context("No retained operational offers found")?;
+    crate::print_value(
+        &json!({"status":"DeploymentSynchronised","deployment":hex::encode(final_manifest.deployment),
+        "generation":final_generation,"currentPermission":false,"freshFinalConsent":source.health()?.observe()?.wall_ms < final_manifest.validity.1}),
     )
 }
 pub fn run(command: Command) -> Result<()> {
@@ -686,6 +815,11 @@ pub fn run(command: Command) -> Result<()> {
             grant,
             offer,
         } => connected(online, Work::Register(id(&grant)?, offer)),
+        Command::Synchronise {
+            online,
+            grant,
+            offers_directory,
+        } => synchronise(online, id(&grant)?, &offers_directory),
         Command::Get {
             online,
             deployment,

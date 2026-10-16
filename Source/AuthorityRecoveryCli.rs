@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 //! Separate offline profiles preserve predecessor state and durable recovery conflicts.
 use super::*;
-use crate::authority_epoch::archive::{self, Activated};
-use crate::{authority_history, authority_recovery as recovery};
+use crate::authority_epoch::archive;
+#[cfg(test)]
+use crate::authority_epoch::archive::Activated;
+#[cfg(test)]
+use crate::authority_history;
+use crate::authority_recovery as recovery;
 use clap::Args;
 use std::{collections::BTreeMap, ffi::OsStr, fs::File};
 
@@ -11,17 +15,14 @@ const LEDGER: &str = "RecoveryState.json";
 const LEDGER_LIMIT: usize = 3 * 1024 * 1024 + archive::MAX_ARCHIVE_BYTES;
 #[derive(Args)]
 pub struct PredecessorArgs {
+    /// Existing requester floor retaining the latest authenticated recovery policy.
+    #[arg(long)]
+    predecessor_directory: PathBuf,
     #[arg(long)]
     predecessor_bootstrap: PathBuf,
     /// Independently authenticated complete predecessor bootstrap fingerprint.
     #[arg(long)]
     predecessor_fingerprint: String,
-    /// Optional historical checkpoint; omission names the authenticated epoch genesis.
-    #[arg(long)]
-    predecessor_checkpoint: Option<PathBuf>,
-    /// Authenticated healthy epoch archive, starting at the accepted predecessor bootstrap.
-    #[arg(long)]
-    predecessor_epochs: Option<PathBuf>,
 }
 #[derive(Subcommand)]
 pub enum Command {
@@ -74,11 +75,9 @@ pub enum Command {
     /// Create one private, conflict-retaining ledger for an existing client profile.
     Initialise {
         #[arg(long)]
+        predecessor_directory: PathBuf,
+        #[arg(long)]
         previous_profile: PathBuf,
-        #[arg(long)]
-        predecessor_checkpoint: Option<PathBuf>,
-        #[arg(long)]
-        predecessor_epochs: Option<PathBuf>,
         #[arg(long)]
         directory: PathBuf,
     },
@@ -135,8 +134,7 @@ struct Accepted {
 struct Ledger {
     format: String,
     bootstrap: String,
-    checkpoint: Option<String>,
-    epochs: Vec<Activated>,
+    predecessor_directory: PathBuf,
     client: String,
     declarations: BTreeMap<String, String>,
     saturated: bool,
@@ -147,6 +145,7 @@ struct Store {
     _lock: File,
     state: Ledger,
 }
+#[cfg(test)]
 fn predecessor(
     bootstrap: &[u8],
     checkpoint: Option<&[u8]>,
@@ -161,29 +160,32 @@ fn predecessor(
     };
     recovery::Predecessor::new(&checked, &prefix)
 }
-fn read_epochs(path: Option<&PathBuf>) -> Result<Vec<Activated>> {
-    path.map(|p| {
-        Ok(serde_json::from_slice(&files::read_public_single(
-            p,
-            archive::MAX_ARCHIVE_BYTES,
-        )?)?)
-    })
-    .transpose()
-    .map(Option::unwrap_or_default)
+fn retained_predecessor(bootstrap: &[u8], directory: &Path) -> Result<recovery::Predecessor> {
+    let checked = trust::inspect(bootstrap, true)?;
+    let store = crate::authority_floor::Store::open(directory, checked.descriptor().clone())?;
+    let (_, policy) = crate::authority_inspection::policy::current(&checked, &store)?;
+    let scope = checked.descriptor().scope();
+    let reference = crate::authority_policies::record_reference(
+        &policy,
+        scope.network,
+        scope.incarnation,
+        114,
+    )?;
+    recovery::Predecessor::retained(&checked, store.prefix(), &policy, &reference)
 }
 fn inputs(args: &PredecessorArgs) -> Result<recovery::Predecessor> {
     let bytes = files::read_public_single(&args.predecessor_bootstrap, trust_wire::MAXIMUM)?;
     fingerprint(&bytes, &args.predecessor_fingerprint)?;
-    let checkpoint = args
-        .predecessor_checkpoint
-        .as_ref()
-        .map(|p| files::read_public_single(p, trust_wire::MAXIMUM))
-        .transpose()?;
-    predecessor(
-        &bytes,
-        checkpoint.as_deref(),
-        &read_epochs(args.predecessor_epochs.as_ref())?,
-    )
+    retained_predecessor(&bytes, &args.predecessor_directory)
+}
+
+fn absolute_directory(path: &Path) -> Result<PathBuf> {
+    files::private_directory(path)?;
+    Ok(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    })
 }
 fn absolute(path: &Path) -> Result<PathBuf> {
     let value = if path.is_absolute() {
@@ -207,12 +209,7 @@ fn identity_key(identity: &Identity) -> Result<SigningKey> {
 }
 impl Ledger {
     fn predecessor(&self) -> Result<recovery::Predecessor> {
-        let checkpoint = self.checkpoint.as_ref().map(hex::decode).transpose()?;
-        predecessor(
-            &hex::decode(&self.bootstrap)?,
-            checkpoint.as_deref(),
-            &self.epochs,
-        )
+        retained_predecessor(&hex::decode(&self.bootstrap)?, &self.predecessor_directory)
     }
     fn validate(&self) -> Result<()> {
         ensure!(
@@ -417,21 +414,15 @@ pub fn run(command: Command) -> Result<()> {
             }))
         }
         Command::Initialise {
+            predecessor_directory,
             previous_profile,
-            predecessor_checkpoint,
-            predecessor_epochs,
             directory,
         } => {
             let (profile, _) = load(&previous_profile)?;
-            let checkpoint = predecessor_checkpoint
-                .as_ref()
-                .map(|p| files::read_public_single(p, trust_wire::MAXIMUM))
-                .transpose()?;
             let state = Ledger {
                 format: "HyperNetRecoveryLedger/1".into(),
                 bootstrap: profile.bootstrap,
-                checkpoint: checkpoint.map(hex::encode),
-                epochs: read_epochs(predecessor_epochs.as_ref())?,
+                predecessor_directory: absolute_directory(&predecessor_directory)?,
                 client: profile.device.public_key.clone(),
                 declarations: BTreeMap::new(),
                 saturated: false,

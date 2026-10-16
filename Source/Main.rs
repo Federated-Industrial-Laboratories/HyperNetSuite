@@ -43,6 +43,10 @@ mod authority_local_transport;
 mod authority_membership;
 #[path = "AuthorityObjects.rs"]
 mod authority_objects;
+#[path = "AuthorityOperationalConsent.rs"]
+mod authority_operational_consent;
+#[path = "AuthorityPolicies.rs"]
+mod authority_policies;
 #[path = "AuthorityProof.rs"]
 mod authority_proof;
 #[cfg(test)]

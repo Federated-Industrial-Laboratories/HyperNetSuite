@@ -119,17 +119,21 @@ fn media_request_preparation_preserves_native_and_foreign_mutation_markers_on_re
         );
         if foreign {
             probe.expected = vec![version(157, 67)];
-            operation.snapshot = domain::snapshot(&a(vec![
-                a(vec![
-                    V::Uint(f.store.prefix().scope().epoch),
-                    V::Uint(f.store.prefix().height()),
-                    b(f.store.prefix().policy_state()),
-                ]),
-                a(probe.expected.iter().map(version_value).collect()),
-            ]))
-            .unwrap();
-            probe.parameters = operation.parameters().unwrap();
         }
+        probe.expected.push(
+            crate::authority_inspection::policy::current_reference(&f.bootstrap, &f.store).unwrap(),
+        );
+        probe.expected.sort_by_key(VersionRef::index);
+        operation.snapshot = domain::snapshot(&a(vec![
+            a(vec![
+                V::Uint(f.store.prefix().scope().epoch),
+                V::Uint(f.store.prefix().height()),
+                b(f.store.prefix().policy_state()),
+            ]),
+            a(probe.expected.iter().map(version_value).collect()),
+        ]))
+        .unwrap();
+        probe.parameters = operation.parameters().unwrap();
         let mut invalid = probe.clone();
         invalid.revision = u64::from(!foreign);
         assert!(retain_request(&mut f.store, &f.signer, &invalid).is_err());

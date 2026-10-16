@@ -90,6 +90,13 @@ pub enum Command {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Repair exact currently published bytes as their author.
+    Repair {
+        #[command(flatten)]
+        exchange: Exchange,
+        #[arg(long)]
+        input: PathBuf,
+    },
     Read {
         #[command(flatten)]
         exchange: Exchange,
@@ -285,10 +292,16 @@ fn job(
         effect,
         upload,
     )?;
+    progress.begin_repair(c.store.resume_ordinary()?.is_some())?;
     loop {
-        client::ensure(&mut c.store, &c.socket, &c.key, &mut c.session, || {
-            c.clock.health()
-        })?;
+        client::ensure(
+            &c.bootstrap,
+            &mut c.store,
+            &c.socket,
+            &c.key,
+            &mut c.session,
+            || c.clock.health(),
+        )?;
         let pending = client::pending(&c.store)?;
         let reconcile = pending.is_some();
         let command = if let Some(pending) = pending {
@@ -320,7 +333,7 @@ fn job(
             }
             let offset = progress.offset;
             let bytes = (progress.asset.manifest.bytes - offset).min(32768);
-            let digest = if effect == page::MediaEffect::Upload {
+            let digest = if effect.writes() {
                 Some(digest(
                     &progress.bytes[offset as usize..(offset + bytes) as usize],
                 ))
@@ -339,7 +352,7 @@ fn job(
         let Action::MediaAuthorise { offset, bytes, .. } = &command else {
             unreachable!()
         };
-        let payload = if effect == page::MediaEffect::Upload {
+        let payload = if effect.writes() {
             progress.bytes[*offset as usize..(offset + bytes) as usize].to_vec()
         } else {
             vec![]
@@ -370,7 +383,7 @@ fn job(
         .clone()
         .context("media completion lacks a complete-copy receipt")?;
     match effect {
-        page::MediaEffect::Upload => {
+        page::MediaEffect::Upload | page::MediaEffect::Repair => {
             c.action(
                 Action::MediaReceipt { receipt },
                 Some(grant),
@@ -393,7 +406,7 @@ fn job(
     Ok(progress)
 }
 
-pub(super) fn read_asset(
+pub(crate) fn read_asset(
     c: &mut Client,
     grant: &VersionRef,
     asset: VersionRef,
@@ -413,6 +426,26 @@ pub(super) fn read_asset(
     .bytes)
 }
 
+pub(crate) fn repair_asset(
+    c: &mut Client,
+    grant: &VersionRef,
+    asset: VersionRef,
+    transport: &Transport,
+    progress_directory: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    job(
+        c,
+        grant.clone(),
+        asset,
+        transport,
+        progress_directory,
+        page::MediaEffect::Repair,
+        Some(bytes),
+        None,
+    )?;
+    Ok(())
+}
 pub(super) fn inspect_asset(
     c: &mut Client,
     grant: &VersionRef,
@@ -491,6 +524,9 @@ pub fn run(command: Command) -> Result<()> {
         }
         Command::Upload { exchange, input } => {
             transfer(exchange, page::MediaEffect::Upload, Some(input), None, None)
+        }
+        Command::Repair { exchange, input } => {
+            transfer(exchange, page::MediaEffect::Repair, Some(input), None, None)
         }
         Command::Read { exchange, output } => {
             transfer(exchange, page::MediaEffect::Read, None, Some(output), None)
