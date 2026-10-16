@@ -4,15 +4,16 @@ use crate::{authority_clock, transfer_files as files};
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
 use std::{
-    ffi::OsStr,
-    io::Read,
+    ffi::{CString, OsStr},
+    fs::File,
+    io::{Read, Write},
     os::{
-        fd::AsRawFd,
-        unix::fs::{FileTypeExt, MetadataExt},
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
     },
     path::{Path, PathBuf},
     process::{Command as Process, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 #[path = "ClientClockObservation.rs"]
 mod observation;
@@ -84,10 +85,15 @@ fn validate(o: &Options) -> Result<()> {
     );
     ancestors(o.socket.parent().context("chrony parent absent")?)
 }
-fn query(o: &Options, command: &str) -> Result<String> {
+fn query(o: &Options, command: &str, deadline: u64) -> Result<String> {
     ensure!(
         matches!(command, "tracking" | "sources" | "authdata" | "ntpdata"),
         "unsupported clock query"
+    );
+    crate::private_route_client::check_cancelled()?;
+    ensure!(
+        crate::authority_challenge::boot_time_ms()? < deadline,
+        "chronyc observation deadline expired"
     );
     let mut child = Process::new(&o.chronyc)
         .args(["-n", "-c", "-h"])
@@ -107,12 +113,11 @@ fn query(o: &Options, command: &str) -> Result<String> {
             flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == 0,
             "cannot bound chronyc output"
         );
-        let deadline = Instant::now() + Duration::from_millis(500);
         let mut bytes = Vec::new();
         loop {
             crate::private_route_client::check_cancelled()?;
             ensure!(
-                Instant::now() < deadline,
+                crate::authority_challenge::boot_time_ms()? < deadline,
                 "chronyc observation deadline expired"
             );
             let mut buffer = [0; 4096];
@@ -145,13 +150,58 @@ fn query(o: &Options, command: &str) -> Result<String> {
 }
 fn observe(o: &Options, directory: &std::fs::File) -> Result<()> {
     validate(o)?;
-    let witness = observation::probe(|command| query(o, command))?;
-    files::atomic_at(
-        directory,
-        OsStr::new("ClockHealth.json"),
-        &serde_json::to_vec(&witness)?,
-        true,
-    )
+    let witness = observation::probe(|command, deadline| query(o, command, deadline))?;
+    publish(directory, &witness, observation::moment)
+}
+fn publish(
+    directory: &File,
+    witness: &observation::Witness,
+    mut now: impl FnMut() -> Result<observation::Moment>,
+) -> Result<()> {
+    witness.health(&observation::kernel_boot()?, now()?)?;
+    let bytes = serde_json::to_vec(witness)?;
+    ensure!(bytes.len() <= 4096, "clock observation exceeds its bound");
+    let temporary = CString::new(format!("ClockPending{}", crate::random_hex::<16>()))?;
+    let destination = c"ClockHealth.json";
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            temporary.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    ensure!(
+        fd >= 0,
+        "cannot create clock observation: {}",
+        std::io::Error::last_os_error()
+    );
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let result = (|| -> Result<()> {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(&bytes)?;
+        // This short-lived observation needs atomic visibility, not crash durability.
+        ensure!(
+            unsafe {
+                libc::renameat(
+                    directory.as_raw_fd(),
+                    temporary.as_ptr(),
+                    directory.as_raw_fd(),
+                    destination.as_ptr(),
+                )
+            } == 0,
+            "cannot publish clock observation: {}",
+            std::io::Error::last_os_error()
+        );
+        witness.health(&observation::kernel_boot()?, now()?)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        unsafe {
+            libc::unlinkat(directory.as_raw_fd(), temporary.as_ptr(), 0);
+        }
+    }
+    result.context("clock observation could not be published")
 }
 pub fn run(command: Command) -> Result<()> {
     let (o, monitor) = match command {
@@ -179,10 +229,15 @@ pub fn run(command: Command) -> Result<()> {
         let healthy = result.is_ok();
         if previous != Some(healthy) {
             crate::print_value(
-                &serde_json::json!({"state":if healthy {"ClockHealthy"} else {"ClockUnavailable"},"localOnly":true}),
+                &serde_json::json!({"state":if healthy {"ClockHealthy"} else {"ClockUnavailable"},"localOnly":true,
+                    "bootMs":crate::authority_challenge::boot_time_ms()?}),
             )?;
             previous = Some(healthy);
         }
         std::thread::sleep(Duration::from_millis(200));
     }
 }
+
+#[cfg(test)]
+#[path = "PrivateRouteClockTests.rs"]
+mod tests;

@@ -19,6 +19,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Only an otherwise valid observation can be replaced after its original lifetime expires.
+#[derive(Debug)]
+pub(crate) struct ObservationExpired;
+impl std::fmt::Display for ObservationExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("clock observation is stale")
+    }
+}
+impl std::error::Error for ObservationExpired {}
+
 pub enum Source {
     Private {
         path: PathBuf,
@@ -60,9 +70,15 @@ impl Source {
                 monitor_key,
                 host_kernel_boot,
             } => {
-                unshifted_clock()?;
-                let bytes = read_opened_observation(open_observation(path, false)?, false)?;
-                let health = signed(&bytes, *monitor_key, host_kernel_boot, moment()?)?;
+                let health = validate_opened_observation(
+                    path,
+                    false,
+                    open_observation(path, false)?,
+                    |bytes| {
+                        unshifted_clock()?;
+                        signed(bytes, *monitor_key, host_kernel_boot, moment()?)
+                    },
+                )?;
                 health.observe()?;
                 Ok(health)
             }
@@ -122,7 +138,7 @@ fn open_observation(path: &Path, private: bool) -> Result<File> {
     );
     Ok(unsafe { File::from_raw_fd(fd) })
 }
-fn read_opened_observation(file: File, private: bool) -> Result<Vec<u8>> {
+fn observation_metadata(file: &File, private: bool) -> Result<std::fs::Metadata> {
     let metadata = file.metadata()?;
     // Atomic publication can unlink an observation after it was safely opened.
     // Its bytes must still pass the original clock authentication and expiry checks.
@@ -136,6 +152,10 @@ fn read_opened_observation(file: File, private: bool) -> Result<Vec<u8>> {
             "private clock observation must be owned and mode 0600"
         );
     }
+    Ok(metadata)
+}
+fn read_opened_observation(file: &File, private: bool) -> Result<Vec<u8>> {
+    observation_metadata(file, private)?;
     let mut bytes = Vec::new();
     file.take(4097).read_to_end(&mut bytes)?;
     ensure!(
@@ -143,6 +163,25 @@ fn read_opened_observation(file: File, private: bool) -> Result<Vec<u8>> {
         "clock observation grew beyond its bound"
     );
     Ok(bytes)
+}
+fn validate_opened_observation(
+    path: &Path,
+    private: bool,
+    file: File,
+    mut validate: impl FnMut(&[u8]) -> Result<ClockHealth>,
+) -> Result<ClockHealth> {
+    let result = validate(&read_opened_observation(&file, private)?);
+    match result {
+        Err(error) if error.is::<ObservationExpired>() => {
+            if observation_metadata(&file, private)?.nlink() != 0 {
+                return Err(error);
+            }
+            // One current inode may replace an expired opened snapshot. All validation runs again.
+            let replacement = open_observation(path, private)?;
+            validate(&read_opened_observation(&replacement, private)?)
+        }
+        result => result,
+    }
 }
 fn valid_boot(value: &str) -> bool {
     value.len() == 36
@@ -206,8 +245,8 @@ impl Witness {
             "clock observation identity or lifetime differs"
         );
         ensure!(
-            now.boot_ms >= self.sample_boot_ms && now.boot_ms < self.valid_until_boot_ms,
-            "clock observation is stale"
+            now.boot_ms >= self.sample_boot_ms,
+            "clock observation is from the future"
         );
         let predicted = self
             .sample_wall_ms
@@ -219,6 +258,9 @@ impl Witness {
                 .is_some_and(|v| v <= 250),
             "clock error exceeds the permitted bound"
         );
+        if now.boot_ms >= self.valid_until_boot_ms {
+            return Err(ObservationExpired.into());
+        }
         ClockHealth::new(
             self.sample_wall_ms,
             self.sample_boot_ms,
@@ -260,12 +302,11 @@ fn signed(bytes: &[u8], key: [u8; 32], boot: &str, now: Observation) -> Result<C
     .health(boot, now)
 }
 pub fn health(path: &Path) -> Result<ClockHealth> {
-    let witness: Witness = serde_json::from_slice(&read_opened_observation(
-        open_observation(path, true)?,
-        true,
-    )?)?;
-    let kernel = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-    let health = witness.health(kernel.trim_end_matches('\n'), moment()?)?;
+    let health = validate_opened_observation(path, true, open_observation(path, true)?, |bytes| {
+        let witness: Witness = serde_json::from_slice(bytes)?;
+        let kernel = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+        witness.health(kernel.trim_end_matches('\n'), moment()?)
+    })?;
     health.observe()?;
     Ok(health)
 }

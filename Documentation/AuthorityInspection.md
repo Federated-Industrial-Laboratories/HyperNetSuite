@@ -112,8 +112,11 @@ clock-export directory so atomic publication remains visible; a bind of one
 clock file would retain an expired inode. A clock observation opened before
 atomic replacement may finish reading after its old inode is unlinked. Its
 original signature, pins and expiry still apply; replacement does not extend
-its validity. This exception is limited to clock observations, including the
-private source's ownership and permission checks. Keep the control socket's destination
+its validity. If an otherwise valid opened observation expires after replacement,
+the reader may reopen once and fully validate the current observation. An unchanged
+stale file, an invalid observation or an expired replacement still refuses. This
+exception is limited to clock observations, including the private source's ownership
+and permission checks. Keep the control socket's destination
 directory private and owned by the operator UID. Replacing the authority socket
 requires refreshing its explicit socket mount. Do not mount the replica signer
 directory, expose the operator identity to the replica, or give either process

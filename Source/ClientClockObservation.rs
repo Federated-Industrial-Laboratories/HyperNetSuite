@@ -73,8 +73,8 @@ impl Witness {
             "unsupported clock observation lifetime"
         );
         ensure!(
-            now.boot_ms >= self.sample_boot_ms && now.boot_ms < self.valid_until_boot_ms,
-            "clock observation is stale"
+            now.boot_ms >= self.sample_boot_ms,
+            "clock observation is from the future"
         );
         let predicted = self
             .sample_wall_ms
@@ -86,6 +86,9 @@ impl Witness {
                 .is_some_and(|e| e <= MAXIMUM_ERROR_MS),
             "clock error exceeds the permitted bound"
         );
+        if now.boot_ms >= self.valid_until_boot_ms {
+            return Err(crate::authority_clock::ObservationExpired.into());
+        }
         crate::authority_challenge::ClockHealth::new(
             self.sample_wall_ms,
             self.sample_boot_ms,
@@ -332,16 +335,33 @@ fn authenticate(
 }
 
 /// Only the fixed read-only commands reach the locally configured chrony socket.
-pub fn probe(mut query: impl FnMut(&str) -> Result<String>) -> Result<Witness> {
+pub fn probe(query: impl FnMut(&str, u64) -> Result<String>) -> Result<Witness> {
+    probe_with_clock(query, moment)
+}
+fn probe_with_clock(
+    mut query: impl FnMut(&str, u64) -> Result<String>,
+    mut now: impl FnMut() -> Result<Moment>,
+) -> Result<Witness> {
     let boot = kernel_boot()?;
-    let before = moment()?;
+    let before = now()?;
+    let deadline = before
+        .boot_ms
+        .checked_add(MAXIMUM_PROBE_MS)
+        .context("clock query deadline overflow")?;
+    let mut query = |command| {
+        ensure!(
+            now()?.boot_ms < deadline,
+            "clock-health observation took too long"
+        );
+        query(command, deadline)
+    };
     let first_tracking = query("tracking")?;
     let first_sources = query("sources")?;
     let auth = query("authdata")?;
     let ntp = query("ntpdata")?;
     let last_sources = query("sources")?;
     let last_tracking = query("tracking")?;
-    let after = moment()?;
+    let after = now()?;
     ensure!(
         boot == kernel_boot()?,
         "kernel boot changed during clock observation"
@@ -456,6 +476,92 @@ mod tests {
         ntp[27] = "Yes";
         ntp[33] = "8";
         (tracking, sources, auth, ntp.join(","))
+    }
+    #[test]
+    fn all_six_queries_share_one_budget_and_no_query_starts_after_expiry() {
+        use std::cell::Cell;
+        let (tracking, sources, auth, ntp) = reports();
+        for elapsed_per_query in [20, MAXIMUM_PROBE_MS] {
+            let elapsed = Cell::new(0);
+            let mut commands = Vec::new();
+            let result = probe_with_clock(
+                |command, deadline| {
+                    assert_eq!(deadline, 100 + MAXIMUM_PROBE_MS);
+                    commands.push(command.to_owned());
+                    elapsed.set(elapsed.get() + elapsed_per_query);
+                    Ok(match command {
+                        "tracking" => tracking.clone(),
+                        "sources" => sources.clone(),
+                        "authdata" => auth.clone(),
+                        "ntpdata" => ntp.clone(),
+                        _ => panic!("unsupported query"),
+                    })
+                },
+                || {
+                    Ok(Moment {
+                        wall_ms: 1000010 + elapsed.get(),
+                        boot_ms: 100 + elapsed.get(),
+                    })
+                },
+            );
+            if elapsed_per_query == 20 {
+                let witness = result.unwrap();
+                assert_eq!(
+                    commands,
+                    [
+                        "tracking", "sources", "authdata", "ntpdata", "sources", "tracking"
+                    ]
+                );
+                assert_eq!(witness.sample_boot_ms, 220);
+                assert_eq!(witness.valid_until_boot_ms, 1220);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(commands, ["tracking"]);
+            }
+        }
+    }
+    #[test]
+    fn expiry_does_not_mask_invalid_clock_progression_or_error() {
+        let (t, s, a, n) = reports();
+        let before = Moment {
+            wall_ms: 1000010,
+            boot_ms: 100,
+        };
+        let after = Moment {
+            wall_ms: 1000030,
+            boot_ms: 120,
+        };
+        let witness = qualify(BOOT, before, after, &t, &t, &s, &s, &a, &n).unwrap();
+        let expired = Moment {
+            wall_ms: after.wall_ms + 1000,
+            boot_ms: after.boot_ms + 1000,
+        };
+        assert!(
+            witness
+                .health(BOOT, expired)
+                .unwrap_err()
+                .is::<crate::authority_clock::ObservationExpired>()
+        );
+        let mut invalid = witness.clone();
+        invalid.maximum_error_ms = 251;
+        assert!(
+            !invalid
+                .health(BOOT, expired)
+                .unwrap_err()
+                .is::<crate::authority_clock::ObservationExpired>()
+        );
+        assert!(
+            !witness
+                .health(
+                    BOOT,
+                    Moment {
+                        wall_ms: expired.wall_ms + 251,
+                        ..expired
+                    }
+                )
+                .unwrap_err()
+                .is::<crate::authority_clock::ObservationExpired>()
+        );
     }
     #[test]
     fn health_requires_matching_authenticated_fresh_observations() {
