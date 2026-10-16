@@ -47,7 +47,7 @@ pub(crate) struct ContentExchange {
     duration: u64,
 }
 impl ContentExchange {
-    /// Verification, StreamStatus and durable progress must all succeed before transport retention.
+    /// Verified completion continuity and durable progress must succeed before transport retention.
     pub(crate) fn complete<T>(
         self,
         pool: &mut crate::private_route_client::ContentPool,

@@ -8,6 +8,9 @@ use crate::{
 };
 use ed25519_dalek::Signer;
 
+#[path = "AuthorityPageReceiptClientTests.rs"]
+mod receipt_tests;
+
 fn current_clocks() -> (ClockHealth, ClockHealth) {
     let boot = boot_time_ms().unwrap();
     let wall = std::time::SystemTime::now()
@@ -635,85 +638,92 @@ fn page_source_metadata_survives_floor_before_cache_interruption() {
     assert_eq!(reopened.state.value(), authority.value());
 }
 
+fn certify_view(
+    p: &Prepared,
+    state: &State,
+    records: &[Vec<u8>],
+    at: u64,
+    prefix: &Prefix,
+) -> (CertifiedReply, AncestryEvidence, State) {
+    let intent = Intent::from_signed(&p.intent).unwrap();
+    let decision = Operation::parse(&intent)
+        .unwrap()
+        .prepare_with_inputs(
+            state,
+            records,
+            &Reservations(p.bootstrap.reservations().to_vec()),
+            &intent,
+            at,
+            false,
+            true,
+            &Resolved::default(),
+        )
+        .unwrap();
+    assert_eq!(decision.code, 0);
+    let next = decision.state.clone().unwrap_or_else(|| state.clone());
+    let (packet, node) = certified_request(
+        &p.descriptor,
+        &p.intent,
+        &p.challenge,
+        &p.ordered,
+        decision.value,
+        at,
+        *prefix.node(),
+        prefix.height() + 1,
+        0,
+    );
+    let packet = wire::decode(&packet).unwrap();
+    let fields = packet.array(10).unwrap();
+    // The generic certificate fixture knows only challenge expiry. A domain
+    // evaluation must also clip it to the actual publication/placement/grant bound.
+    let envelope = wire::decode(fields[7].bytes().unwrap()).unwrap();
+    let mut executed = wire::decode(envelope.array(4).unwrap()[2].bytes().unwrap())
+        .unwrap()
+        .array(23)
+        .unwrap()
+        .to_vec();
+    let expiry = executed[19].uint().unwrap().min(decision.expires_ms);
+    assert!(at + crate::authority_governance::UNCERTAINTY_MS < expiry);
+    assert!(
+        Challenge::from_signed(&p.challenge)
+            .unwrap()
+            .completion_within_interval(at, expiry)
+    );
+    executed[19] = V::Uint(expiry);
+    let payload = wire::encode(&a(executed)).unwrap();
+    let signatures = voters()[..3]
+        .iter()
+        .map(|key| {
+            let public = key.verifying_key().to_bytes();
+            a(vec![
+                b(&public),
+                b(&key
+                    .sign(&wire::signature_message(&payload, &public))
+                    .to_bytes()),
+            ])
+        })
+        .collect();
+    let certificate =
+        wire::encode(&a(vec![V::Uint(0), V::Uint(1), b(&payload), a(signatures)])).unwrap();
+    (
+        CertifiedReply {
+            node: node.clone(),
+            certificate,
+            result: fields[8].bytes().unwrap().to_vec(),
+        },
+        AncestryEvidence::direct(vec![node]),
+        next,
+    )
+}
+
 #[test]
 fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogue_floor() {
     let (bootstrap, mut authority, records, grant, placement, source) =
-        page::tests::view_tests::consumer_fixture();
+        page::tests::view_tests::consumer_fixture(false);
     let mut f = Fixture::with_bootstrap(bootstrap, crate::authority_deployment_tests::key(5), 6000);
     let request = |command: PageCommand| Request {
         command: command.into(),
         grant: Some(grant.clone()),
-    };
-    let certify = |p: &Prepared, state: &State, at: u64, prefix: &Prefix| {
-        let intent = Intent::from_signed(&p.intent).unwrap();
-        let decision = Operation::parse(&intent)
-            .unwrap()
-            .prepare_with_inputs(
-                state,
-                &records,
-                &Reservations(p.bootstrap.reservations().to_vec()),
-                &intent,
-                at,
-                false,
-                true,
-                &Resolved::default(),
-            )
-            .unwrap();
-        assert_eq!(decision.code, 0);
-        let next = decision.state.clone().unwrap_or_else(|| state.clone());
-        let (packet, node) = certified_request(
-            &p.descriptor,
-            &p.intent,
-            &p.challenge,
-            &p.ordered,
-            decision.value,
-            at,
-            *prefix.node(),
-            prefix.height() + 1,
-            0,
-        );
-        let packet = wire::decode(&packet).unwrap();
-        let fields = packet.array(10).unwrap();
-        // The generic certificate fixture knows only challenge expiry. A domain
-        // evaluation must also clip it to the actual publication/placement/grant bound.
-        let envelope = wire::decode(fields[7].bytes().unwrap()).unwrap();
-        let mut executed = wire::decode(envelope.array(4).unwrap()[2].bytes().unwrap())
-            .unwrap()
-            .array(23)
-            .unwrap()
-            .to_vec();
-        let expiry = executed[19].uint().unwrap().min(decision.expires_ms);
-        assert!(at + crate::authority_governance::UNCERTAINTY_MS < expiry);
-        assert!(
-            Challenge::from_signed(&p.challenge)
-                .unwrap()
-                .completion_within_interval(at, expiry)
-        );
-        executed[19] = V::Uint(expiry);
-        let payload = wire::encode(&a(executed)).unwrap();
-        let signatures = voters()[..3]
-            .iter()
-            .map(|key| {
-                let public = key.verifying_key().to_bytes();
-                a(vec![
-                    b(&public),
-                    b(&key
-                        .sign(&wire::signature_message(&payload, &public))
-                        .to_bytes()),
-                ])
-            })
-            .collect();
-        let certificate =
-            wire::encode(&a(vec![V::Uint(0), V::Uint(1), b(&payload), a(signatures)])).unwrap();
-        (
-            CertifiedReply {
-                node: node.clone(),
-                certificate,
-                result: fields[8].bytes().unwrap().to_vec(),
-            },
-            AncestryEvidence::direct(vec![node]),
-            next,
-        )
     };
     // The normal fresh challenge, independent domain proof verification, durable
     // floor and cache publication produce the result consumed by the reader.
@@ -746,7 +756,8 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
         f.issued,
     )
     .unwrap();
-    let (reply, evidence, _) = certify(&prepared, &authority, 6000, f.store.prefix());
+    let (reply, evidence, _) =
+        certify_view(&prepared, &authority, &records, 6000, f.store.prefix());
     let mut view = prepared
         .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
             Ok(f.current)
@@ -806,33 +817,35 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
     .hosts[0]
         .clone();
     assert!(
-        !crate::authority_inspection::page_media_client::current_read_view(
+        !crate::authority_inspection::page_media_client::current_content_view(
             &f.bootstrap,
             &f.store,
             &view,
             &placement,
             &host,
+            page::content::Effect::Read,
             || panic!("pending recovery must not request a new clock observation"),
         )
         .unwrap()
     );
-    crate::authority_inspection::page_media_client::ensure_content_read(
+    crate::authority_inspection::page_media_client::ensure_content_view(
         &f.bootstrap,
         &mut f.store,
         &f.directory.0.join("UnavailableAuthority.sock"),
         &f.signer,
         &mut f.session,
         || panic!("the exact pending operation must follow its existing recovery path"),
-        Some((&view, &placement, &host)),
+        Some((&view, &placement, &host, page::content::Effect::Read)),
     )
     .unwrap();
     assert_eq!(
         f.store.resume_ordinary().unwrap().unwrap().signed(),
         prepared.intent
     );
-    let (reply, evidence, next) = certify(
+    let (reply, evidence, next) = certify_view(
         &prepared,
         &authority,
+        &records,
         f.current.observe().unwrap().wall_ms,
         f.store.prefix(),
     );
@@ -861,14 +874,14 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
         "an earlier catalogue cannot omit a newly retained content withdrawal"
     );
     let authority = f.directory.0.join("UnavailableAuthority.sock");
-    let error = crate::authority_inspection::page_media_client::ensure_content_read(
+    let error = crate::authority_inspection::page_media_client::ensure_content_view(
         &f.bootstrap,
         &mut f.store,
         &authority,
         &f.signer,
         &mut f.session,
         || Ok(f.current),
-        Some((&view, &placement, &host)),
+        Some((&view, &placement, &host, page::content::Effect::Read)),
     )
     .unwrap_err();
     assert!(

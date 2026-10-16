@@ -19,20 +19,28 @@ pub(crate) fn policy_view(
                    placement: &VersionRef,
                    host: &VersionRef,
                    now: crate::authority_challenge::Observation| {
-        client::current_read_view(&c.bootstrap, &c.store, view, placement, host, || Ok(now))
-            .unwrap()
+        client::current_content_view(
+            &c.bootstrap,
+            &c.store,
+            view,
+            placement,
+            host,
+            Effect::Read,
+            || Ok(now),
+        )
+        .unwrap()
     };
     assert!(current(c, view, placement, &host, now));
     // The real first-read preparation succeeds without an authority socket. A
     // redundant discovery would retain another intent and then fail to connect.
-    client::ensure_content_read(
+    client::ensure_content_view(
         &c.bootstrap,
         &mut c.store,
         &c.socket,
         &c.key,
         &mut c.session,
         || Ok(health),
-        Some((view, placement, &host)),
+        Some((view, placement, &host, Effect::Read)),
     )
     .unwrap();
     assert!(c.store.resume_ordinary().unwrap().is_none());

@@ -45,12 +45,13 @@ pub(crate) fn current_view_at(
         .collect::<Result<Vec<_>>>()?;
     Ok(domain::result::minimum(&versions, store.generations()).is_ok())
 }
-pub(crate) fn current_read_view(
+pub(crate) fn current_content_view(
     bootstrap: &Verified,
     store: &Store,
     result: &domain_client::ResultState,
     placement: &VersionRef,
     host: &VersionRef,
+    effect: page::content::Effect,
     observe: impl FnOnce() -> Result<crate::authority_challenge::Observation>,
 ) -> Result<bool> {
     ensure!(
@@ -58,7 +59,10 @@ pub(crate) fn current_read_view(
             && bootstrap.descriptor().canonical() == store.initial_descriptor().canonical(),
         "Page view policy bootstrap differs"
     );
-    if store.resume_ordinary()?.is_some()
+    if !matches!(
+        effect,
+        page::content::Effect::Read | page::content::Effect::Search
+    ) || store.resume_ordinary()?.is_some()
         || store.resume_fence()?.is_some()
         || store.needs_stream_status()?
         || !current_view_at(store, result, observe()?)?
@@ -66,7 +70,8 @@ pub(crate) fn current_read_view(
         return Ok(false);
     }
     let fields = result.value.array(5)?;
-    if fields[4].array(4)?[0].text()? != "PageView" {
+    let tag = fields[4].array(4)?[0].text()?;
+    if tag != "PageView" && !(effect == page::content::Effect::Search && tag == "PageSearchList") {
         return Ok(false);
     }
     let versions = fields[3]
@@ -105,7 +110,13 @@ pub(crate) fn current_read_view(
         return Ok(false);
     }
     let configured = page::Host::parse(&host_record.payload, scope.network, scope.incarnation)?;
-    if configured.withdrawn || configured.profile.role != 1 || configured.profile.content.is_none()
+    if configured.withdrawn
+        || configured.profile.role != 1
+        || configured
+            .profile
+            .content
+            .as_ref()
+            .is_none_or(|policy| effect == page::content::Effect::Search && !policy.search)
     {
         return Ok(false);
     }
@@ -134,19 +145,24 @@ pub(crate) fn current_read_view(
         && placement.digest == revision.author.source.content_sha256()
         && placement.bytes == revision.author.source.len() as u64)
 }
-/// Only the first read in the same Page-view call may use its already accepted policy evidence.
-pub(crate) fn ensure_content_read(
+/// Only the first content request in the same complete-view call may reuse accepted policy evidence.
+pub(crate) fn ensure_content_view(
     bootstrap: &Verified,
     store: &mut Store,
     authority: &Path,
     signer: &SigningKey,
     session: &mut Session,
     mut clock: impl FnMut() -> Result<ClockHealth>,
-    view: Option<(&domain_client::ResultState, &VersionRef, &VersionRef)>,
+    view: Option<(
+        &domain_client::ResultState,
+        &VersionRef,
+        &VersionRef,
+        page::content::Effect,
+    )>,
 ) -> Result<()> {
     store.require_requester(signer.verifying_key().to_bytes())?;
-    if let Some((result, placement, host)) = view
-        && current_read_view(bootstrap, store, result, placement, host, || {
+    if let Some((result, placement, host, effect)) = view
+        && current_content_view(bootstrap, store, result, placement, host, effect, || {
             clock()?.observe()
         })?
     {
@@ -327,6 +343,7 @@ pub fn complete<T>(
     mut clock: impl FnMut() -> Result<ClockHealth>,
     apply: impl FnOnce(&Request, &[u8]) -> Result<T>,
 ) -> Result<T> {
+    store.require_requester(signer.verifying_key().to_bytes())?;
     let receipt = page::MediaReceipt::parse(bytes)?;
     let descriptor = store.descriptor_for_scope(&receipt.scope()?)?;
     let report = receipt.verify(bootstrap, &descriptor)?;
@@ -339,8 +356,19 @@ pub fn complete<T>(
         "media receipt differs from exact pending participant request"
     );
     let request = Request::parse(pending.signed())?;
-    let current = store.descriptor().clone();
-    stream_client::status_local(&current, authority, signer, store, session, &mut clock)?;
+    let direct = report.result().disposition() == Disposition::Permit
+        && matches!(
+            request.domain_command(),
+            domain::Command::Page(Command::Content(page::content::Command::Authorise {
+                effect: page::content::Effect::Read | page::content::Effect::Search,
+                ..
+            }))
+        )
+        && store.media_completion_connected(&report)?;
+    if !direct {
+        let current = store.descriptor().clone();
+        stream_client::status_local(&current, authority, signer, store, session, &mut clock)?;
+    }
     ensure!(
         report.result().disposition() == Disposition::Permit,
         "media effect refused with code {}; current stream status is retained",

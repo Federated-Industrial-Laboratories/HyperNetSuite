@@ -257,7 +257,7 @@ fn transfer_progress(
         if complete && c.store.resume_ordinary()?.is_none() {
             break;
         }
-        client::ensure_content_read(
+        client::ensure_content_view(
             &c.bootstrap,
             &mut c.store,
             &c.socket,
@@ -266,7 +266,7 @@ fn transfer_progress(
             || c.clock.health(),
             view.take()
                 .filter(|_| effect == Effect::Read)
-                .map(|view| (view, &placement, &progress.host)),
+                .map(|view| (view, &placement, &progress.host, effect)),
         )?;
         let pending = client::pending(&c.store)?;
         let reconcile = pending.is_some();

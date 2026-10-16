@@ -170,6 +170,7 @@ fn native_view(
         query.network_scope(n, i, page::namespace_id(&head.namespace)?)?;
     }
     let mut source = Vec::with_capacity(placement.bytes as usize);
+    let mut current = query.map(|_| result);
     loop {
         let offset = source.len() as u64;
         let count = if query.is_some() {
@@ -177,13 +178,16 @@ fn native_view(
         } else {
             (placement.bytes - offset).min(32768)
         };
-        media_client::ensure(
+        media_client::ensure_content_view(
             &c.bootstrap,
             &mut c.store,
             &c.socket,
             &c.key,
             &mut c.session,
             || c.clock.health(),
+            current
+                .take()
+                .map(|view| (view, &placement_ref, &host, content::Effect::Search)),
         )
         .context("native search stream preparation failed")?;
         let reconcile = media_client::pending(&c.store)?.is_some();
@@ -220,7 +224,7 @@ fn native_view(
                 page::MEDIA_RECEIPT_LIMIT,
             )
             .context("native search content exchange failed")?;
-        // The receipt is complete; release the content route before opening authority status.
+        // The receipt is complete; release the route before any necessary status reconciliation.
         drop(control);
         let chunk = media_client::complete(
             &c.bootstrap,
@@ -240,7 +244,7 @@ fn native_view(
                 }
             },
         )
-        .context("native search completion and stream status failed")?;
+        .context("native search completion failed")?;
         ensure!(
             chunk.len() as u64 == count,
             "retained source extent differs"

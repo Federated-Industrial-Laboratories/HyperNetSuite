@@ -196,6 +196,7 @@ pub(crate) fn retain_media(
     )?;
     minimum(&candidate.versions, store.generations())?;
     policy::require_records_accepted(bootstrap, store, &candidate.records)?;
+    store.establish_media_completion(report)?;
     store.retain_media_context(report)?;
     policy::retain_records(bootstrap, store, &candidate.records)?;
     Cache {

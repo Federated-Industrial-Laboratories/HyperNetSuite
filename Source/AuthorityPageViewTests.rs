@@ -3,7 +3,7 @@
 use super::*;
 
 fn fixture() -> Fixture {
-    let f = deployment::Fixture::with_actions(vec![0, 1, 2, 3, 5, 10, 11, 12, 13, 21, 26]);
+    let f = deployment::Fixture::with_actions(vec![0, 1, 2, 3, 5, 7, 10, 11, 12, 13, 21, 26]);
     let grant = Governance::parse(f.scope.network, f.scope.incarnation, &f.records)
         .unwrap()
         .versions()
@@ -409,7 +409,9 @@ fn page_view_and_search_recheck_application_revocation_after_prior_success() {
     }
 }
 
-pub(crate) fn consumer_fixture() -> (
+pub(crate) fn consumer_fixture(
+    search: bool,
+) -> (
     crate::trust_bootstrap::Verified,
     State,
     Vec<Vec<u8>>,
@@ -417,9 +419,12 @@ pub(crate) fn consumer_fixture() -> (
     VersionRef,
     Vec<u8>,
 ) {
-    let base = deployment::Fixture::with_actions(vec![0, 1, 2, 3, 5, 10, 11, 12, 13, 21, 26]);
+    let base = deployment::Fixture::with_actions(vec![0, 1, 2, 3, 5, 7, 10, 11, 12, 13, 21, 26]);
     let bootstrap = crate::trust_bootstrap::inspect(&base.bootstrap, true).unwrap();
     let mut f = fixture();
+    if search {
+        f.hosts_with_content_consent(8 * 1024 * 1024, 20000, 2 * 1024 * 1024, true);
+    }
     let placement = publish(&mut f, [71; 16], 9000);
     (
         bootstrap,

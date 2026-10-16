@@ -359,6 +359,15 @@ impl Fixture {
         expires_ms: u64,
         content_bytes: u64,
     ) -> Vec<HostProfile> {
+        self.hosts_with_content_consent(physical_bytes, expires_ms, content_bytes, false)
+    }
+    fn hosts_with_content_consent(
+        &mut self,
+        physical_bytes: u64,
+        expires_ms: u64,
+        content_bytes: u64,
+        search: bool,
+    ) -> Vec<HostProfile> {
         let governance =
             Governance::parse(self.state.network, self.state.incarnation, &self.records).unwrap();
         let value = wire::decode(governance.record_bytes(102, self.grant.id).unwrap()).unwrap();
@@ -399,7 +408,7 @@ impl Fixture {
                         quarantine_bytes: (1024 * 1024).min(content_bytes),
                         maximum_objects: 128,
                         opaque: false,
-                        search: false,
+                        search,
                         failure_domain: [91; 32],
                         reviewers: vec![],
                     }),

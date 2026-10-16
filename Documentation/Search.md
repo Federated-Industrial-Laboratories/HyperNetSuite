@@ -44,8 +44,14 @@ If earlier content exchanges consume that catalogue result's original validity,
 or the retained authority floor advances, the next item obtains a fresh PageView
 before query preparation. A catalogue context is reused only at its exact retained
 prefix. This does not extend a proof or reuse an operation permission.
-Fresh policy discovery still precedes query disclosure, the content service still
-checks its current exact authorisation, and stream completion remains mandatory.
+Fresh policy discovery still precedes catalogue or Page selection. Its complete
+result can supply the accepted policy for the first content request at that exact
+floor and original expiry, with no pending recovery and explicit search consent
+from the selected host. Otherwise normal discovery runs before query disclosure.
+The content service still checks current exact authorisation, including indexing
+capability. Its verified receipt establishes the exact requester completion when
+it connects the retained floor; uncertain continuity requires StreamStatus.
+Receipt and progress validation still precede final acknowledgement.
 Before displaying matches, the client obtains a fresh batched LocalSearchLease for
 the exact returned publications and any continuation item. Catalogue context never
 replaces this final revocation and application-permission check.

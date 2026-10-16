@@ -68,7 +68,7 @@ of current authority.
 A Page client can also retain one Content connection across chunks and Page
 navigation. Each request reloads the selected route and client profile, verifies
 the exact retained host binding, and performs current policy, effect and hosting
-checks. Only a verified receipt, current StreamStatus and durable progress return
+checks. Only an established verified receipt and durable progress return
 the connection to that client. Failed requests, verification, progress or
 authority refusals discard it. Dropping an unfinished exchange also closes it.
 The connection keeps its original total, idle and byte limits. Reuse requires
@@ -87,10 +87,24 @@ monotonic and conservative absolute expiry. The result must contain the exact
 accepted network and linked recovery policies, current native publication,
 placement and selected consenting host. An expired or changed view follows
 normal policy discovery; malformed evidence fails closed. The option is consumed
-once, even if it cannot be used. Later chunks and other effects discover policy
-normally. Content preparation still pins the current policy, the host independently
-authorises each effect, and receipt, StreamStatus and durable progress checks
-remain mandatory. Network search and protocol 3 media do not use this shortcut.
+once, even if it cannot be used. The first native Search content request can use
+the same evidence from its complete PageView or catalogue result only when the
+exact selected host has explicit search consent. Initial discovery still precedes
+Page or catalogue selection. Later chunks and other effects discover policy
+normally. Content preparation still pins the current policy, and the host
+independently authorises each effect, including current indexing capability.
+Protocol 3 media does not use this shortcut.
+
+Native Content Read and Search receipts can establish their exact original
+completion directly when their verified proof connects the current requester
+floor. Independent domain and accepted-policy checks precede this durable update;
+restrictive metadata is retained before applying progress. The update does not
+acknowledge the request or release a local effect. Final acknowledgement follows
+successful durable progress. A failure leaves the exact request recoverable.
+An already established historical completion preserves the newer floor and
+retained generations. Missing continuity and refusal still obtain current
+StreamStatus; neither path replays a host effect. Other media effects retain
+their existing status reconciliation.
 
 `RouteReady` reports remaining total transport time after admission. Suite
 applies it from readiness receipt while retaining the original connection limit.
