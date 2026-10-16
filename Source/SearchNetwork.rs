@@ -407,7 +407,7 @@ pub fn run(
         &bridge_routes,
         connection.local_diagnostics,
     )
-    .context("cannot authorise the selected search page and continuation; lower --limit if the complete 64-reference proof budget is exceeded")?;
+    .context("cannot authorise the selected search page and continuation")?;
     for entry in &matched_entries {
         entry
             .lease

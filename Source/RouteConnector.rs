@@ -13,6 +13,17 @@ use std::{
     net::{SocketAddr, TcpStream},
     os::fd::{AsRawFd, FromRawFd},
 };
+#[derive(Debug)]
+pub(crate) struct OperationDeadlineExpired {
+    pub(crate) deadline: u64,
+}
+impl std::fmt::Display for OperationDeadlineExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("private route operation deadline expired")
+    }
+}
+impl std::error::Error for OperationDeadlineExpired {}
+
 struct Socket<'a> {
     socket: TcpStream,
     deadline: u64,
@@ -47,14 +58,23 @@ impl Socket<'_> {
             .min(self.operation_deadline.unwrap_or(u64::MAX))
             .min(self.idle_deadline);
         deadline.checked_sub(now).filter(|n| *n > 0).ok_or_else(|| {
-            let message = if deadline == self.deadline {
-                "private route total deadline expired"
-            } else if self.operation_deadline == Some(deadline) {
-                "private route operation deadline expired"
+            // An exhausted session budget remains terminal, including a tie with operation expiry.
+            if now >= self.deadline {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "private route total deadline expired",
+                )
+            } else if now >= self.idle_deadline {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "private route idle deadline expired",
+                )
             } else {
-                "private route idle deadline expired"
-            };
-            io::Error::new(io::ErrorKind::TimedOut, message)
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    OperationDeadlineExpired { deadline },
+                )
+            }
         })
     }
     fn ready(&self, events: libc::c_short) -> io::Result<()> {
@@ -432,6 +452,15 @@ mod tests {
             error.to_string(),
             "private route operation deadline expired"
         );
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<OperationDeadlineExpired>()
+                .unwrap()
+                .deadline,
+            now
+        );
         stream.operation_deadline = Some(now + 5000);
         assert!(stream.check().unwrap() <= 5000);
         stream.operation_deadline = None;
@@ -449,6 +478,32 @@ mod tests {
         assert_eq!(
             stream.check().unwrap_err().to_string(),
             "private route idle deadline expired"
+        );
+        stream.operation_deadline = Some(now);
+        for total in [false, true] {
+            stream.deadline = if total { now } else { now + 60000 };
+            stream.idle_deadline = if total { now + 30000 } else { now };
+            let error = stream.check().unwrap_err();
+            assert!(
+                error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<OperationDeadlineExpired>()
+                    .is_none()
+            );
+            assert_eq!(
+                error.to_string(),
+                if total {
+                    "private route total deadline expired"
+                } else {
+                    "private route idle deadline expired"
+                }
+            );
+        }
+        stream.cancelled = &|| true;
+        assert_eq!(
+            stream.check().unwrap_err().kind(),
+            io::ErrorKind::ConnectionAborted
         );
     }
     #[test]

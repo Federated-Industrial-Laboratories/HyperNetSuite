@@ -73,6 +73,12 @@ request retains its original policy pin and must be reconciled or explicitly
 fenced; it is never silently rewritten. Revocation, withdrawal and local deletion
 do not require acceptance of an expanded trust contract.
 
+Before local acceptance, discovery can recover once from its own request deadline
+expiry using a new connection and challenge for the exact retained intent. The
+original policy pin and each challenge's deadline remain unchanged. Refusal,
+invalid proof and errors during or after publication remain visible. See
+[expired domain requests](AuthorityInspection.md#expired-domain-requests).
+
 Recovery `acceptedBy` values are the lowercase hexadecimal SHA256 fingerprints
 of the public keys, matching the bootstrap custody format. They are not the
 protocol's domain-separated record digests.

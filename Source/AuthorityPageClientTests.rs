@@ -106,16 +106,34 @@ fn reply(
     state: &State,
     replay: bool,
 ) -> (CertifiedReply, AncestryEvidence, State) {
+    reply_at(
+        p,
+        state,
+        replay,
+        f.current.observe().unwrap().wall_ms,
+        *f.store.prefix().node(),
+        f.store.prefix().height() + 1,
+    )
+}
+
+fn reply_at(
+    p: &Prepared,
+    state: &State,
+    replay: bool,
+    at: u64,
+    parent: [u8; 32],
+    height: u64,
+) -> (CertifiedReply, AncestryEvidence, State) {
     let intent = Intent::from_signed(&p.intent).unwrap();
     let operation = Operation::parse(&intent).unwrap();
     let inputs = evaluation_inputs(&operation.command, state, &p.objects).unwrap();
     let result = operation
         .prepare_with_inputs(
             state,
-            f.bootstrap.governance_records(),
-            &Reservations(f.bootstrap.reservations().to_vec()),
+            p.bootstrap.governance_records(),
+            &Reservations(p.bootstrap.reservations().to_vec()),
             &intent,
-            f.current.observe().unwrap().wall_ms,
+            at,
             replay,
             true,
             &inputs,
@@ -129,9 +147,9 @@ fn reply(
         &p.challenge,
         &p.ordered,
         result.value,
-        f.current.observe().unwrap().wall_ms,
-        *f.store.prefix().node(),
-        f.store.prefix().height() + 1,
+        at,
+        parent,
+        height,
         0,
     );
     let value = wire::decode(&packet).unwrap();
@@ -145,6 +163,357 @@ fn reply(
         AncestryEvidence::direct(vec![node]),
         next,
     )
+}
+
+#[test]
+fn page_submit_recovers_expired_lost_response_without_a_second_mutation() {
+    page_submit_expiry(false);
+}
+
+#[test]
+fn page_submit_second_expiry_retains_exact_pending_intent_without_publication() {
+    page_submit_expiry(true);
+}
+
+fn page_submit_expiry(second_expiry: bool) {
+    use crate::authority_local_transport::RequestDeadlineExpired;
+    use std::{
+        cell::Cell,
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+    };
+    let mut f = Fixture::with_actions(vec![0, 2, 3]);
+    let scope = f.bootstrap.descriptor().scope();
+    let grant = references(
+        f.bootstrap.governance_records(),
+        scope.network,
+        scope.incarnation,
+    )
+    .unwrap()
+    .into_iter()
+    .find(|r| r.kind == 102)
+    .unwrap();
+    let parameters = Author::parameters(
+        [71; 16],
+        "Books",
+        b"HyperNetPage/2\n# Bookshop\n: Opening hours.\n",
+        &grant,
+        None,
+        f.current.observe().unwrap().wall_ms + 600000,
+    )
+    .unwrap();
+    let signed = crate::authority_deployment_tests::signed(
+        &f.signer,
+        "PageAuthorStatement",
+        page::page_id(&[71; 16]).unwrap(),
+        1,
+        wire::decode(&parameters).unwrap(),
+        vec![],
+    );
+    let request = Request {
+        command: PageCommand::Submit {
+            author: Author::parse(&signed, scope.network, scope.incarnation).unwrap(),
+        }
+        .into(),
+        grant: Some(grant),
+    };
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    (f.issued, f.current) = current_clocks();
+    let base = f.issued.observe().unwrap();
+    let offset = Cell::new(0);
+    let health = || {
+        ClockHealth::new(
+            base.wall_ms + offset.get(),
+            base.boot_ms + offset.get(),
+            base.boot_ms + 30000,
+            100,
+        )
+        .unwrap()
+        .frozen()
+    };
+    let mut prepared = Prepared::new_with_objects(
+        &f.bootstrap,
+        request,
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        vec![],
+        &mut || Ok(health()),
+    )
+    .unwrap();
+    let original = prepared.intent.clone();
+    let first_challenge = prepared.challenge.clone();
+    let first_deadline = prepared.deadline;
+    let parent = *f.store.prefix().node();
+    let height = f.store.prefix().height() + 1;
+    let mut authority = State::empty(scope.network, scope.incarnation);
+    let mut authority_parent = parent;
+    let mut authority_height = height;
+    let mut authority_nodes = Vec::new();
+    let socket = f.directory.0.join("Recovery.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut attempts = 0;
+    let mut preparations = 0;
+    let result = prepared.exchange_with_recovery(
+        LocalControl::open(&socket).unwrap(),
+        &f.store,
+        &f.signer,
+        &mut f.session,
+        &mut || Ok(health()),
+        || {
+            preparations += 1;
+            offset.set(offset.get() + 2000);
+            LocalControl::open(&socket)
+        },
+        &mut |attempt, _, _| {
+            attempts += 1;
+            assert_eq!(attempt.intent, original);
+            assert_eq!(
+                f.store.resume_ordinary().unwrap().unwrap().signed(),
+                original
+            );
+            assert!(!f.directory.0.join(CACHE).exists());
+            let at = Challenge::from_signed(&attempt.challenge)
+                .unwrap()
+                .created_at_ms
+                + crate::authority_challenge::DELTA_MS
+                + 1;
+            let (reply, _, next) = reply_at(
+                attempt,
+                &authority,
+                attempts > 1,
+                at,
+                authority_parent,
+                authority_height,
+            );
+            authority_parent = wire::digest(&reply.node);
+            authority_height += 1;
+            authority_nodes.push(reply.node.clone());
+            if attempts == 1 {
+                assert_ne!(next.value(), authority.value());
+                authority = next;
+                // The authority committed the mutation, but its response was lost until expiry.
+                offset.set(DURATION + 100);
+                return Err(RequestDeadlineExpired {
+                    deadline: attempt.deadline,
+                }
+                .into());
+            }
+            assert_eq!(attempts, 2);
+            assert_ne!(attempt.challenge, first_challenge);
+            assert!(attempt.deadline > first_deadline);
+            assert_eq!(attempt.deadline, base.boot_ms + offset.get() + DURATION);
+            assert_eq!(
+                Challenge::from_signed(&attempt.challenge)
+                    .unwrap()
+                    .created_at_ms,
+                base.wall_ms + offset.get()
+            );
+            assert_eq!(
+                next.value(),
+                authority.value(),
+                "exact replay must not mutate again"
+            );
+            if second_expiry {
+                Err(RequestDeadlineExpired {
+                    deadline: attempt.deadline,
+                }
+                .into())
+            } else {
+                Ok((reply, AncestryEvidence::direct(authority_nodes.clone())))
+            }
+        },
+    );
+    assert_eq!(attempts, 2);
+    assert_eq!(preparations, 1);
+    assert_eq!(
+        f.store.resume_ordinary().unwrap().unwrap().signed(),
+        original
+    );
+    assert_eq!(*f.store.prefix().node(), parent);
+    assert!(!f.directory.0.join(CACHE).exists());
+    if second_expiry {
+        assert_eq!(
+            result
+                .err()
+                .unwrap()
+                .downcast_ref::<RequestDeadlineExpired>()
+                .unwrap()
+                .deadline,
+            prepared.deadline
+        );
+        return;
+    }
+    let (reply, evidence) = result.unwrap();
+    offset.set(offset.get() + crate::authority_challenge::DELTA_MS + 1);
+    let (published, _) = prepared
+        .finish_with_objects(
+            reply,
+            evidence,
+            Resolved::default(),
+            &mut f.store,
+            &mut f.session,
+            &mut || Ok(health()),
+        )
+        .unwrap();
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert_eq!(f.store.prefix().height(), height + 1);
+    assert_eq!(published.cache.state.value(), authority.value());
+    assert_eq!(
+        Cache::load(&f.bootstrap, &f.store).unwrap().state.value(),
+        authority.value()
+    );
+}
+
+#[test]
+fn exchange_recovery_requires_its_exact_typed_deadline() {
+    use crate::authority_local_transport::{RequestDeadlineExpired, retry_expired_exchange};
+    for error in [
+        anyhow::Error::from(RequestDeadlineExpired { deadline: 9 }),
+        std::io::Error::from(std::io::ErrorKind::TimedOut).into(),
+        std::io::Error::from(std::io::ErrorKind::ConnectionAborted).into(),
+        anyhow::anyhow!("original inspection deadline expired"),
+    ] {
+        let mut error = Some(error);
+        let mut calls = 0;
+        let result: Result<()> = retry_expired_exchange(|| {
+            calls += 1;
+            Ok((
+                10,
+                Err(error.take().expect("ineligible error must not retry")),
+            ))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+}
+
+#[test]
+fn page_history_expiry_uses_one_fresh_prepared_attempt() {
+    use crate::authority_local_transport::{HistoryOvertaken, RequestDeadlineExpired};
+    use std::{
+        cell::Cell,
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+    };
+    for second_expiry in [false, true] {
+        let mut f = Fixture::with_actions(vec![0, 20]);
+        let scope = f.bootstrap.descriptor().scope();
+        let request = Request {
+            command: PageCommand::Context {
+                action: 0,
+                scope_kind: 0,
+                resource: scope.network,
+                namespace: None,
+            }
+            .into(),
+            grant: references(
+                f.bootstrap.governance_records(),
+                scope.network,
+                scope.incarnation,
+            )
+            .unwrap()
+            .into_iter()
+            .find(|r| r.kind == 102),
+        };
+        let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+        (f.issued, f.current) = current_clocks();
+        let base = f.issued.observe().unwrap();
+        let elapsed = Cell::new(0);
+        let health = || {
+            ClockHealth::new(
+                base.wall_ms + elapsed.get(),
+                base.boot_ms + elapsed.get(),
+                base.boot_ms + 30000,
+                100,
+            )
+            .unwrap()
+            .frozen()
+        };
+        let mut prepared = Prepared::new_with_objects(
+            &f.bootstrap,
+            request,
+            cache,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            vec![],
+            &mut || Ok(health()),
+        )
+        .unwrap();
+        let original = prepared.intent.clone();
+        let old_challenge = prepared.challenge.clone();
+        let old_deadline = prepared.deadline;
+        let prefix = f.store.prefix().clone();
+        let socket = f.directory.0.join("HistoryRecovery.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut preparations = 0;
+        let mut calls = 0;
+        let result = prepared.exchange_with_recovery(
+            LocalControl::open(&socket).unwrap(),
+            &f.store,
+            &f.signer,
+            &mut f.session,
+            &mut || Ok(health()),
+            || {
+                preparations += 1;
+                LocalControl::open(&socket)
+            },
+            &mut |attempt, _, _| {
+                calls += 1;
+                assert_eq!(attempt.intent, original);
+                if calls == 1 || second_expiry {
+                    elapsed.set(elapsed.get() + DURATION);
+                    return Err(HistoryOvertaken.into());
+                }
+                assert_ne!(attempt.challenge, old_challenge);
+                assert_eq!(attempt.deadline, old_deadline + DURATION);
+                let at = base.wall_ms + elapsed.get() + crate::authority_challenge::DELTA_MS + 1;
+                let (reply, evidence, _) = reply_at(
+                    attempt,
+                    &State::empty(scope.network, scope.incarnation),
+                    false,
+                    at,
+                    *prefix.node(),
+                    prefix.height() + 1,
+                );
+                Ok((reply, evidence))
+            },
+        );
+        assert_eq!(calls, 2);
+        assert_eq!(preparations, 1);
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().signed(),
+            original
+        );
+        assert_eq!(f.store.prefix(), &prefix);
+        if second_expiry {
+            assert_eq!(
+                result
+                    .err()
+                    .unwrap()
+                    .downcast_ref::<RequestDeadlineExpired>()
+                    .unwrap()
+                    .deadline,
+                prepared.deadline
+            );
+        } else {
+            let (reply, evidence) = result.unwrap();
+            elapsed.set(elapsed.get() + crate::authority_challenge::DELTA_MS + 1);
+            prepared
+                .finish_with_objects(
+                    reply,
+                    evidence,
+                    Resolved::default(),
+                    &mut f.store,
+                    &mut f.session,
+                    &mut || Ok(health()),
+                )
+                .unwrap();
+            assert!(f.store.resume_ordinary().unwrap().is_none());
+        }
+    }
 }
 
 #[test]

@@ -233,6 +233,210 @@ fn framed_send(stream: &mut impl Write, bytes: &[u8]) {
 }
 
 #[test]
+fn private_tls_operation_expiry_reaches_bounded_authority_recovery() {
+    use crate::authority_local_transport::{RequestDeadlineExpired, retry_expired_exchange};
+    let f = Fixture::new();
+    let (relay, service) = certificates(&f.directory.0);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let possession = SigningKey::from_bytes(&[99; 32]);
+    let scope = f.store.prefix().scope().clone();
+    let reference = |kind, id, digest| VersionRef {
+        kind,
+        id,
+        generation: 1,
+        digest,
+    };
+    let voucher = domains::routes::Voucher {
+        relay: reference(165, relay.identity.service, [93; 32]),
+        destination: reference(165, service.identity.service, [94; 32]),
+        possession: possession.verifying_key().to_bytes(),
+        sponsor: f.signer.verifying_key().to_bytes(),
+        grant: reference(102, [95; 32], [96; 32]),
+        action: 0,
+        scope: (0, scope.network),
+        connections: 3,
+        bytes: 1048576,
+        expires: u64::MAX,
+        creation: [97; 32],
+    };
+    let voucher = domains::Record::next(
+        &domains::State::empty(scope.network, scope.incarnation),
+        166,
+        [98; 32],
+        voucher.value(),
+    )
+    .unwrap();
+    let limits = route::Limits {
+        bytes: 1048576,
+        duration_ms: 10000,
+        idle_ms: 5000,
+    };
+    let profile = route::Profile {
+        version: 1,
+        network: scope.network,
+        incarnation: scope.incarnation,
+        relay_address: listener.local_addr().unwrap(),
+        relay: relay.identity.clone(),
+        destination: service.identity.clone(),
+        domain: "Destination".into(),
+        relay_domain: "Relay".into(),
+        protocol: 1,
+        assurance: route::Assurance::Independent,
+        minimum_assurance: route::Assurance::Independent,
+        limits,
+        voucher: voucher.bytes.clone(),
+    };
+    let relay_config = route_tls::server(&relay.identity, &relay.pem, &relay.key).unwrap();
+    let final_config = route_tls::server(&service.identity, &service.pem, &service.key).unwrap();
+    let profile_path = f.directory.0.join("RecoveryClient.json");
+    files::write_new(&profile_path, b"{}").unwrap();
+    let unavailable = unavailable(&f);
+    std::thread::scope(|threads| {
+        let server = threads.spawn(|| {
+            for attempt in 0..3 {
+                let end = std::time::Instant::now() + Duration::from_secs(4);
+                let socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < end,
+                                "route recovery did not reconnect"
+                            );
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("private TLS fixture accept failed: {error}"),
+                    }
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                socket.set_nodelay(true).unwrap();
+                let mut outer =
+                    StreamOwned::new(ServerConnection::new(relay_config.clone()).unwrap(), socket);
+                let open = route_protocol::Open::parse(&framed_read(&mut outer)).unwrap();
+                assert_eq!(
+                    open.voucher,
+                    wire::encode(&crate::authority_membership::reference(&voucher.reference))
+                        .unwrap()
+                );
+                let exporter = outer
+                    .conn
+                    .export_keying_material([0; 32], route_protocol::EXPORTER, None)
+                    .unwrap();
+                let nonce = [89; 32];
+                framed_send(&mut outer, &route_protocol::challenge(nonce).unwrap());
+                assert_eq!(
+                    open.verify(nonce, exporter, &framed_read(&mut outer))
+                        .unwrap(),
+                    possession.verifying_key().to_bytes()
+                );
+                let binding = wire::digest(&open.binding(nonce, exporter).unwrap());
+                framed_send(&mut outer, &route_protocol::ready(binding, limits).unwrap());
+                let mut inner =
+                    StreamOwned::new(ServerConnection::new(final_config.clone()).unwrap(), outer);
+                framed_send(
+                    &mut inner,
+                    &route_protocol::endpoint_ready(
+                        scope.network,
+                        scope.incarnation,
+                        service.identity.service,
+                        1,
+                    )
+                    .unwrap(),
+                );
+                let query = wire::decode(&framed_read(&mut inner)).unwrap();
+                assert_eq!(record(&query, 41, 5).unwrap()[3], V::Uint(4));
+                framed_send(&mut inner, &unavailable);
+                if attempt < 2 {
+                    assert_eq!(framed_read(&mut inner), b"deadline recovery");
+                }
+                if attempt != 1 {
+                    // Failure must close both TLS layers without another application frame.
+                    match inner.read(&mut [0; 1]) {
+                        Ok(0) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {}
+                        other => panic!("expired route was not closed: {other:?}"),
+                    }
+                } else {
+                    framed_send(&mut inner, b"recovered");
+                }
+            }
+        });
+        let prepare = |setup_deadline| {
+            let channel = crate::route_connector::Session::connect(
+                &profile,
+                &possession,
+                setup_deadline,
+                &|| false,
+            )?;
+            let endpoint = crate::private_route_client::Endpoint {
+                format: "HyperNetRelayEndpoint/1".into(),
+                profile: profile_path.clone(),
+                route: profile.clone(),
+            };
+            let route = crate::private_route_client::Prepared::from_channel(
+                endpoint,
+                channel,
+                setup_deadline,
+            );
+            LocalControl::prepared_for_test(route, &f.store)
+        };
+        let mut attempts = 0;
+        let response = retry_expired_exchange(|| {
+            attempts += 1;
+            let control = prepare(boot_time_ms()? + 10000)?;
+            let deadline = boot_time_ms()? + 250;
+            let result = control.exchange(b"deadline recovery", deadline);
+            if attempts == 1 {
+                assert_eq!(
+                    result
+                        .as_ref()
+                        .err()
+                        .unwrap()
+                        .downcast_ref::<RequestDeadlineExpired>()
+                        .unwrap()
+                        .deadline,
+                    deadline
+                );
+            }
+            drop(control);
+            Ok((deadline, result))
+        })
+        .unwrap();
+        assert_eq!(response, b"recovered");
+        assert_eq!(attempts, 2);
+        // An already-expired operation must not hide the same connection's exhausted total budget.
+        let total_deadline = boot_time_ms().unwrap() + 1000;
+        let control = prepare(total_deadline).unwrap();
+        std::thread::sleep(Duration::from_millis(
+            total_deadline.saturating_sub(boot_time_ms().unwrap()) + 1,
+        ));
+        let mut calls = 0;
+        let failure = retry_expired_exchange(|| {
+            calls += 1;
+            Ok((
+                total_deadline,
+                control.exchange(b"deadline recovery", total_deadline),
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(failure.downcast_ref::<RequestDeadlineExpired>().is_none());
+        assert_eq!(
+            failure.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        drop(control);
+        server.join().unwrap();
+    });
+}
+
+#[test]
 fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one_route() {
     let mut f = Fixture::new();
     let (prefetch, anchor) = prefetch_packet(&mut f);

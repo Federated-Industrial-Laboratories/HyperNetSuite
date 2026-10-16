@@ -76,6 +76,13 @@ Domain request preparation obtains a fresh clock observation after persisting th
 exact request and before issuing its challenge. An unavailable observation refuses
 issuance while preserving the pending request for exact recovery.
 
+If an authority request's own deadline expires before local acceptance, the client
+can recover once on a newly prepared connection with a fresh challenge for the
+same signed intent. Current permission is required again; the previous challenge,
+operation expiry and stream lifetime are not extended. A second expiry stops the
+command with its request retained. See
+[expired domain requests](AuthorityInspection.md#expired-domain-requests).
+
 If checkpoint compaction overtakes a returned authority result, selected read-only
 Page queries can request a fresh evaluation of the same signed intent. This applies
 only to Page context, read, catalogue, local-search lease and content-placement

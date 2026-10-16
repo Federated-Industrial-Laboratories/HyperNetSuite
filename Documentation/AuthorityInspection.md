@@ -123,6 +123,22 @@ Exact inspection refuses a stale governance cache. Use the explicit certified
 refresh below to obtain current records. This is a local operator interface;
 it supplies no online reader fallback or complete authority deployment manager.
 
+## Expired domain requests
+
+Domain commands and policy discovery can recover once when their own authority
+request deadline expires before local acceptance. The client closes the old
+connection, discards its challenge and prepares a new connection and history.
+It then issues a fresh five-second challenge for the exact retained signed intent.
+The requester sequence, acknowledgement, expectations, parameters and operation
+expiry remain unchanged. Each challenge keeps its own original deadline.
+
+The authority reconciles the same operation and requires current permission before
+returning its result. A second expiry leaves the request pending for explicit
+recovery. Refusals, invalid proofs, cancellation, idle timeout and connection or stream
+lifetime expiry reported by the transport do not trigger this recovery. A route
+limit takes precedence when the transport also observes request expiry. Local acceptance and effect publication are
+outside the automatic retry; a completed or uncertain local effect is never repeated.
+
 ## Refresh current governance
 
 `initialise` writes the verified bootstrap records to the private

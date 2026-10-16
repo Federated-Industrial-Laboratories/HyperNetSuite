@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Private authority transport preserves socket ownership, peer identity and one monotonic deadline.
-use crate::{authority_challenge::boot_time_ms, authority_files as files, trust_wire as wire};
+use crate::{
+    authority_challenge::boot_time_ms, authority_files as files,
+    route_connector::OperationDeadlineExpired, trust_wire as wire,
+};
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     ffi::{CString, OsStr},
@@ -12,10 +15,40 @@ use std::{
     },
     path::Path,
 };
+#[derive(Debug)]
+pub(crate) struct RequestDeadlineExpired {
+    pub(crate) deadline: u64,
+}
+impl std::fmt::Display for RequestDeadlineExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("original inspection deadline expired")
+    }
+}
+impl std::error::Error for RequestDeadlineExpired {}
+
+/// Only an expired exchange may start one separately prepared attempt. Acceptance is outside this boundary.
+pub(crate) fn retry_expired_exchange<T>(
+    mut attempt: impl FnMut() -> Result<(u64, Result<T>)>,
+) -> Result<T> {
+    let (deadline, result) = attempt()?;
+    match result {
+        Err(error)
+            if error
+                .downcast_ref::<RequestDeadlineExpired>()
+                .is_some_and(|expired| expired.deadline == deadline) =>
+        {
+            attempt()?.1
+        }
+        result => result,
+    }
+}
+
 pub fn remaining(deadline: u64) -> Result<u64> {
     crate::private_route_client::check_cancelled()?;
     let now = boot_time_ms()?;
-    ensure!(now < deadline, "original inspection deadline expired");
+    if now >= deadline {
+        return Err(RequestDeadlineExpired { deadline }.into());
+    }
     Ok(deadline - now)
 }
 enum Endpoint {
@@ -146,27 +179,47 @@ impl LocalControl {
         deadline: u64,
         maximum: usize,
     ) -> Result<Vec<u8>> {
-        remaining(deadline)?;
         let result = match &self.endpoint {
-            Endpoint::Local(local) => local.exchange_limit(request, deadline, maximum),
+            Endpoint::Local(local) => {
+                remaining(deadline)?;
+                local.exchange_limit(request, deadline, maximum)
+            }
             Endpoint::Relay(route) => route.exchange(request, deadline, maximum),
         };
-        result.with_context(|| {
-            let operation = wire::decode(request).ok().and_then(|value| {
-                let fields = value.array(5).ok()?;
-                if fields[0].uint().ok()? != 41 || fields[1].uint().ok()? != 1 {
-                    return None;
+        result
+            .map_err(|error| {
+                let expired = error.chain().find_map(|cause| {
+                    cause
+                        .downcast_ref::<OperationDeadlineExpired>()
+                        .or_else(|| {
+                            cause
+                                .downcast_ref::<std::io::Error>()?
+                                .get_ref()?
+                                .downcast_ref::<OperationDeadlineExpired>()
+                        })
+                });
+                if expired.is_some_and(|expired| expired.deadline == deadline) {
+                    error.context(RequestDeadlineExpired { deadline })
+                } else {
+                    error
                 }
-                fields[3].uint().ok()
-            });
-            match operation {
-                Some(0) => "private authority InitialSubmit failed",
-                Some(1) => "private authority ResultPoll failed",
-                Some(3) => "private authority Ancestry failed",
-                Some(4) => "private authority Checkpoint failed",
-                _ => "private application exchange failed",
-            }
-        })
+            })
+            .with_context(|| {
+                let operation = wire::decode(request).ok().and_then(|value| {
+                    let fields = value.array(5).ok()?;
+                    if fields[0].uint().ok()? != 41 || fields[1].uint().ok()? != 1 {
+                        return None;
+                    }
+                    fields[3].uint().ok()
+                });
+                match operation {
+                    Some(0) => "private authority InitialSubmit failed",
+                    Some(1) => "private authority ResultPoll failed",
+                    Some(3) => "private authority Ancestry failed",
+                    Some(4) => "private authority Checkpoint failed",
+                    _ => "private application exchange failed",
+                }
+            })
     }
 }
 struct OwnedControl {
