@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Interrupted multi-record Page publication retains the original request and exact source identity.
-use super::super::tests::{Fixture, certified_request};
+use super::super::tests::{Fixture, certified_request, voters};
 use super::*;
 use crate::{
     authority_domains::page::{self, Command as PageCommand, objects::Author},
     authority_objects::Resolved,
 };
+use ed25519_dalek::Signer;
 
 fn current_clocks() -> (ClockHealth, ClockHealth) {
     let boot = boot_time_ms().unwrap();
@@ -685,10 +686,41 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
         );
         let packet = wire::decode(&packet).unwrap();
         let fields = packet.array(10).unwrap();
+        // The generic certificate fixture knows only challenge expiry. A domain
+        // evaluation must also clip it to the actual publication/placement/grant bound.
+        let envelope = wire::decode(fields[7].bytes().unwrap()).unwrap();
+        let mut executed = wire::decode(envelope.array(4).unwrap()[2].bytes().unwrap())
+            .unwrap()
+            .array(23)
+            .unwrap()
+            .to_vec();
+        let expiry = executed[19].uint().unwrap().min(decision.expires_ms);
+        assert!(at + crate::authority_governance::UNCERTAINTY_MS < expiry);
+        assert!(
+            Challenge::from_signed(&p.challenge)
+                .unwrap()
+                .completion_within_interval(at, expiry)
+        );
+        executed[19] = V::Uint(expiry);
+        let payload = wire::encode(&a(executed)).unwrap();
+        let signatures = voters()[..3]
+            .iter()
+            .map(|key| {
+                let public = key.verifying_key().to_bytes();
+                a(vec![
+                    b(&public),
+                    b(&key
+                        .sign(&wire::signature_message(&payload, &public))
+                        .to_bytes()),
+                ])
+            })
+            .collect();
+        let certificate =
+            wire::encode(&a(vec![V::Uint(0), V::Uint(1), b(&payload), a(signatures)])).unwrap();
         (
             CertifiedReply {
                 node: node.clone(),
-                certificate: fields[7].bytes().unwrap().to_vec(),
+                certificate,
                 result: fields[8].bytes().unwrap().to_vec(),
             },
             AncestryEvidence::direct(vec![node]),
