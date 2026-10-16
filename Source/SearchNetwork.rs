@@ -288,21 +288,7 @@ fn current_view_at(
     result: &ResultState,
     now: crate::authority_challenge::Observation,
 ) -> Result<bool> {
-    if result.prefix != *store.prefix()
-        || now.boot_ms >= result.deadline_boot_ms
-        || now
-            .wall_ms
-            .checked_add(crate::authority_challenge::DELTA_MS)
-            .is_none_or(|upper| upper >= result.expires_at_ms)
-    {
-        return Ok(false);
-    }
-    let versions = result.value.array(5)?[3]
-        .list(64)?
-        .iter()
-        .map(domain::version)
-        .collect::<Result<Vec<_>>>()?;
-    Ok(domain::result::minimum(&versions, store.generations()).is_ok())
+    media_client::current_view_at(store, result, now)
 }
 #[cfg(test)]
 pub(crate) fn current_view_for_test(

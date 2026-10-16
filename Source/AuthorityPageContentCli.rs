@@ -200,7 +200,7 @@ pub(super) fn job(
                 Resolved::default(),
             )?;
         }
-        job_with_metadata(c, grant, placement, transport, path, effect, upload)
+        job_with_metadata(c, grant, placement, transport, path, effect, upload, None)
     })
 }
 #[allow(clippy::too_many_arguments)]
@@ -212,6 +212,7 @@ fn job_with_metadata(
     path: &Path,
     effect: Effect,
     upload: Option<&[u8]>,
+    view: Option<&ResultState>,
 ) -> Result<Vec<u8>> {
     // Cancellation or any failure drops the checked-out connection, including errors before I/O.
     let mut pool = std::mem::take(&mut c.content);
@@ -231,7 +232,7 @@ fn job_with_metadata(
             upload,
         )?;
         progress.begin_repair(c.store.resume_ordinary()?.is_some())?;
-        transfer_progress(c, grant, transport, path, &mut progress, &mut pool)?;
+        transfer_progress(c, grant, transport, path, &mut progress, &mut pool, view)?;
         Ok(progress.bytes)
     })();
     if result.is_ok() {
@@ -246,6 +247,7 @@ fn transfer_progress(
     path: &Path,
     progress: &mut Progress,
     pool: &mut crate::private_route_client::ContentPool,
+    mut view: Option<&ResultState>,
 ) -> Result<()> {
     let placement = progress.placement_ref.clone();
     let effect = progress.effect;
@@ -255,13 +257,16 @@ fn transfer_progress(
         if complete && c.store.resume_ordinary()?.is_none() {
             break;
         }
-        client::ensure(
+        client::ensure_content_read(
             &c.bootstrap,
             &mut c.store,
             &c.socket,
             &c.key,
             &mut c.session,
             || c.clock.health(),
+            view.take()
+                .filter(|_| effect == Effect::Read)
+                .map(|view| (view, &placement, &progress.host)),
         )?;
         let pending = client::pending(&c.store)?;
         let reconcile = pending.is_some();

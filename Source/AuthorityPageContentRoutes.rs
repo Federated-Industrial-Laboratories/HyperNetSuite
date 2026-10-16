@@ -176,7 +176,7 @@ pub(crate) fn fetch_view_source(
                 "Page view omits its current content host"
             );
         }
-        fetch_source_with_metadata(c, grant, placement, Effect::Read, None)
+        fetch_source_with_metadata(c, grant, placement, Effect::Read, None, Some(view))
     })
 }
 pub(crate) fn fetch_source(
@@ -209,7 +209,7 @@ pub(crate) fn fetch_source_from(
                 Resolved::default(),
             )?;
         }
-        fetch_source_with_metadata(c, grant, placement, effect, selected_host)
+        fetch_source_with_metadata(c, grant, placement, effect, selected_host, None)
     })
 }
 fn fetch_source_with_metadata(
@@ -218,6 +218,7 @@ fn fetch_source_with_metadata(
     placement: &VersionRef,
     effect: Effect,
     selected_host: Option<&VersionRef>,
+    view: Option<&ResultState>,
 ) -> Result<Vec<u8>> {
     let cache = c.cache()?;
     let record = cache.state.record(159, placement.id)?;
@@ -259,6 +260,7 @@ fn fetch_source_with_metadata(
         &path,
         effect,
         None,
+        view,
     )
 }
 

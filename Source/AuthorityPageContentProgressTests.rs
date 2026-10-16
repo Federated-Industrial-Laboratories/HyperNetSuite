@@ -192,6 +192,7 @@ fn progress_contract(effect: content::Effect) {
             &root,
             &mut job,
             &mut Default::default(),
+            None,
         )
         .unwrap_err();
         assert_eq!(
@@ -239,6 +240,7 @@ fn progress_contract(effect: content::Effect) {
             &root,
             &mut job,
             &mut Default::default(),
+            None,
         )
         .unwrap();
         assert_eq!(job.bytes, bytes);

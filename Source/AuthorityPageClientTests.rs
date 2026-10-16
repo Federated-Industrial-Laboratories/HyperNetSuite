@@ -640,18 +640,6 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
     let (bootstrap, mut authority, records, grant, placement, source) =
         page::tests::view_tests::consumer_fixture();
     let mut f = Fixture::with_bootstrap(bootstrap, crate::authority_deployment_tests::key(5), 6000);
-    let clocks = |wall| {
-        let boot = boot_time_ms().unwrap();
-        let delta = crate::authority_challenge::DELTA_MS + 1;
-        (
-            ClockHealth::new(wall - delta, boot, boot + 30000, 100)
-                .unwrap()
-                .frozen(),
-            ClockHealth::new(wall, boot + delta, boot + 30000, 100)
-                .unwrap()
-                .frozen(),
-        )
-    };
     let request = |command: PageCommand| Request {
         command: command.into(),
         grant: Some(grant.clone()),
@@ -730,8 +718,24 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
     // The normal fresh challenge, independent domain proof verification, durable
     // floor and cache publication produce the result consumed by the reader.
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
-    // Sample each challenge after durable fixture preparation, preserving its full original budget.
-    (f.issued, f.current) = clocks(6000);
+    // Anchor after durable setup, then advance one virtual clock across this recipient session.
+    let boot = boot_time_ms().unwrap();
+    let delta = crate::authority_challenge::DELTA_MS + 1;
+    let advance = |health: ClockHealth| {
+        let last = health.observe().unwrap();
+        ClockHealth::new(
+            last.wall_ms + delta,
+            last.boot_ms + delta,
+            boot + 30000,
+            100,
+        )
+        .unwrap()
+        .frozen()
+    };
+    f.issued = ClockHealth::new(6000 - delta, boot, boot + 30000, 100)
+        .unwrap()
+        .frozen();
+    f.current = advance(f.issued);
     let prepared = Prepared::new(
         &f.bootstrap,
         request(PageCommand::View { page: [71; 16] }),
@@ -743,7 +747,7 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
     )
     .unwrap();
     let (reply, evidence, _) = certify(&prepared, &authority, 6000, f.store.prefix());
-    let view = prepared
+    let mut view = prepared
         .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
             Ok(f.current)
         })
@@ -764,6 +768,12 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
         socket: f.directory.0.join("UnavailableAuthority.sock"),
         content: Default::default(),
     };
+    crate::authority_pages::content_cli::view_tests::policy_view(
+        &mut client,
+        &placement,
+        &mut view,
+        f.current,
+    );
     crate::authority_pages::content_cli::view_tests::consume(
         &mut client,
         &grant,
@@ -774,9 +784,9 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
     f.bootstrap = client.bootstrap;
     f.store = client.store;
     f.session = client.session;
-    let wall = f.current.observe().unwrap().wall_ms + crate::authority_challenge::DELTA_MS + 1;
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
-    (f.issued, f.current) = clocks(wall);
+    f.issued = f.current;
+    f.current = advance(f.issued);
     let prepared = Prepared::new(
         &f.bootstrap,
         request(PageCommand::Content(page::content::Command::Withdraw {
@@ -789,6 +799,37 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
         f.issued,
     )
     .unwrap();
+    let host = page::content::Placement::parse(
+        &view.cache.state.record(159, placement.id).unwrap().payload,
+    )
+    .unwrap()
+    .hosts[0]
+        .clone();
+    assert!(
+        !crate::authority_inspection::page_media_client::current_read_view(
+            &f.bootstrap,
+            &f.store,
+            &view,
+            &placement,
+            &host,
+            || panic!("pending recovery must not request a new clock observation"),
+        )
+        .unwrap()
+    );
+    crate::authority_inspection::page_media_client::ensure_content_read(
+        &f.bootstrap,
+        &mut f.store,
+        &f.directory.0.join("UnavailableAuthority.sock"),
+        &f.signer,
+        &mut f.session,
+        || panic!("the exact pending operation must follow its existing recovery path"),
+        Some((&view, &placement, &host)),
+    )
+    .unwrap();
+    assert_eq!(
+        f.store.resume_ordinary().unwrap().unwrap().signed(),
+        prepared.intent
+    );
     let (reply, evidence, next) = certify(
         &prepared,
         &authority,
@@ -812,9 +853,30 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
             .iter()
             .any(|r| r.kind == page::content::TOMBSTONE_KIND)
     );
+    let now = f.current.observe().unwrap();
+    assert!(now.boot_ms < view.deadline_boot_ms);
+    assert!(now.wall_ms + crate::authority_challenge::DELTA_MS < view.expires_at_ms);
     assert!(
-        !crate::search::current_view_for_test(&f.store, &view, f.current.observe().unwrap())
-            .unwrap(),
+        !crate::search::current_view_for_test(&f.store, &view, now).unwrap(),
         "an earlier catalogue cannot omit a newly retained content withdrawal"
+    );
+    let authority = f.directory.0.join("UnavailableAuthority.sock");
+    assert!(
+        crate::authority_inspection::page_media_client::ensure_content_read(
+            &f.bootstrap,
+            &mut f.store,
+            &authority,
+            &f.signer,
+            &mut f.session,
+            || Ok(f.current),
+            Some((&view, &placement, &host)),
+        )
+        .is_err()
+    );
+    let pending = f.store.resume_ordinary().unwrap().unwrap();
+    assert_eq!(
+        Intent::from_signed(pending.signed()).unwrap().action,
+        "AuthorityPolicyContext",
+        "an advanced floor must take normal discovery before another Content effect"
     );
 }

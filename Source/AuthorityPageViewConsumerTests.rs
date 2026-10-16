@@ -3,6 +3,86 @@
 use super::*;
 use crate::authority_deployment_tests as deployment;
 
+pub(crate) fn policy_view(
+    c: &mut Client,
+    placement: &VersionRef,
+    view: &mut ResultState,
+    health: crate::authority_challenge::ClockHealth,
+) {
+    let value =
+        content::Placement::parse(&view.cache.state.record(159, placement.id).unwrap().payload)
+            .unwrap();
+    let host = value.hosts[0].clone();
+    let now = health.observe().unwrap();
+    let current = |c: &Client,
+                   view: &ResultState,
+                   placement: &VersionRef,
+                   host: &VersionRef,
+                   now: crate::authority_challenge::Observation| {
+        client::current_read_view(&c.bootstrap, &c.store, view, placement, host, || Ok(now))
+            .unwrap()
+    };
+    assert!(current(c, view, placement, &host, now));
+    // The real first-read preparation succeeds without an authority socket. A
+    // redundant discovery would retain another intent and then fail to connect.
+    client::ensure_content_read(
+        &c.bootstrap,
+        &mut c.store,
+        &c.socket,
+        &c.key,
+        &mut c.session,
+        || Ok(health),
+        Some((view, placement, &host)),
+    )
+    .unwrap();
+    assert!(c.store.resume_ordinary().unwrap().is_none());
+    let mut expired = now;
+    expired.boot_ms = view.deadline_boot_ms;
+    assert!(!current(c, view, placement, &host, expired));
+    expired = now;
+    expired.wall_ms = view.expires_at_ms - crate::authority_challenge::DELTA_MS;
+    assert!(!current(c, view, placement, &host, expired));
+    let mut changed_host = host.clone();
+    changed_host.generation += 1;
+    assert!(!current(c, view, placement, &changed_host, now));
+    let mut changed_placement = placement.clone();
+    changed_placement.digest[0] ^= 1;
+    assert!(!current(c, view, &changed_placement, &host, now));
+    let original = view.value.clone();
+    for kind in [100, 114] {
+        let mut fields = original.array(5).unwrap().to_vec();
+        let versions = fields[3].list(64).unwrap();
+        assert!(
+            versions
+                .iter()
+                .any(|v| domain::version(v).unwrap().kind == kind)
+        );
+        fields[3] = V::Array(
+            versions
+                .iter()
+                .filter(|v| domain::version(v).unwrap().kind != kind)
+                .cloned()
+                .collect(),
+        );
+        view.value = V::Array(fields);
+        assert!(!current(c, view, placement, &host, now));
+        let mut fields = original.array(5).unwrap().to_vec();
+        let mut versions = fields[3].list(64).unwrap().to_vec();
+        let selected = versions
+            .iter_mut()
+            .find(|v| domain::version(v).unwrap().kind == kind)
+            .unwrap();
+        let mut changed = domain::version(selected).unwrap();
+        changed.generation += 1;
+        *selected = crate::authority_membership::reference(&changed);
+        fields[3] = V::Array(versions);
+        view.value = V::Array(fields);
+        assert!(!current(c, view, placement, &host, now));
+    }
+    view.value = original;
+    assert!(current(c, view, placement, &host, now));
+}
+
 pub(crate) fn consume(
     c: &mut Client,
     grant: &VersionRef,

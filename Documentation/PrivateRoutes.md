@@ -58,7 +58,7 @@ of current authority.
 
 A Page client can also retain one Content connection across chunks and Page
 navigation. Each request reloads the selected route and client profile, verifies
-the exact retained host binding, and performs fresh policy, effect and hosting
+the exact retained host binding, and performs current policy, effect and hosting
 checks. Only a verified receipt, current StreamStatus and durable progress return
 the connection to that client. Failed requests, verification, progress or
 authority refusals discard it. Dropping an unfinished exchange also closes it.
@@ -69,6 +69,19 @@ Fresh short routes keep their original bounds. The client sends no idle traffic;
 Core renews permission only for pending application work or writes. Separate
 CLI processes, network search and protocol 3 media do not share this Content
 connection.
+
+The first Content read immediately following a complete accepted PageView can
+use that result's policy evidence instead of a second policy discovery. This
+requires an ordinary stream ready for a new request, no pending recovery, the
+exact retained authority prefix, all retained version floors and the original
+monotonic and conservative absolute expiry. The result must contain the exact
+accepted network and linked recovery policies, current native publication,
+placement and selected consenting host. An expired or changed view follows
+normal policy discovery; malformed evidence fails closed. The option is consumed
+once, even if it cannot be used. Later chunks and other effects discover policy
+normally. Content preparation still pins the current policy, the host independently
+authorises each effect, and receipt, StreamStatus and durable progress checks
+remain mandatory. Network search and protocol 3 media do not use this shortcut.
 
 `RouteReady` reports remaining total transport time after admission. Suite
 applies it from readiness receipt while retaining the original connection limit.
