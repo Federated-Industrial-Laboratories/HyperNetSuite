@@ -154,27 +154,30 @@ pub(crate) fn fetch_view_source(
     placement: &VersionRef,
     view: &ResultState,
 ) -> Result<Vec<u8>> {
-    let fields = view.value.array(5)?;
-    let versions = fields[3]
-        .list(64)?
-        .iter()
-        .map(domain::version)
-        .collect::<Result<Vec<_>>>()?;
-    ensure!(
-        view.prefix == *c.store.prefix()
-            && fields[4].array(4)?[0].text()? == "PageView"
-            && versions.contains(placement)
-            && view.cache.state.record(159, placement.id)?.reference == *placement,
-        "source fetch requires its exact current certified Page view"
-    );
-    let value = content::Placement::parse(&view.cache.state.record(159, placement.id)?.payload)?;
-    for host in &value.hosts {
+    c.content_operation(|c| {
+        let fields = view.value.array(5)?;
+        let versions = fields[3]
+            .list(64)?
+            .iter()
+            .map(domain::version)
+            .collect::<Result<Vec<_>>>()?;
         ensure!(
-            versions.contains(&view.cache.state.record(147, host.id)?.reference),
-            "Page view omits its current content host"
+            view.prefix == *c.store.prefix()
+                && fields[4].array(4)?[0].text()? == "PageView"
+                && versions.contains(placement)
+                && view.cache.state.record(159, placement.id)?.reference == *placement,
+            "source fetch requires its exact current certified Page view"
         );
-    }
-    fetch_source_with_metadata(c, grant, placement, Effect::Read, None)
+        let value =
+            content::Placement::parse(&view.cache.state.record(159, placement.id)?.payload)?;
+        for host in &value.hosts {
+            ensure!(
+                versions.contains(&view.cache.state.record(147, host.id)?.reference),
+                "Page view omits its current content host"
+            );
+        }
+        fetch_source_with_metadata(c, grant, placement, Effect::Read, None)
+    })
 }
 pub(crate) fn fetch_source(
     c: &mut Client,
@@ -191,21 +194,23 @@ pub(crate) fn fetch_source_from(
     effect: Effect,
     selected_host: Option<&VersionRef>,
 ) -> Result<Vec<u8>> {
-    ensure!(
-        matches!(effect, Effect::Read | Effect::Inspect),
-        "source fetch requires read or inspection"
-    );
-    resume_metadata(c, placement)?;
-    if c.store.resume_ordinary()?.is_none() {
-        c.action(
-            Action::Content(content::Command::Get {
-                placement: placement.clone(),
-            }),
-            Some(grant.clone()),
-            Resolved::default(),
-        )?;
-    }
-    fetch_source_with_metadata(c, grant, placement, effect, selected_host)
+    c.content_operation(|c| {
+        ensure!(
+            matches!(effect, Effect::Read | Effect::Inspect),
+            "source fetch requires read or inspection"
+        );
+        resume_metadata(c, placement)?;
+        if c.store.resume_ordinary()?.is_none() {
+            c.action(
+                Action::Content(content::Command::Get {
+                    placement: placement.clone(),
+                }),
+                Some(grant.clone()),
+                Resolved::default(),
+            )?;
+        }
+        fetch_source_with_metadata(c, grant, placement, effect, selected_host)
+    })
 }
 fn fetch_source_with_metadata(
     c: &mut Client,
@@ -290,63 +295,65 @@ fn write_source(
     bytes: &[u8],
     effect: Effect,
 ) -> Result<()> {
-    resume_metadata(c, placement)?;
-    let cache = c.cache()?;
-    let record = cache.state.record(159, placement.id)?;
-    ensure!(record.reference == *placement, "upload placement changed");
-    let selected = content::Placement::parse(&record.payload)?;
-    ensure!(
-        bytes.len() as u64 == selected.bytes && digest(bytes) == selected.digest,
-        "upload bytes differ from exact placement"
-    );
-    let directory = files::private_directory(&c.directory)?;
-    let routes = load(&directory)?;
-    let pending_host = client::pending(&c.store)?
-        .map(|request| match request.command() {
-            Action::Content(content::Command::Authorise {
-                placement: p,
-                host,
-                effect: e,
-                ..
-            }) if p == placement && *e == effect => Ok(host.clone()),
-            _ => anyhow::bail!("another content effect is pending"),
-        })
-        .transpose()?;
-    let mut hosts = selected
-        .hosts
-        .iter()
-        .filter(|host| routes.iter().any(|r| r.host == hex::encode(host.id)))
-        .cloned()
-        .collect::<Vec<_>>();
-    ensure!(
-        hosts.len() as u64 >= selected.copies
-            && pending_host.as_ref().is_none_or(|h| hosts.contains(h)),
-        "explicit content routes cannot meet the required copies"
-    );
-    hosts.sort_by_key(|host| pending_host.as_ref() != Some(host));
-    for host in hosts {
-        let transport = routes
+    c.content_operation(|c| {
+        resume_metadata(c, placement)?;
+        let cache = c.cache()?;
+        let record = cache.state.record(159, placement.id)?;
+        ensure!(record.reference == *placement, "upload placement changed");
+        let selected = content::Placement::parse(&record.payload)?;
+        ensure!(
+            bytes.len() as u64 == selected.bytes && digest(bytes) == selected.digest,
+            "upload bytes differ from exact placement"
+        );
+        let directory = files::private_directory(&c.directory)?;
+        let routes = load(&directory)?;
+        let pending_host = client::pending(&c.store)?
+            .map(|request| match request.command() {
+                Action::Content(content::Command::Authorise {
+                    placement: p,
+                    host,
+                    effect: e,
+                    ..
+                }) if p == placement && *e == effect => Ok(host.clone()),
+                _ => anyhow::bail!("another content effect is pending"),
+            })
+            .transpose()?;
+        let mut hosts = selected
+            .hosts
             .iter()
-            .find(|r| r.host == hex::encode(host.id))
-            .context("content route disappeared")?
-            .transport()?;
-        let path = c.directory.join(format!(
-            "Content{}Host{}Effect{}",
-            hex::encode(placement.digest),
-            hex::encode(host.id),
-            effect.code()
-        ));
-        job(
-            c,
-            grant.clone(),
-            placement.clone(),
-            &transport,
-            &path,
-            effect,
-            Some(bytes),
-        )?;
-    }
-    Ok(())
+            .filter(|host| routes.iter().any(|r| r.host == hex::encode(host.id)))
+            .cloned()
+            .collect::<Vec<_>>();
+        ensure!(
+            hosts.len() as u64 >= selected.copies
+                && pending_host.as_ref().is_none_or(|h| hosts.contains(h)),
+            "explicit content routes cannot meet the required copies"
+        );
+        hosts.sort_by_key(|host| pending_host.as_ref() != Some(host));
+        for host in hosts {
+            let transport = routes
+                .iter()
+                .find(|r| r.host == hex::encode(host.id))
+                .context("content route disappeared")?
+                .transport()?;
+            let path = c.directory.join(format!(
+                "Content{}Host{}Effect{}",
+                hex::encode(placement.digest),
+                hex::encode(host.id),
+                effect.code()
+            ));
+            job(
+                c,
+                grant.clone(),
+                placement.clone(),
+                &transport,
+                &path,
+                effect,
+                Some(bytes),
+            )?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]

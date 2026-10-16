@@ -189,17 +189,19 @@ pub(super) fn job(
     effect: Effect,
     upload: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    resume_metadata(c, &placement)?;
-    if c.store.resume_ordinary()?.is_none() {
-        c.action(
-            Action::Content(content::Command::Get {
-                placement: placement.clone(),
-            }),
-            Some(grant.clone()),
-            Resolved::default(),
-        )?;
-    }
-    job_with_metadata(c, grant, placement, transport, path, effect, upload)
+    c.content_operation(|c| {
+        resume_metadata(c, &placement)?;
+        if c.store.resume_ordinary()?.is_none() {
+            c.action(
+                Action::Content(content::Command::Get {
+                    placement: placement.clone(),
+                }),
+                Some(grant.clone()),
+                Resolved::default(),
+            )?;
+        }
+        job_with_metadata(c, grant, placement, transport, path, effect, upload)
+    })
 }
 #[allow(clippy::too_many_arguments)]
 fn job_with_metadata(
@@ -211,23 +213,31 @@ fn job_with_metadata(
     effect: Effect,
     upload: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let scope = c.bootstrap.descriptor().scope();
-    let mut progress = Progress::open(
-        path,
-        (
-            scope.network,
-            scope.incarnation,
-            c.key.verifying_key().to_bytes(),
-        ),
-        &c.cache()?.state,
-        &placement,
-        transport.host()?,
-        effect,
-        upload,
-    )?;
-    progress.begin_repair(c.store.resume_ordinary()?.is_some())?;
-    transfer_progress(c, grant, transport, path, &mut progress)?;
-    Ok(progress.bytes)
+    // Cancellation or any failure drops the checked-out connection, including errors before I/O.
+    let mut pool = std::mem::take(&mut c.content);
+    let result = (|| {
+        let scope = c.bootstrap.descriptor().scope();
+        let mut progress = Progress::open(
+            path,
+            (
+                scope.network,
+                scope.incarnation,
+                c.key.verifying_key().to_bytes(),
+            ),
+            &c.cache()?.state,
+            &placement,
+            transport.host()?,
+            effect,
+            upload,
+        )?;
+        progress.begin_repair(c.store.resume_ordinary()?.is_some())?;
+        transfer_progress(c, grant, transport, path, &mut progress, &mut pool)?;
+        Ok(progress.bytes)
+    })();
+    if result.is_ok() {
+        c.content = pool;
+    }
+    result
 }
 fn transfer_progress(
     c: &mut Client,
@@ -235,6 +245,7 @@ fn transfer_progress(
     transport: &Transport,
     path: &Path,
     progress: &mut Progress,
+    pool: &mut crate::private_route_client::ContentPool,
 ) -> Result<()> {
     let placement = progress.placement_ref.clone();
     let effect = progress.effect;
@@ -324,17 +335,20 @@ fn transfer_progress(
             c.clock.health()?,
         )?;
         let packet = client::packet(&request, &payload, reconcile)?;
-        let receipt = transport.exchange(&packet, path)?;
-        client::complete(
-            &c.bootstrap,
-            &receipt,
-            &c.socket,
-            &c.key,
-            &mut c.store,
-            &mut c.session,
-            || c.clock.health(),
-            |request, response| progress.apply(request, response),
-        )?;
+        transport
+            .exchange_content(&packet, path, pool)?
+            .complete(pool, |receipt| {
+                client::complete(
+                    &c.bootstrap,
+                    receipt,
+                    &c.socket,
+                    &c.key,
+                    &mut c.store,
+                    &mut c.session,
+                    || c.clock.health(),
+                    |request, response| progress.apply(request, response),
+                )
+            })?;
     }
     if matches!(effect, Effect::Upload | Effect::Repair) {
         let receipt = progress

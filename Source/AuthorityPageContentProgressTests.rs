@@ -35,6 +35,7 @@ fn disconnected_client(root: &Path) -> Client {
             path: root.join("UnavailableClock.json"),
         },
         socket: root.join("UnavailableAuthority.sock"),
+        content: Default::default(),
     }
 }
 
@@ -184,8 +185,15 @@ fn progress_contract(effect: content::Effect) {
     let mut client = (effect == content::Effect::Read).then(|| disconnected_client(&root));
     let transport = Transport::socket(host.id, root.join("UnavailableContent.sock"));
     if let Some(client) = &mut client {
-        let error = transfer_progress(client, placement.grant.clone(), &transport, &root, &mut job)
-            .unwrap_err();
+        let error = transfer_progress(
+            client,
+            placement.grant.clone(),
+            &transport,
+            &root,
+            &mut job,
+            &mut Default::default(),
+        )
+        .unwrap_err();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::NotFound,
@@ -224,7 +232,15 @@ fn progress_contract(effect: content::Effect) {
     assert_eq!(job.offset, bytes.len() as u64);
     assert!(job.receipt.is_some());
     if let Some(client) = &mut client {
-        transfer_progress(client, placement.grant.clone(), &transport, &root, &mut job).unwrap();
+        transfer_progress(
+            client,
+            placement.grant.clone(),
+            &transport,
+            &root,
+            &mut job,
+            &mut Default::default(),
+        )
+        .unwrap();
         assert_eq!(job.bytes, bytes);
         assert!(client.store.resume_ordinary().unwrap().is_none());
     }

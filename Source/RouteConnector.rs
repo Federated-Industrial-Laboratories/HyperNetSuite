@@ -34,17 +34,26 @@ struct Socket<'a> {
     cancelled: &'a (dyn Fn() -> bool + Sync),
 }
 impl Socket<'_> {
+    #[cfg(test)]
     fn reusable(&self) -> bool {
-        boot_time_ms().is_ok_and(|now| self.reusable_at(now))
+        self.reusable_for(crate::authority_challenge::MAXIMUM_DURATION_MS)
     }
+    fn reusable_for(&self, duration: u64) -> bool {
+        boot_time_ms().is_ok_and(|now| self.reusable_for_at(now, duration))
+    }
+    #[cfg(test)]
     fn reusable_at(&self, now: u64) -> bool {
+        self.reusable_for_at(now, crate::authority_challenge::MAXIMUM_DURATION_MS)
+    }
+    fn reusable_for_at(&self, now: u64, duration: u64) -> bool {
         !(self.cancelled)()
             && self.operation_deadline.is_none()
             && self.remaining_bytes > 0
             && now < self.idle_deadline
-            && self.deadline.checked_sub(now).is_some_and(|remaining| {
-                remaining >= crate::authority_challenge::MAXIMUM_DURATION_MS
-            })
+            && self
+                .deadline
+                .checked_sub(now)
+                .is_some_and(|remaining| remaining >= duration)
     }
     fn admitted(&mut self, limits: crate::route_profile::Limits, received_at: u64) {
         // Readiness reports remaining admission time; the caller's original deadline stays fixed.
@@ -421,9 +430,12 @@ impl<'a> Session<'a> {
     }
     /// Preparation may reuse the remaining admission, never renew its budgets.
     pub(crate) fn reusable(&self) -> bool {
+        self.reusable_for(crate::authority_challenge::MAXIMUM_DURATION_MS)
+    }
+    pub(crate) fn reusable_for(&self, duration: u64) -> bool {
         self.stream
             .as_ref()
-            .is_some_and(|stream| stream.sock.sock.reusable())
+            .is_some_and(|stream| stream.sock.sock.reusable_for(duration))
     }
 }
 #[allow(dead_code)] // Shared one-shot entry point used by Core transport qualification.
@@ -538,6 +550,41 @@ mod tests {
         stream.operation_deadline = None;
         stream.remaining_bytes = 0;
         assert!(!stream.reusable());
+    }
+    #[test]
+    fn content_reuse_reserves_effect_and_completion_within_original_admission() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        let now = boot_time_ms().unwrap();
+        let duration = crate::authority_challenge::MAXIMUM_DURATION_MS * 2;
+        let mut stream = Socket {
+            socket,
+            deadline: now + duration,
+            operation_deadline: None,
+            idle_deadline: now + duration * 2,
+            idle_ms: duration * 2,
+            remaining_bytes: 12345,
+            cancelled: &|| false,
+        };
+        assert!(stream.reusable_for_at(now, duration));
+        assert!(!stream.reusable_for_at(now + 1, duration));
+        assert!(stream.reusable_at(now + 1));
+        stream.remaining_bytes = 0;
+        assert!(!stream.reusable_for_at(now, duration));
+        stream.remaining_bytes = 12345;
+        stream.idle_deadline = now;
+        assert!(!stream.reusable_for_at(now, duration));
+        stream.idle_deadline = now + duration * 2;
+        stream.cancelled = &|| true;
+        assert!(!stream.reusable_for_at(now, duration));
+        stream.cancelled = &|| false;
+        stream.deadline = now + 1000;
+        assert!(stream.check().is_ok());
+        assert!(!stream.reusable_for_at(now, duration));
+        assert_eq!(stream.remaining_bytes, 12345);
+        assert_eq!(stream.idle_deadline, now + duration * 2);
+        assert_eq!(stream.deadline, now + 1000);
     }
     #[test]
     fn private_route_readiness_cannot_extend_original_socket_limits() {

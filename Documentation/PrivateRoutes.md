@@ -56,6 +56,20 @@ Leaving the selected network closes its retained connection. Route observations
 are published once per connection and remain diagnostic information, not proof
 of current authority.
 
+A Page client can also retain one Content connection across chunks and Page
+navigation. Each request reloads the selected route and client profile, verifies
+the exact retained host binding, and performs fresh policy, effect and hosting
+checks. Only a verified receipt, current StreamStatus and durable progress return
+the connection to that client. Failed requests, verification, progress or
+authority refusals discard it. Dropping an unfinished exchange also closes it.
+The connection keeps its original total, idle and byte limits. Reuse requires
+room for the existing effect plus completion allowance; an insufficient or
+changed route receives one fresh admission before sending application data.
+Fresh short routes keep their original bounds. The client sends no idle traffic;
+Core renews permission only for pending application work or writes. Separate
+CLI processes, network search and protocol 3 media do not share this Content
+connection.
+
 `RouteReady` reports remaining total transport time after admission. Suite
 applies it from readiness receipt while retaining the original connection limit.
 Byte admission is shared across frames; progress never restarts total duration.

@@ -639,6 +639,18 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
     let (bootstrap, mut authority, records, grant, placement, source) =
         page::tests::view_tests::consumer_fixture();
     let mut f = Fixture::with_bootstrap(bootstrap, crate::authority_deployment_tests::key(5), 6000);
+    let clocks = |wall| {
+        let boot = boot_time_ms().unwrap();
+        let delta = crate::authority_challenge::DELTA_MS + 1;
+        (
+            ClockHealth::new(wall - delta, boot, boot + 30000, 100)
+                .unwrap()
+                .frozen(),
+            ClockHealth::new(wall, boot + delta, boot + 30000, 100)
+                .unwrap()
+                .frozen(),
+        )
+    };
     let request = |command: PageCommand| Request {
         command: command.into(),
         grant: Some(grant.clone()),
@@ -685,10 +697,13 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
     };
     // The normal fresh challenge, independent domain proof verification, durable
     // floor and cache publication produce the result consumed by the reader.
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    // Sample each challenge after durable fixture preparation, preserving its full original budget.
+    (f.issued, f.current) = clocks(6000);
     let prepared = Prepared::new(
         &f.bootstrap,
         request(PageCommand::View { page: [71; 16] }),
-        Cache::load(&f.bootstrap, &f.store).unwrap(),
+        cache,
         &f.signer,
         &mut f.store,
         &mut f.session,
@@ -715,6 +730,7 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
             path: f.directory.0.join("UnavailableClock.json"),
         },
         socket: f.directory.0.join("UnavailableAuthority.sock"),
+        content: Default::default(),
     };
     crate::authority_pages::content_cli::view_tests::consume(
         &mut client,
@@ -726,22 +742,15 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
     f.bootstrap = client.bootstrap;
     f.store = client.store;
     f.session = client.session;
-    let issue = f.current.observe().unwrap();
-    f.issued = f.current;
-    f.current = ClockHealth::new(
-        issue.wall_ms + 251,
-        issue.boot_ms + 251,
-        issue.boot_ms + 10000,
-        100,
-    )
-    .unwrap()
-    .frozen();
+    let wall = f.current.observe().unwrap().wall_ms + crate::authority_challenge::DELTA_MS + 1;
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    (f.issued, f.current) = clocks(wall);
     let prepared = Prepared::new(
         &f.bootstrap,
         request(PageCommand::Content(page::content::Command::Withdraw {
             placement: placement.clone(),
         })),
-        Cache::load(&f.bootstrap, &f.store).unwrap(),
+        cache,
         &f.signer,
         &mut f.store,
         &mut f.session,

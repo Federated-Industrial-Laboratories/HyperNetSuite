@@ -73,6 +73,48 @@ impl AuthorityPool {
         self.route = None;
     }
 }
+/// One Content connection belongs to its Page client and never supplies cached permission.
+#[derive(Default)]
+pub(crate) struct ContentPool {
+    route: Option<Prepared>,
+}
+impl ContentPool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.route.is_none()
+    }
+    pub(crate) fn clear(&mut self) {
+        self.route = None;
+    }
+    pub(crate) fn prepare(
+        &mut self,
+        path: &Path,
+        duration: u64,
+        check: impl FnOnce(&Endpoint) -> Result<()>,
+    ) -> Result<Prepared> {
+        // Take first: even a failed profile or subject check invalidates the retained connection.
+        let retained = self.route.take();
+        check_cancelled()?;
+        let endpoint = Endpoint::load(path)?;
+        ensure!(
+            endpoint.route.protocol == 2,
+            "Content requires its selected Content route"
+        );
+        check(&endpoint)?;
+        if let Some(route) = retained
+            && route.matches(&endpoint)?
+            && route.session.borrow().reusable_for(duration)
+        {
+            return Ok(route);
+        }
+        endpoint.prepare()
+    }
+    pub(crate) fn retain(&mut self, route: Prepared, duration: u64) {
+        if !cancelled() && route.session.borrow().reusable_for(duration) {
+            self.route = Some(route);
+        }
+    }
+}
 struct Selected {
     profile: PathBuf,
     authority: Arc<Mutex<AuthorityPool>>,

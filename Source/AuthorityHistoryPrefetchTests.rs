@@ -8,6 +8,9 @@ use rustls::{
 };
 use std::{net::TcpListener, process::Command};
 
+#[path = "AuthorityPageContentTransportTests.rs"]
+mod content_transport_tests;
+
 fn prefetch_packet(f: &mut Fixture) -> (Vec<u8>, Vec<u8>) {
     let pending = f
         .context
