@@ -13,6 +13,8 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+#[path = "NetworkDiagnostics.rs"]
+mod diagnostics;
 #[path = "PrivateRouteOnboarding.rs"]
 mod onboarding;
 #[path = "AuthorityRecoveryCli.rs"]
@@ -24,6 +26,8 @@ const PROFILE_LIMIT: usize = 600000;
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Preview or explicitly export bounded, redacted local diagnostics without a connection.
+    Diagnose(diagnostics::Options),
     /// Observe local clock health without changing time or trusting a remote host boot.
     Clock {
         #[command(subcommand)]
@@ -329,6 +333,7 @@ pub(crate) fn route_subject(
 }
 pub fn run(command: Command) -> Result<()> {
     match command {
+        Command::Diagnose(options) => diagnostics::run(options),
         Command::Recovery { command } => recovery::run(command),
         Command::Clock { command } => crate::private_route_clock::run(command),
         Command::Draft {

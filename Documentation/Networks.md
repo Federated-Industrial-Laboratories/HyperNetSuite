@@ -65,6 +65,11 @@ is not membership, current authority, service registration or an observed route.
 Expired profiles remain inspectable and removable; they cannot be prepared again
 as current bootstrap material.
 
+For a shareable local summary, use `network diagnose --profile Client/Profile.json`.
+It previews fixed redacted fields without identities, paths, logs or a connection.
+An explicit export requires that preview's exact digest and a new private file.
+[Diagnostics](Diagnostics.md) describes its bounded inputs, fields and freshness limits.
+
 The `trust.genesisGovernance` object exposes the complete public authority being
 accepted. Its network policy includes named resource limits, the manual-review
 default, the exact recovery-policy reference and every root-authority reference.

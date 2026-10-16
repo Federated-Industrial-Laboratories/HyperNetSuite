@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+sys.dont_write_bytecode = True
+import PackageTrust
 
 PRODUCT = 'HyperNetSuite'
 VERSION = '0.7.5'
@@ -157,8 +159,8 @@ def public_key(path):
     return fields[0] + ' ' + fields[1]
 
 
-def verify_signature(archive, signature, key_path, temporary, ssh_keygen):
-    key = public_key(key_path)
+def verify_signature(archive, signature, key_path, temporary, ssh_keygen, key_value=None):
+    key = key_value if key_value is not None else public_key(key_path)
     signers = temporary / 'AllowedSigners'
     signers.write_text(f'{PRINCIPAL} namespaces="{NAMESPACE}" {key}\n')
     signers.chmod(0o600)
@@ -303,26 +305,32 @@ def rename_new(source, destination):
         os.close(fd)
 
 
-def prepared(args, temporary):
+def prepared(args, temporary, key=None):
     archive = temporary / 'Archive.tar'
     signature = temporary / 'Archive.tar.sig'
     copy_private(args.archive, archive, MAX_ARCHIVE)
     copy_private(args.signature, signature, 32768)
-    verify_signature(archive, signature, args.public_key, temporary, args.ssh_keygen)
+    verify_signature(archive, signature, args.public_key, temporary, args.ssh_keygen, key)
     return archive, signature
 
 
 def install(args):
+    with PackageTrust.Admission(sys.modules[__name__], args) as admission:
+        return install_current(args, admission)
+
+
+def install_current(args, admission):
     prefix = private_parent(args.prefix)
     require(not prefix.exists() and not prefix.is_symlink(), 'Installation prefix already exists')
     require(os.geteuid() != 0, 'Install for the dedicated rootless operator, not root')
     with tempfile.TemporaryDirectory(prefix='HyperNetSuiteInstall', dir=prefix.parent) as temporary_name:
         temporary = Path(temporary_name)
-        archive, signature = prepared(args, temporary)
+        archive, signature = prepared(args, temporary, admission.trust['publicKey'])
         staged = temporary / 'Install'
         staged.mkdir(mode=0o700)
         manifest, original = parse_archive(archive, staged)
         runtime_matches(manifest)
+        admission.check(archive, manifest, original, temporary)
         (staged / 'Manifest.json').write_bytes(original)
         (staged / 'Manifest.json').chmod(0o600)
         (staged / 'Package').mkdir(mode=0o700)
@@ -343,6 +351,8 @@ def install(args):
             os.fsync(fd)
         finally:
             os.close(fd)
+        admission.commit()
+        admission.fresh()
         rename_new(staged, prefix)
     return {'product': PRODUCT, 'version': manifest['version'], 'prefix': str(prefix), 'binarySha256': manifest['metadata']['binarySha256']}
 
@@ -452,6 +462,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ssh-keygen', default='/usr/bin/ssh-keygen', help='Independently trusted OpenSSH verifier')
     commands = parser.add_subparsers(dest='command', required=True)
+    PackageTrust.arguments(commands)
     package = commands.add_parser('Create')
     package.add_argument('--binary', required=True, help='Locked release binary for the native architecture')
     package.add_argument('--output', required=True)
@@ -463,12 +474,17 @@ def main():
         option.add_argument('--public-key', required=True)
         if command == 'Install':
             option.add_argument('--prefix', required=True)
+            option.add_argument('--trust-directory', required=True)
+            option.add_argument('--policy', required=True)
+            option.add_argument('--policy-signature', required=True)
     for command in ('VerifyInstalled', 'Remove'):
         option = commands.add_parser(command)
         option.add_argument('--prefix', required=True)
         option.add_argument('--public-key', required=True)
     args = parser.parse_args()
-    if args.command == 'Create':
+    if args.command in PackageTrust.COMMANDS:
+        result = PackageTrust.trust_command(sys.modules[__name__], args)
+    elif args.command == 'Create':
         result = create(args)
     elif args.command == 'Install':
         result = install(args)

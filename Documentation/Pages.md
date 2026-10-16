@@ -222,3 +222,8 @@ ReviewInspect and ReviewDecide. They only narrow the application's live capabili
 they cannot create a grant or bypass withdrawal. The signed policy binds exact
 namespaces, optional Pages, expiry and review policy. Page author and reviewer
 statements identify the exact policy version they used.
+
+Named cold archives and current-authority restore are available through
+[`authority-inspection backup`](Backups.md). They include associated canonical
+bitmap and vector assets. `pages media repair` restores exact currently published
+media with the author's current authority; it does not approve changed bytes.

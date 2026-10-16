@@ -58,6 +58,7 @@ impl Progress {
                 0 => page::MediaEffect::Upload,
                 1 => page::MediaEffect::Read,
                 2 => page::MediaEffect::Inspect,
+                3 => page::MediaEffect::Repair,
                 _ => anyhow::bail!("invalid media progress effect"),
             };
             Self {
@@ -121,7 +122,7 @@ impl Progress {
             certified.reference == p.asset_ref && certified.payload == p.asset.value(),
             "media progress differs from the retained certified asset"
         );
-        if effect == page::MediaEffect::Upload {
+        if effect.writes() {
             ensure!(
                 upload == Some(p.bytes.as_slice()),
                 "media upload differs from its retained bytes"
@@ -155,6 +156,18 @@ impl Progress {
             p.save()?;
         }
         Ok(p)
+    }
+    pub fn begin_repair(&mut self, pending_effect: bool) -> Result<()> {
+        if self.effect == page::MediaEffect::Repair
+            && self.offset == self.asset.manifest.bytes
+            && !pending_effect
+        {
+            // A completed local attempt must obtain another current host exchange.
+            self.offset = 0;
+            self.receipt = None;
+            self.save()?;
+        }
+        Ok(())
     }
     fn save(&mut self) -> Result<()> {
         let r = crate::authority_membership::reference;
@@ -209,7 +222,7 @@ impl Progress {
         );
         let value = wire::decode(response)?;
         let f = value.array(11)?;
-        if self.effect != page::MediaEffect::Upload {
+        if !self.effect.writes() {
             let payload = f[9].bytes()?;
             ensure!(
                 payload.len() as u64 == *bytes,

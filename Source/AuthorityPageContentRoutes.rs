@@ -225,6 +225,33 @@ pub(crate) fn upload_source(
     placement: &VersionRef,
     bytes: &[u8],
 ) -> Result<()> {
+    write_source(c, grant, placement, bytes, Effect::Upload)
+}
+pub(crate) fn repair_source(
+    c: &mut Client,
+    grant: &VersionRef,
+    placement: &VersionRef,
+    bytes: &[u8],
+) -> Result<()> {
+    write_source(c, grant, placement, bytes, Effect::Repair)
+}
+pub(crate) fn selected_transport(c: &Client, hosts: &[VersionRef]) -> Result<Transport> {
+    let directory = files::private_directory(&c.directory)?;
+    let routes = load(&directory)?;
+    for host in hosts {
+        if let Some(route) = routes.iter().find(|r| r.host == hex::encode(host.id)) {
+            return route.transport();
+        }
+    }
+    anyhow::bail!("no explicit transport retained for the selected content or media hosts")
+}
+fn write_source(
+    c: &mut Client,
+    grant: &VersionRef,
+    placement: &VersionRef,
+    bytes: &[u8],
+    effect: Effect,
+) -> Result<()> {
     resume_metadata(c, placement)?;
     let cache = c.cache()?;
     let record = cache.state.record(159, placement.id)?;
@@ -241,9 +268,9 @@ pub(crate) fn upload_source(
             Action::Content(content::Command::Authorise {
                 placement: p,
                 host,
-                effect: Effect::Upload,
+                effect: e,
                 ..
-            }) if p == placement => Ok(host.clone()),
+            }) if p == placement && *e == effect => Ok(host.clone()),
             _ => anyhow::bail!("another content effect is pending"),
         })
         .transpose()?;
@@ -269,7 +296,7 @@ pub(crate) fn upload_source(
             "Content{}Host{}Effect{}",
             hex::encode(placement.digest),
             hex::encode(host.id),
-            Effect::Upload.code()
+            effect.code()
         ));
         job(
             c,
@@ -277,7 +304,7 @@ pub(crate) fn upload_source(
             placement.clone(),
             &transport,
             &path,
-            Effect::Upload,
+            effect,
             Some(bytes),
         )?;
     }

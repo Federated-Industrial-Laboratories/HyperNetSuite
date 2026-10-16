@@ -414,3 +414,53 @@ silently broadens discovery or starts a service.
 device admission, independently pinned contacts and frozen publication rosters.
 Follow [Recipients](Recipients.md) for its custody, possession and revocation
 boundaries. Ordinary membership and InspectAudit do not confer decryption access.
+
+## Operational deployment successors
+
+An initial manifest has `generation: 1`, `previousProfile: null` and
+`previousConsent: null`. Every stopped successor names the exact preceding desired
+profile117 and host consent105 hashes and advances by one. The immutable identity
+and rights include all keys, routes, endpoint pins, resources, storage and placement.
+Only finite validity, host boot, explicit Session/Managed policy and reviewed
+software/image identity can change. A successor preserves existing domain profile
+approvals and their independently shorter validity limits.
+
+Installed `runtime transition` and `runtime services transition` retain public signed
+offers under their deployment's `OperationalOffers` directory. After the initial
+admission, use the normal requester and independently authenticated clock inputs:
+
+```sh
+HyperNetSuite authority-inspection deployments synchronise \
+  --bootstrap /Private/Bootstrap.cbor --bootstrap-digest PIN \
+  --directory /Private/RegistrarFloor --key /Private/Registrar.json \
+  --socket /Private/Control.sock --clock-witness /Private/Clock/ClockHealth.cbor \
+  --clock-monitor-key MONITOR_PUBLIC_KEY --host-kernel-boot CURRENT_HOST_BOOT \
+  --grant REGISTER_SERVICE_GRANT \
+  --offers-directory /Private/Service/OperationalOffers
+```
+
+Synchronisation submits each missing signed successor as a separate bounded durable
+transaction. It retains exact requester retry state across interruptions. The
+client can reconstruct an interrupted cache publication only when all three
+derived successor references match its retained certified floors. Repeating the
+command completes that same pending registration even when those floors already
+contain its new generation; it does not submit another mutation or reset trust. The
+currently certified manager capability, unchanged identity mapping, exact prior
+105/117/129 references, and terminal withdrawal are checked for every generation.
+Initial admission still requires all service, transport and monitor possession
+proofs. Operational successors reuse those already admitted identities and do not
+require new private signatures from the monitor or peers.
+
+If an intermediate already expired, the signed request explicitly marks historical
+admission. This is permitted only for a successor that is already expired; future
+or initial consent cannot use it. It records continuity without enabling service.
+Only fresh final admission can authorize serving, and local recovery markers still
+require a fresh reviewed stopped successor. Network results never clear withdrawal
+or revive expired local consent. Retain the offer directory until all intended
+registrars and replica recovery steps have consumed its history.
+
+Local terminal withdrawal assertions bind the deployment's stable operational
+resource digest, operator and network identity. Their resource binding survives
+renewed validity, host boot and software changes, so the operator can publish a
+local veto even if a successor is incomplete or not yet registered. A changed
+permanent identity, endpoint, permission or resource allocation does not match.

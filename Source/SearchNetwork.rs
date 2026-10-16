@@ -168,9 +168,14 @@ pub fn native(
         } else {
             (placement.bytes - offset).min(32768)
         };
-        media_client::ensure(&mut c.store, &c.socket, &c.key, &mut c.session, || {
-            c.clock.health()
-        })
+        media_client::ensure(
+            &c.bootstrap,
+            &mut c.store,
+            &c.socket,
+            &c.key,
+            &mut c.session,
+            || c.clock.health(),
+        )
         .context("native search stream preparation failed")?;
         let reconcile = media_client::pending(&c.store)?.is_some();
         let request = media_client::prepare(

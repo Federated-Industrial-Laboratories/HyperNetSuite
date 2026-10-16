@@ -10,7 +10,9 @@ use progress::Progress;
 #[path = "AuthorityPageContentRoutes.rs"]
 mod routes;
 pub(crate) use routes::search_route;
-pub(crate) use routes::{fetch_source, fetch_source_from, upload_source};
+pub(crate) use routes::{
+    fetch_source, fetch_source_from, repair_source, selected_transport, upload_source,
+};
 #[derive(Args)]
 pub struct PlacementRef {
     #[arg(long)]
@@ -210,10 +212,16 @@ pub(super) fn job(
         effect,
         upload,
     )?;
+    progress.begin_repair(c.store.resume_ordinary()?.is_some())?;
     loop {
-        client::ensure(&mut c.store, &c.socket, &c.key, &mut c.session, || {
-            c.clock.health()
-        })?;
+        client::ensure(
+            &c.bootstrap,
+            &mut c.store,
+            &c.socket,
+            &c.key,
+            &mut c.session,
+            || c.clock.health(),
+        )?;
         let pending = client::pending(&c.store)?;
         let reconcile = pending.is_some();
         let command = if let Some(pending) = pending {

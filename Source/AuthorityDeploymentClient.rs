@@ -25,6 +25,7 @@ pub enum Request {
     Register {
         grant: VersionRef,
         offer: Offer,
+        historical: bool,
     },
     Get {
         deployment: [u8; 32],
@@ -92,12 +93,17 @@ impl Request {
             Self::Context { grant, deployment } => {
                 p.extend([b(grant), b(deployment), point, minimum])
             }
-            Self::Register { grant, offer } => p.extend([
+            Self::Register {
+                grant,
+                offer,
+                historical,
+            } => p.extend([
                 version_value(grant),
                 b(&offer.manifest_bytes),
                 b(&offer.consent),
                 offer.possessions_value(),
                 snapshot,
+                V::Bool(*historical),
             ]),
             Self::Get { deployment, grant } => {
                 p.extend([b(deployment), grant.map_or(V::Null, |g| b(&g)), minimum])
@@ -128,12 +134,20 @@ impl Request {
                 },
             ) => *grant == g && *deployment == d,
             (
-                Self::Register { grant, offer },
+                Self::Register {
+                    grant,
+                    offer,
+                    historical,
+                },
                 Operation::Register {
-                    grant: g, offer: o, ..
+                    grant: g,
+                    offer: o,
+                    historical: h,
+                    ..
                 },
             ) => {
                 *grant == g
+                    && *historical == h
                     && offer.manifest_bytes == o.manifest_bytes
                     && offer.consent == o.consent
                     && offer.possessions == o.possessions
@@ -204,6 +218,12 @@ impl<'a> Prepared<'a> {
             "deployment bootstrap differs from retained floor"
         );
         store.require_requester(signer.verifying_key().to_bytes())?;
+        if !matches!(
+            request,
+            Request::Context { .. } | Request::Get { grant: None, .. } | Request::Withdraw { .. }
+        ) {
+            crate::authority_inspection::policy::require_accepted(bootstrap, store)?;
+        }
         if let Some(c) = context {
             c.current(store)?;
             ensure!(
@@ -216,7 +236,14 @@ impl<'a> Prepared<'a> {
                 || context.is_some(),
             "deployment mutation requires certified current context"
         );
-        let selected = context.map_or_else(Vec::new, |c| c.entries.clone());
+        let mut selected = context.map_or_else(Vec::new, |c| c.entries.clone());
+        if request.grant().is_some() {
+            crate::authority_inspection::policy::refresh_cached_policies(
+                bootstrap,
+                store,
+                &mut selected,
+            )?;
+        }
         let source = merged(bootstrap, &selected)?;
         let descriptor = store.descriptor().clone();
         let scope = descriptor.scope();
@@ -226,6 +253,16 @@ impl<'a> Prepared<'a> {
             pending.signed().to_vec()
         } else {
             let selected_refs = versions(scope, &selected)?;
+            let predecessors = if matches!(&request, Request::Register { offer, .. } if offer.manifest.generation > 1)
+            {
+                selected_refs
+                    .iter()
+                    .filter(|r| matches!(r.kind, 105 | 117 | 129) && r.id == request.resource())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let mut probe = Intent {
                 network: scope.network,
                 incarnation: scope.incarnation,
@@ -240,8 +277,8 @@ impl<'a> Prepared<'a> {
                 profile_generation: 0,
                 minimum_policy_epoch: scope.epoch,
                 minimum_policy_height: store.prefix().height(),
-                expected: Vec::new(),
-                parameters: request.parameters(store, &[], &selected_refs)?,
+                expected: predecessors.clone(),
+                parameters: request.parameters(store, &predecessors, &selected_refs)?,
                 digest: [1; 32],
             };
             if request.mutation() {
@@ -268,7 +305,10 @@ impl<'a> Prepared<'a> {
                     .dependencies
                     .into_iter()
                     .filter(|r| !created.contains(r))
+                    .chain(predecessors)
                     .collect();
+                probe.expected.sort_by_key(VersionRef::index);
+                probe.expected.dedup();
                 probe.parameters = request.parameters(store, &probe.expected, &selected_refs)?;
             }
             prepare_ordinary(
@@ -414,10 +454,21 @@ impl<'a> Prepared<'a> {
                 let cached = created_refs.iter().all(|r| old.contains(r));
                 replay = executed.height > creation_height;
                 if replay && !cached {
+                    let indexes = created_refs
+                        .iter()
+                        .map(VersionRef::index)
+                        .collect::<Vec<_>>();
+                    source.retain(|old| {
+                        records::reference(old).map_or(true, |r| !indexes.contains(&r.index()))
+                    });
                     source.extend(created.clone());
                     membership::sort_records(&mut source)?;
                 }
                 for bytes in created {
+                    let reference = records::reference(&bytes)?;
+                    cache.entries.retain(|old| {
+                        records::reference(old).map_or(true, |r| r.index() != reference.index())
+                    });
                     if !cache.entries.contains(&bytes) {
                         cache.entries.push(bytes);
                     }
@@ -487,7 +538,25 @@ impl<'a> Prepared<'a> {
             result.disposition == Disposition::Permit,
             "deployment operations have no pending result"
         );
-        ActionValidation::new(self.candidate(intent, result, executed)?.versions)
+        let candidate = self.candidate(intent, result, executed)?;
+        let mut updates = Vec::new();
+        if matches!(&self.request, Request::Register { offer, .. } if offer.manifest.generation > 1)
+        {
+            for kind in [105, 117, 129] {
+                let old = intent
+                    .expected
+                    .iter()
+                    .find(|r| r.index() == (kind, intent.resource))
+                    .context("Validated deployment predecessor is absent")?;
+                let new = candidate
+                    .versions
+                    .iter()
+                    .find(|r| r.index() == old.index())
+                    .context("Validated deployment successor is absent")?;
+                updates.push((old.clone(), new.clone()));
+            }
+        }
+        ActionValidation::mutation(candidate.versions, updates)
     }
     fn finish(
         self,
@@ -537,10 +606,18 @@ impl<'a> Prepared<'a> {
             store.generations(),
             self.request.grant().is_some(),
         )?;
+        let check_policy = self.request.grant().is_some();
+        if matches!(self.request, Request::Register { .. }) {
+            crate::authority_inspection::policy::require_records_accepted(
+                self.bootstrap,
+                store,
+                &candidate.cache.entries,
+            )?;
+        }
         let prefix = verified.point().prefix().clone();
         let permit = store.accept(verified, session, clock()?, 0)?;
         remaining(self.deadline)?;
-        permit.perform(
+        let result = permit.perform(
             store,
             session,
             clock()?,
@@ -553,6 +630,13 @@ impl<'a> Prepared<'a> {
                 Ok(())
             },
             |_, store| {
+                if check_policy {
+                    crate::authority_inspection::policy::retain_records(
+                        self.bootstrap,
+                        store,
+                        &candidate.cache.entries,
+                    )?;
+                }
                 candidate.cache.save(store)?;
                 if matches!(self.request, Request::Register { .. }) {
                     let mut state = candidate.cache.clone();
@@ -571,7 +655,11 @@ impl<'a> Prepared<'a> {
                     cache: candidate.cache,
                 })
             },
-        )
+        )?;
+        if check_policy {
+            crate::authority_inspection::policy::require_accepted(self.bootstrap, store)?;
+        }
+        Ok(result)
     }
 }
 #[allow(
@@ -588,7 +676,17 @@ pub fn local(
     session: &mut Session,
     mut clock: impl FnMut() -> Result<ClockHealth>,
 ) -> Result<ResultState> {
-    // Mutations use the immediately preceding certified snapshot without ordering stream status between them.
+    if context.is_none()
+        && matches!(
+            request,
+            Request::Context { .. } | Request::Get { grant: Some(_), .. }
+        )
+    {
+        crate::authority_inspection::policy::refresh_before_request(
+            bootstrap, path, signer, store, session, &mut clock,
+        )?;
+    }
+    // Mutations use the immediately preceding certified snapshot without ordering discovery between them.
     if !request.mutation() && context.is_none() {
         stream_client::ensure_stream(
             &store.descriptor().clone(),

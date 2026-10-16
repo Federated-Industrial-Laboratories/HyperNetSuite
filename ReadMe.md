@@ -38,6 +38,8 @@ errors. [Search](Documentation/Search.md) provides explicit selected-network
 queries and encrypted retained local catalogues, including sealed publications. [Media](Documentation/Media.md) adds isolated bitmap/SVG import, explicit
 asset inspection, terminal graphics and bounded client-side motion.
 [Examples](Examples/ReadMe.md) contains fictional businesses for local preview.
+[Content backups](Documentation/Backups.md) preserves approved Pages and their assets
+in explicitly consented encrypted archives, with current-authority restore.
 
 [Private Mail](Documentation/PrivateMail.md) provides owner-controlled addresses,
 scoped devices, explicit encrypted storage and protected history transfer.
@@ -53,9 +55,12 @@ author sharing and destination review without merging network membership.
 explicit data disclosure. Model recommendations remain inert data.
 [Authority inspection](Documentation/AuthorityInspection.md),
 [tier and grant administration](Documentation/Administration.md),
+[network policies](Documentation/NetworkPolicies.md),
 [committee replacement](Documentation/AuthorityEpochs.md) and
 [network recovery](Documentation/NetworkRecovery.md) describe installed control
 workflows and independently authenticated recovery.
+[Recipient identities](Documentation/Recipients.md) covers local keys, verified
+contacts and threshold recovery when a recipient root is lost.
 
 [Security](Documentation/Security.md), [supported platforms](Documentation/SupportedPlatforms.md)
 and [runtime contracts](Documentation/Contracts.md) state the boundaries and

@@ -3,7 +3,7 @@
 use super::*;
 use ed25519_dalek::Signer;
 
-fn package(tag: &str, bootstrap: &Verified, fields: Vec<V>) -> Result<Vec<u8>> {
+pub(super) fn package(tag: &str, bootstrap: &Verified, fields: Vec<V>) -> Result<Vec<u8>> {
     let s = bootstrap.descriptor().scope();
     let mut out = vec![
         V::Uint(200),
@@ -15,7 +15,12 @@ fn package(tag: &str, bootstrap: &Verified, fields: Vec<V>) -> Result<Vec<u8>> {
     out.extend(fields);
     wire::encode(&a(out))
 }
-fn unpack(bytes: &[u8], tag: &str, bootstrap: &Verified, length: usize) -> Result<Vec<V>> {
+pub(super) fn unpack(
+    bytes: &[u8],
+    tag: &str,
+    bootstrap: &Verified,
+    length: usize,
+) -> Result<Vec<V>> {
     let s = bootstrap.descriptor().scope();
     let value = wire::decode(bytes)?;
     let fields = value.array(length)?;
@@ -29,7 +34,7 @@ fn unpack(bytes: &[u8], tag: &str, bootstrap: &Verified, length: usize) -> Resul
     );
     Ok(fields.to_vec())
 }
-fn countersign(payload: &[u8], keys: &[&SigningKey]) -> Result<Vec<u8>> {
+pub(super) fn countersign(payload: &[u8], keys: &[&SigningKey]) -> Result<Vec<u8>> {
     let mut signatures = keys
         .iter()
         .map(|key| {

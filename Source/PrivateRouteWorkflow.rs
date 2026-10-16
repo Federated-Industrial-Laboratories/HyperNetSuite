@@ -45,7 +45,7 @@ impl SavedRoute {
         trust::hex32(&self.subject)
     }
 }
-fn inventory(directory: &Path) -> Result<Vec<SavedRoute>> {
+pub(super) fn inventory(directory: &Path) -> Result<Vec<SavedRoute>> {
     let path = directory.join("Routes.json");
     let bytes = files::read_single(&path, 65536, true)?;
     let routes: Vec<SavedRoute> = serde_json::from_slice(&bytes)?;

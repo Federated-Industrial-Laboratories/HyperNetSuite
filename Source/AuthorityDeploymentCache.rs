@@ -130,13 +130,51 @@ impl Cache {
             },
         };
         if let Some(pending) = store.resume_ordinary()? {
-            out.recover_withdrawal(&Intent::from_signed(pending.signed())?, store.generations())?;
+            let intent = Intent::from_signed(pending.signed())?;
+            out.recover_registration(&intent, store.generations())?;
+            out.recover_withdrawal(&intent, store.generations())?;
         }
         out.current(store)?;
         if grant.is_none() {
             out.provenance()?;
         }
         Ok(out)
+    }
+    fn recover_registration(&mut self, intent: &Intent, floor: &[VersionRef]) -> Result<()> {
+        if intent.action != "AuthorityDeploymentRegister" || intent.resource != self.deployment {
+            return Ok(());
+        }
+        let operation = Operation::parse(intent)?;
+        let Operation::Register { offer, grant, .. } = &operation else {
+            bail!("Pending deployment registration has another operation");
+        };
+        ensure!(
+            intent.network == self.scope.network
+                && intent.incarnation == self.scope.incarnation
+                && self.grant.is_none_or(|id| id == grant.id),
+            "Pending registration differs from cached deployment context"
+        );
+        let created = operation.derive(intent)?;
+        let references = created
+            .iter()
+            .map(|bytes| records::reference(bytes))
+            .collect::<Result<Vec<_>>>()?;
+        if !references.iter().all(|r| floor.contains(r)) {
+            return Ok(());
+        }
+        // Exact certified floors authenticate reconstruction after cache publication was interrupted.
+        // Neither an offline offer nor an uncommitted pending request can advance this cache.
+        for bytes in created {
+            let reference = records::reference(&bytes)?;
+            self.entries.retain(|old| {
+                records::reference(old).map_or(true, |r| r.index() != reference.index())
+            });
+            self.entries.push(bytes);
+        }
+        membership::sort_records(&mut self.entries)?;
+        self.manifest = Some(offer.manifest_bytes.clone());
+        self.consent = Some(offer.consent.clone());
+        Ok(())
     }
     pub(super) fn recover_withdrawal(
         &mut self,
@@ -253,10 +291,10 @@ impl Cache {
                 && f[4].fixed::<32>()? == self.scope.incarnation
                 && f[5].fixed::<32>()? == self.deployment
                 && f[6].fixed::<32>()? == manifest.operator
-                && f[7].fixed::<32>()? == registration.profile.digest
+                && f[7].fixed::<32>()? == manifest.operational_digest()?
                 && signatures.len() == 1
                 && signatures[0].0 == manifest.operator,
-            "local withdrawal receipt does not match registered operator and profile"
+            "local withdrawal receipt does not match registered operator and permanent resources"
         );
         let generation = f[8].uint()?;
         ensure!(

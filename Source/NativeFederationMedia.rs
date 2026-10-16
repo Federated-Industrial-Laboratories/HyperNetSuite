@@ -189,9 +189,14 @@ fn job(exchange: Exchange, effect: page::MediaEffect, expires: Option<u64>) -> R
         None,
     )?;
     loop {
-        client::ensure(&mut c.store, &c.socket, &c.key, &mut c.session, || {
-            c.clock.health()
-        })?;
+        client::ensure(
+            &c.bootstrap,
+            &mut c.store,
+            &c.socket,
+            &c.key,
+            &mut c.session,
+            || c.clock.health(),
+        )?;
         let pending = client::pending(&c.store)?;
         let reconcile = pending.is_some();
         let command = if let Some(pending) = pending {

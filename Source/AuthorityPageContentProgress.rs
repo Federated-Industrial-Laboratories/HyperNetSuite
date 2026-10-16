@@ -162,6 +162,19 @@ impl Progress {
         }
         Ok(p)
     }
+    pub fn begin_repair(&mut self, pending_effect: bool) -> Result<()> {
+        if self.effect == content::Effect::Repair
+            && self.offset == self.placement.bytes
+            && !pending_effect
+        {
+            // A past copy receipt cannot establish that this host still has the bytes.
+            // Preserve unfinished ranges until their exact request is acknowledged.
+            self.offset = 0;
+            self.receipt = None;
+            self.save()?;
+        }
+        Ok(())
+    }
     fn save(&mut self) -> Result<()> {
         let r = crate::authority_membership::reference;
         let b = |v: &[u8]| V::Bytes(v.to_vec());

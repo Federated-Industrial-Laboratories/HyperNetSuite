@@ -32,6 +32,14 @@ impl Client {
             &mut session,
             || clock.health(),
         )?;
+        crate::authority_inspection::policy::resume_pending_discovery(
+            &bootstrap,
+            socket,
+            &key,
+            &mut store,
+            &mut session,
+            || clock.health(),
+        )?;
         Ok(Self {
             directory: location.directory.clone(),
             bootstrap,

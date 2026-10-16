@@ -8,6 +8,7 @@ use crate::authority_domains::{
 use crate::authority_inspection::domain_client::{self, Cache};
 use crate::authority_membership::Reservations;
 pub fn ensure(
+    bootstrap: &Verified,
     store: &mut Store,
     authority: &Path,
     signer: &SigningKey,
@@ -15,7 +16,10 @@ pub fn ensure(
     mut clock: impl FnMut() -> Result<ClockHealth>,
 ) -> Result<()> {
     let descriptor = store.descriptor().clone();
-    stream_client::ensure_stream(&descriptor, authority, signer, store, session, &mut clock)
+    stream_client::ensure_stream(&descriptor, authority, signer, store, session, &mut clock)?;
+    crate::authority_inspection::policy::refresh_before_request(
+        bootstrap, authority, signer, store, session, &mut clock,
+    )
 }
 pub fn prepare(
     bootstrap: &Verified,
@@ -28,6 +32,7 @@ pub fn prepare(
         matches!(command, Command::Execute { .. }),
         "only a finite serving command can leave the participant"
     );
+    crate::authority_inspection::policy::require_accepted(bootstrap, store)?;
     store.require_requester(signer.verifying_key().to_bytes())?;
     if let Some(pending) = store.resume_ordinary()? {
         let request = Request::parse(pending.signed())?;
@@ -35,10 +40,18 @@ pub fn prepare(
             request.command().value() == command.value(),
             "another mail effect is pending; recover its exact operation first"
         );
+        crate::authority_inspection::policy::require_pending_policy(
+            bootstrap,
+            store,
+            request.intent(),
+        )?;
         return Ok(request);
     }
     let cache = Cache::load(bootstrap, store)?;
     let records = domain_client::merge(bootstrap, &cache.records)?;
+    let expected = vec![crate::authority_inspection::policy::current_reference(
+        bootstrap, store,
+    )?];
     let op = domain::Operation {
         grant: None,
         command: command.into(),
@@ -48,7 +61,7 @@ pub fn prepare(
                 V::Uint(store.prefix().height()),
                 b(store.prefix().policy_state()),
             ]),
-            a(vec![]),
+            a(expected.iter().map(version_value).collect()),
         ]))?,
     };
     let descriptor = store.descriptor().clone();
@@ -67,7 +80,7 @@ pub fn prepare(
         profile_generation: 0,
         minimum_policy_epoch: slot.minimum_policy_epoch(),
         minimum_policy_height: slot.minimum_policy_height(),
-        expected: vec![],
+        expected: expected.clone(),
         parameters: op.parameters()?,
         digest: [1; 32],
     };
@@ -92,7 +105,7 @@ pub fn prepare(
         "AuthorityDomain",
         probe.resource,
         0,
-        &[],
+        &expected,
         &probe.parameters,
     )?)
 }
@@ -151,7 +164,15 @@ pub fn complete<T>(
             report.result().code()
         );
     }
+    let result_value = wire::decode(&report.result().result.value)?;
+    let records = result_value.array(5)?[4].array(4)?[2]
+        .list(64)?
+        .iter()
+        .map(|v| Ok(v.bytes()?.to_vec()))
+        .collect::<Result<Vec<_>>>()?;
+    crate::authority_inspection::policy::require_records_accepted(bootstrap, store, &records)?;
     let result = apply(&request, report.response())?;
     store.record_mail(report)?;
+    crate::authority_inspection::policy::retain_records(bootstrap, store, &records)?;
     Ok(result)
 }

@@ -6,6 +6,7 @@ use crate::{
     authority_membership::Reservations,
 };
 
+use crate::authority_inspection::policy;
 const CACHE: &str = "DomainState.cbor";
 const CACHE_LIMIT: usize = crate::authority_capacity::MAX_STATE_BYTES;
 
@@ -81,9 +82,15 @@ impl Cache {
                 error.raw_os_error() == Some(libc::ENOENT),
                 "cannot inspect domain cache: {error}"
             );
+            let mut records = vec![];
+            crate::authority_inspection::policy::refresh_cached_policies(
+                bootstrap,
+                store,
+                &mut records,
+            )?;
             return Ok(Self {
                 state: State::empty(scope.network, scope.incarnation),
-                records: vec![],
+                records,
             });
         }
         let bytes = files::read_at(
@@ -113,6 +120,11 @@ impl Cache {
             }
             Err(error) => return Err(error),
         };
+        crate::authority_inspection::policy::refresh_cached_policies(
+            bootstrap,
+            store,
+            &mut result.records,
+        )?;
         crate::authority_inspection::tier::refresh_cached_tiers(
             bootstrap,
             store,
@@ -183,7 +195,9 @@ pub(crate) fn retain_media(
         &[],
     )?;
     minimum(&candidate.versions, store.generations())?;
+    policy::require_records_accepted(bootstrap, store, &candidate.records)?;
     store.retain_media_context(report)?;
+    policy::retain_records(bootstrap, store, &candidate.records)?;
     Cache {
         state: candidate.state,
         records: candidate.records,
@@ -253,6 +267,80 @@ fn evaluation_inputs(
 ) -> Result<crate::authority_objects::Resolved> {
     domains::result::inputs(command, state, objects)
 }
+pub(crate) fn restrictive(command: &Command) -> bool {
+    matches!(
+        command.name(),
+        "PageWithdraw"
+            | "PageHostWithdraw"
+            | "SealedPublicationWithdraw"
+            | "SealedIdentityRevoke"
+            | "BackupWithdraw"
+            | "BackupWithdrawDestination"
+            | "MailServiceWithdraw"
+            | "TransferServiceWithdraw"
+            | "TransferCancel"
+            | "SshServiceWithdraw"
+            | "SshRevoke"
+            | "RouteWithdraw"
+            | "FederationTrustWithdraw"
+            | "FederationWithdraw"
+            | "FederationBridgeWithdraw"
+            | "FederationPageWithdraw"
+    ) || matches!(
+        command,
+        Command::Page(domains::page::Command::Content(
+            domains::page::content::Command::Authorise {
+                effect: domains::page::content::Effect::Purge,
+                ..
+            }
+        ))
+    )
+}
+fn policy_exempt(request: &Request) -> bool {
+    if restrictive(&request.command) {
+        return true;
+    }
+    if request.grant.is_some() {
+        return false;
+    }
+    // These finite metadata commands independently prove existing ownership. They
+    // remain usable to inspect or withdraw resources after discretionary rights end.
+    matches!(
+        &request.command,
+        Command::Backup(
+            domains::backup::Command::Destination { .. }
+                | domains::backup::Command::Destinations { .. }
+                | domains::backup::Command::Get { .. }
+                | domains::backup::Command::List { .. }
+        ) | Command::Page(domains::page::Command::HostGet { .. })
+            | Command::Ssh(
+                domains::ssh::Command::Service { .. } | domains::ssh::Command::Grant { .. }
+            )
+            | Command::Transfer(
+                domains::transfer::Command::Service { .. } | domains::transfer::Command::Get { .. }
+            )
+            | Command::Mail(
+                domains::mail::Command::Service { .. }
+                    | domains::mail::Command::Get { source: None, .. }
+                    | domains::mail::Command::ClaimGet { .. }
+            )
+            | Command::Federation(
+                domains::federation::Command::TrustGet { .. }
+                    | domains::federation::Command::Get { .. }
+                    | domains::federation::Command::BridgeGet { .. }
+            )
+    )
+}
+fn signed_snapshot(command: &Command) -> bool {
+    match command {
+        Command::SealedIdentity(command) => command.mutation(),
+        Command::SealedPublication(
+            domains::sealed_publication::Command::Policy { .. }
+            | domains::sealed_publication::Command::Stage { .. },
+        ) => true,
+        _ => false,
+    }
+}
 fn refreshable_page_query(command: &Command) -> bool {
     use domains::page::{Command as Page, content::Command as Content};
     !command.mutation()
@@ -307,6 +395,9 @@ impl<'a> Prepared<'a> {
                 && bootstrap.descriptor().canonical() == store.initial_descriptor().canonical(),
             "domain bootstrap differs from retained floor"
         );
+        if !policy_exempt(&request) {
+            policy::require_accepted(bootstrap, store)?;
+        }
         store.require_requester(signer.verifying_key().to_bytes())?;
         ensure!(
             store.initial_descriptor().canonical() == bootstrap.descriptor().canonical(),
@@ -319,7 +410,11 @@ impl<'a> Prepared<'a> {
             .context("domain preflight clock invalid")?;
         let scope = descriptor.scope();
         let intent = if let Some(pending) = store.resume_ordinary()? {
-            request.pending(&Intent::from_signed(pending.signed())?)?;
+            let intent = Intent::from_signed(pending.signed())?;
+            request.pending(&intent)?;
+            if !policy_exempt(&request) {
+                policy::require_pending_policy(bootstrap, store, &intent)?;
+            }
             pending.signed().to_vec()
         } else {
             let source = merge(bootstrap, &cache.records)?;
@@ -360,6 +455,12 @@ impl<'a> Prepared<'a> {
                 );
                 probe.expected = d.dependencies;
                 probe.parameters = request.operation(store, &probe.expected)?.parameters()?;
+            } else if !policy_exempt(&request) {
+                probe.expected = vec![policy::current_reference(bootstrap, store)?];
+                probe.parameters = request.operation(store, &probe.expected)?.parameters()?;
+            }
+            if !policy_exempt(&request) {
+                policy::require_pending_policy(bootstrap, store, &probe)?;
             }
             prepare_ordinary(
                 &descriptor,
@@ -586,6 +687,9 @@ impl<'a> Prepared<'a> {
         }
         let candidate = candidate.context("permitted domain result lacks validated candidate")?;
         minimum(&candidate.versions, store.generations())?;
+        if !policy_exempt(&self.request) {
+            policy::require_records_accepted(self.bootstrap, store, &candidate.cache.records)?;
+        }
         let prefix = verified.point().prefix().clone();
         let evaluated_at_ms = verified.executed.evaluated_at_ms;
         let expires_at_ms = verified.executed.expires_at_ms;
@@ -622,6 +726,7 @@ impl<'a> Prepared<'a> {
                 },
                 |_, store| {
                     candidate.cache.save(store)?;
+                    policy::retain_records(self.bootstrap, store, &candidate.cache.records)?;
                     remaining(deadline)?;
                     Ok((
                         ResultState {
@@ -683,6 +788,11 @@ pub fn local_with_objects(
     );
     let descriptor = store.descriptor().clone();
     stream_client::ensure_stream(&descriptor, path, signer, store, session, &mut clock)?;
+    // These owner-signed records already bind a Context/Directory/Prepare reply.
+    // A discovery between that reply and submission would invalidate its exact pre-state.
+    if !policy_exempt(&request) && !signed_snapshot(&request.command) {
+        policy::refresh_before_request(bootstrap, path, signer, store, session, &mut clock)?;
+    }
     let cache = Cache::load(bootstrap, store)?;
     let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
     let mut prepared = Prepared::new_with_objects(

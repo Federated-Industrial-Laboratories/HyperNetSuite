@@ -208,7 +208,25 @@ Purge removes that host's ciphertext through its current tombstone authority.
 This interface uses manual review. No model receives sealed source automatically.
 Reviewer contact encryption currently requires a directly root-signed binding;
 the authority's delegated enrollment support does not imply local delegated
-contact acceptance. Backup destinations and public anonymous sealed audiences
-are not enabled. The shared proof bound can admit fewer recipients than the
-maximum wire roster; excessive dependency closure is refused, never truncated.
+contact acceptance. Public anonymous sealed audiences are not enabled. The shared
+proof bound can admit fewer recipients than the maximum wire roster; excessive
+dependency closure is refused, never truncated.
 All required control and content routes are explicitly selected local transports.
+
+## Cold content backups
+
+For [cold content backups](Backups.md), both the author's policy and the exact
+approved outer placement must permit the named backup destination. The destination
+must separately consent to the reviewer and opaque storage. The publisher may
+read or repair its exact currently published ciphertext using current Submit
+authority. This exposes no plaintext keys, adds no recipients and does not grant
+approval for changed bytes. Restore rechecks the current publication and every
+normal per-chunk placement/tombstone condition; archived search indexes and
+authority journals are never imported.
+
+An author names each permitted cold destination with `pages sealed policy
+--backup DESTINATION_ID`. Repeat the option for multiple distinct destinations;
+omitting it authorises no cold backup. Reviewer finalisation carries the exact
+author placement into its signed outer publication and fetches current destination
+consent before approval. A missing, withdrawn or incompatible opaque destination
+refuses finalisation.

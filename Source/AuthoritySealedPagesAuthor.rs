@@ -53,6 +53,7 @@ pub(super) fn run(command: Command) -> Result<()> {
             audience,
             hosts,
             volumes,
+            backups,
             copies,
             read_grant,
             output,
@@ -86,7 +87,7 @@ pub(super) fn run(command: Command) -> Result<()> {
             let placement = publication::Placement {
                 hosts: ids(&hosts)?,
                 volumes: ids(&volumes)?,
-                backups: vec![],
+                backups: ids(&backups)?,
                 copies,
             };
             publication::Placement::parse(&placement.value())?;

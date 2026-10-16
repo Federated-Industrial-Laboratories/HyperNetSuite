@@ -215,7 +215,9 @@ pub(super) fn run(command: Command) -> Result<()> {
                 )?;
             }
             let (result, _) = c.action(
-                Action::HostRegister { profile },
+                Action::HostRegister {
+                    profile: Box::new(profile),
+                },
                 Some(grant),
                 Resolved::default(),
             )?;

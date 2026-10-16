@@ -84,9 +84,39 @@ permanent key-role reservations prevent reuse under another cryptographic role.
 
 Known revocation stops fresh content access. Previously retained ciphertext keys
 or plaintext cannot be recalled. A key rotation cannot erase prior disclosure.
-The authority verifies accepted threshold recovery declarations, but these local
-commands currently assemble ordinary owner rotation only; they do not assemble
-offline threshold recovery shares.
+Use the lost-root recovery workflow below when the previous root is unavailable.
 
 See [SealedPages](SealedPages.md) for private authoring, manual finalisation,
 placement and reader verification.
+
+## Lost-root recovery
+
+Recipient recovery works without the previous root secret. It uses the custody
+policy already committed by that recipient's accepted root. Network recovery
+keys and an administrator's directory edit cannot replace this approval.
+
+Create the replacement root in a separate recipient vault using the same member
+and custody commitment. `recipients recovery-prepare` takes normal online and
+capability inputs plus `--member`, `--new-root-key`, `--custody` and `--output`.
+It fetches the exact current root and freezes the recipient, capability and
+membership dependencies. The printed proposal digest covers the replacement key,
+old root, accepted custody and complete state snapshot.
+
+Each custodian inspects the exact replacement and custody with `recipients
+recovery-inspect`, then independently runs `recipients recovery-sign` with normal location
+inputs, `--proposal`, `--proposal-digest`, their private `--custody-key` identity
+file and `--output`. Use separately protected keys; no old root secret is required.
+
+`recipients recovery-assemble` takes the replacement vault's normal local inputs,
+`--proposal`, `--proposal-digest`, `--share` files, `--member-key`, an independently
+verified `--trust-context`, `--output` and `--recovery-output`. It checks distinct
+accepted custody signatures, signs replacement-root possession and binds the
+member's acceptance to the same recovery declaration. Unknown signers, repeated
+shares, mixed proposals and insufficient thresholds refuse.
+
+Submit the resulting submission with the existing `root-submit` command. Keep the
+original requester floor unchanged between preparation and submission; a changed
+snapshot or recipient record requires a fresh proposal and signatures. Each contact
+then uses `contact-accept` with the exact previous and replacement digests, recovery
+envelope and accepted custody file. Publication audiences do not change implicitly.
+Previously encrypted content remains unavailable if its decryption keys were lost.

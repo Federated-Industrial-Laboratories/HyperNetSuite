@@ -25,26 +25,29 @@ bootstrap fingerprint, rather than the descriptor digest.
 ```sh
 HyperNetSuite network recovery draft \
   --predecessor-bootstrap /Private/Predecessor.cbor \
+  --predecessor-directory /Private/AuthorityFloor \
   --predecessor-fingerprint OLD_BOOTSTRAP_FINGERPRINT \
   --successor-bootstrap /Private/Successor.cbor \
   --output /Private/RecoveryDraft.cbor
 
 HyperNetSuite network recovery inspect \
   --predecessor-bootstrap /Private/Predecessor.cbor \
+  --predecessor-directory /Private/AuthorityFloor \
   --predecessor-fingerprint OLD_BOOTSTRAP_FINGERPRINT \
   --declaration /Private/RecoveryDraft.cbor --unsigned
 ```
 
-After healthy committee replacement, supply `--predecessor-epochs Epochs.json`
-to each preparation command and ledger initialization. This is the verified archive
-exported by `authority-inspection epoch ready`; every handoff and readiness quorum
-is checked from the original independently accepted bootstrap. Without
-`--predecessor-checkpoint`, the declaration names that authenticated epoch genesis
-as historical provenance. An optional checkpoint must have a valid quorum proof
-from that epoch. It is not a claim that the checkpoint is the latest state. Supply
-the same archive and checkpoint to each preparation command and ledger
-initialization. The ledger retains the archive without evicting older evidence. The recovery policy is the immutable, accepted bootstrap policy
-supported by this runtime; an uncommitted replacement policy is not accepted.
+The predecessor directory is the existing requester profile with its durable
+certified floor, epoch archive and current policy cache. Fetch current policy with
+`authority-inspection policy discover` while authority is healthy; administrative
+inspection capability is not required. Recovery uses the exact retained current
+kind114 generation, including committed custody changes.
+It never resets that generation to the bootstrap policy. Keep this directory
+available throughout recovery; missing bytes for a retained policy generation,
+a changed custody floor or damaged floor refuse the operation. A locally retained
+floor cannot prove that no unseen later change exists after total authority loss.
+Independent successor acceptance
+remains mandatory, and grants are never restored from that historical view.
 
 Each custodian independently inspects the declaration digest and signs identical
 bytes with their own offline identity file. The identity file uses the normal
@@ -53,6 +56,7 @@ private `secretKey`/`publicKey` representation and must have mode0600.
 ```sh
 HyperNetSuite network recovery sign \
   --predecessor-bootstrap /Private/Predecessor.cbor \
+  --predecessor-directory /Private/AuthorityFloor \
   --predecessor-fingerprint OLD_BOOTSTRAP_FINGERPRINT \
   --draft /Private/RecoveryDraft.cbor \
   --declaration-digest INSPECTED_DECLARATION_DIGEST \
@@ -60,6 +64,7 @@ HyperNetSuite network recovery sign \
 
 HyperNetSuite network recovery assemble \
   --predecessor-bootstrap /Private/Predecessor.cbor \
+  --predecessor-directory /Private/AuthorityFloor \
   --predecessor-fingerprint OLD_BOOTSTRAP_FINGERPRINT \
   --draft /Private/RecoveryDraft.cbor \
   --share /Private/ShareA.cbor /Private/ShareB.cbor \
@@ -77,7 +82,8 @@ already exist. Its parent and the output profile directory must be private.
 
 ```sh
 HyperNetSuite network recovery initialise \
-  --previous-profile /Private/Predecessor.json --directory /Private/Recovery
+  --previous-profile /Private/Predecessor.json --directory /Private/Recovery \
+  --predecessor-directory /Private/AuthorityFloor
 
 HyperNetSuite network recovery observe \
   --directory /Private/Recovery --declaration /Private/RecoveryDeclaration.cbor

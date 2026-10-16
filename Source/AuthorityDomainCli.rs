@@ -241,6 +241,7 @@ fn profile(
     );
     let command = files::read_public_single(&command, 32 * 1024 * 1024)?;
     let mut profile = ssh::Profile {
+        manifest: manifest.clone(),
         network: scope.network,
         incarnation: scope.incarnation,
         deployment: manifest.deployment,
@@ -322,7 +323,7 @@ fn connected(online: Online, cap: Option<Capability>, work: Work) -> Result<()> 
     let command = match work {
         Work::Register(path) => {
             let profile = ssh::Profile::parse(
-                &files::read_public_single(&path, 4096)?,
+                &files::read_public_single(&path, crate::runtime_manifest::MAXIMUM + 4096)?,
                 scope.network,
                 scope.incarnation,
             )?;
@@ -336,7 +337,9 @@ fn connected(online: Online, cap: Option<Capability>, work: Work) -> Result<()> 
                     grant.clone(),
                 )?;
             }
-            ssh::Command::Register { profile }
+            ssh::Command::Register {
+                profile: Box::new(profile),
+            }
         }
         Work::Withdraw(service) => {
             let service = id(&service)?;

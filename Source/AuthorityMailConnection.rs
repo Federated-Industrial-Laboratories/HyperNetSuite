@@ -114,6 +114,7 @@ impl Client {
         apply: impl FnOnce(&mail::Request, &[u8], &[u8]) -> Result<T>,
     ) -> Result<T> {
         mail_client::ensure(
+            &self.bootstrap,
             &mut self.store,
             &self.authority,
             &self.key,

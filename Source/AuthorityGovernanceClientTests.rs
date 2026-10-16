@@ -5,7 +5,7 @@ use super::*;
 use ed25519_dalek::Signer;
 fn value(pending: &GovernancePrepared) -> V {
     match &pending.mode {
-        Mode::Tier(_) | Mode::Grant(_) => {
+        Mode::Tier(_) | Mode::Grant(_) | Mode::Policy(_) => {
             panic!("reviewed changes require their exact certified preview")
         }
         Mode::Member(_) => panic!("membership requires its exact derived record"),

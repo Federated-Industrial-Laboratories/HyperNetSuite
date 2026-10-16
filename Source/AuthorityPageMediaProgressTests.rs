@@ -12,6 +12,13 @@ impl Drop for Directory {
 
 #[test]
 fn media_progress_reopens_before_ack_and_rejects_conflicting_ranges_and_corruption() {
+    progress_contract(page::MediaEffect::Read);
+}
+#[test]
+fn repeated_media_repair_restarts_complete_jobs_but_preserves_unacknowledged_and_partial_ranges() {
+    progress_contract(page::MediaEffect::Repair);
+}
+fn progress_contract(effect: page::MediaEffect) {
     let root = std::env::temp_dir().join(format!(
         "HyperNetMediaProgress{}",
         crate::random_hex::<16>()
@@ -57,7 +64,7 @@ fn media_progress_reopens_before_ack_and_rejects_conflicting_ranges_and_corrupti
         domain::Record::next(&state, 144, asset.identity().unwrap(), asset.value()).unwrap();
     let asset_ref = record.reference.clone();
     state.put(record).unwrap();
-    let effect = page::MediaEffect::Read;
+    let upload = effect.writes().then_some(bytes.as_slice());
     let request = |offset: usize, length: usize| {
         let operation = domain::Operation {
             grant: Some(VersionRef {
@@ -72,7 +79,7 @@ fn media_progress_reopens_before_ack_and_rejects_conflicting_ranges_and_corrupti
                 effect,
                 offset: offset as u64,
                 bytes: length as u64,
-                digest: None,
+                digest: upload.map(|v| digest(&v[offset..offset + length])),
             }
             .into(),
             snapshot: domain::snapshot(&deployment::snapshot(&[])).unwrap(),
@@ -115,17 +122,21 @@ fn media_progress_reopens_before_ack_and_rejects_conflicting_ranges_and_corrupti
         .unwrap()
     };
     let mut job =
-        Progress::open(&root, context, &state, &asset_ref, host.id, effect, None).unwrap();
+        Progress::open(&root, context, &state, &asset_ref, host.id, effect, upload).unwrap();
     let first = request(0, 32768);
     job.apply(&first, &response(0, &bytes[..32768])).unwrap();
     drop(job);
     let mut job =
-        Progress::open(&root, context, &state, &asset_ref, host.id, effect, None).unwrap();
+        Progress::open(&root, context, &state, &asset_ref, host.id, effect, upload).unwrap();
+    assert_eq!(job.offset, 32768);
+    job.begin_repair(false).unwrap();
     assert_eq!(job.offset, 32768);
     job.apply(&first, &response(0, &bytes[..32768])).unwrap();
     let mut changed = bytes[..32768].to_vec();
     changed[0] ^= 1;
-    assert!(job.apply(&first, &response(0, &changed)).is_err());
+    if upload.is_none() {
+        assert!(job.apply(&first, &response(0, &changed)).is_err());
+    }
     for offset in (32768..bytes.len()).step_by(32768) {
         let end = (offset + 32768).min(bytes.len());
         job.apply(
@@ -135,14 +146,30 @@ fn media_progress_reopens_before_ack_and_rejects_conflicting_ranges_and_corrupti
         .unwrap();
     }
     drop(job);
-    let job = Progress::open(&root, context, &state, &asset_ref, host.id, effect, None).unwrap();
+    let mut job =
+        Progress::open(&root, context, &state, &asset_ref, host.id, effect, upload).unwrap();
     assert_eq!(job.bytes, bytes);
     assert_eq!(job.offset, bytes.len() as u64);
     assert!(job.receipt.is_some());
+    job.begin_repair(true).unwrap();
+    assert_eq!(job.offset, bytes.len() as u64);
+    assert!(job.receipt.is_some());
+    job.begin_repair(false).unwrap();
+    let expected_offset = if upload.is_some() {
+        0
+    } else {
+        bytes.len() as u64
+    };
+    assert_eq!(job.offset, expected_offset);
+    assert_eq!(job.receipt.is_none(), upload.is_some());
+    drop(job);
+    let job = Progress::open(&root, context, &state, &asset_ref, host.id, effect, upload).unwrap();
+    assert_eq!(job.offset, expected_offset);
+    assert_eq!(job.bytes, bytes);
     drop(job);
     let mut other = context;
     other.2 = deployment::key(6).verifying_key().to_bytes();
-    assert!(Progress::open(&root, other, &state, &asset_ref, host.id, effect, None).is_err());
+    assert!(Progress::open(&root, other, &state, &asset_ref, host.id, effect, upload).is_err());
     let mut value = wire::decode_state(&std::fs::read(root.join(FILE)).unwrap()).unwrap();
     let V::Array(ref mut fields) = value else {
         unreachable!()
@@ -152,5 +179,5 @@ fn media_progress_reopens_before_ack_and_rejects_conflicting_ranges_and_corrupti
     };
     stored[0] ^= 1;
     std::fs::write(root.join(FILE), wire::encode_state(&value).unwrap()).unwrap();
-    assert!(Progress::open(&root, context, &state, &asset_ref, host.id, effect, None).is_err());
+    assert!(Progress::open(&root, context, &state, &asset_ref, host.id, effect, upload).is_err());
 }

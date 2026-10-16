@@ -41,6 +41,28 @@ fn old_profile(dir: &Directory, bootstrap: &[u8]) -> PathBuf {
     };
     dir.file("Predecessor.json", &serde_json::to_vec(&profile).unwrap())
 }
+fn floor(dir: &Directory, bootstrap: &[u8]) -> PathBuf {
+    let checked = trust::inspect(bootstrap, true).unwrap();
+    let path = dir.0.join("Floor");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let boot = crate::authority_challenge::boot_time_ms().unwrap();
+    let clock = crate::authority_challenge::ClockHealth::new(
+        time().unwrap() * 1000,
+        boot,
+        boot + 30000,
+        100,
+    )
+    .unwrap();
+    crate::authority_floor::Store::initialise(
+        &path,
+        checked.descriptor().clone(),
+        SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes(),
+        clock,
+    )
+    .unwrap();
+    path
+}
 #[test]
 fn installed_recovery_resumes_exact_outputs_and_preserves_conflict_after_restart() {
     let dir = Directory::new();
@@ -56,8 +78,7 @@ fn installed_recovery_resumes_exact_outputs_and_preserves_conflict_after_restart
     let ledger = dir.0.join("Ledger");
     run(Command::Initialise {
         previous_profile: previous.clone(),
-        predecessor_checkpoint: None,
-        predecessor_epochs: None,
+        predecessor_directory: floor(&dir, &old),
         directory: ledger.clone(),
     })
     .unwrap();
@@ -178,25 +199,9 @@ fn recovery_later_epoch_anchor_requires_the_complete_verified_archive() {
         later.point(),
         predecessor(&bootstrap, None, &[]).unwrap().point()
     );
-    let path = dir.file("Epochs.json", &serde_json::to_vec(&epochs).unwrap());
-    let previous = old_profile(&dir, &bootstrap);
-    let ledger = dir.0.join("Ledger");
-    run(Command::Initialise {
-        previous_profile: previous,
-        predecessor_checkpoint: None,
-        predecessor_epochs: Some(path),
-        directory: ledger.clone(),
-    })
-    .unwrap();
-    assert_eq!(
-        Store::open(&ledger)
-            .unwrap()
-            .state
-            .predecessor()
-            .unwrap()
-            .point(),
-        later.point()
-    );
+    // A genesis-only requester floor cannot claim a later epoch from an unrelated file.
+    let retained = retained_predecessor(&bootstrap, &floor(&dir, &bootstrap)).unwrap();
+    assert_ne!(retained.point(), later.point());
     let (unrelated, _) = fixture(24, time().unwrap());
     assert!(predecessor(&unrelated, None, &epochs).is_err());
     let mut corrupted = serde_json::to_value(&epochs).unwrap();

@@ -11,6 +11,8 @@ use crate::authority_capacity::MAX_RECORDS;
 pub(crate) mod grant;
 #[path = "AuthorityContextPaging.rs"]
 mod paging;
+#[path = "AuthorityPolicyClient.rs"]
+pub(crate) mod policy;
 #[path = "AuthorityTierClient.rs"]
 pub(crate) mod tier;
 fn governance_kind(kind: u64) -> bool {
@@ -94,11 +96,13 @@ impl ContextState {
             .map(|v| Ok(v.bytes()?.to_vec()))
             .collect::<Result<Vec<_>>>()?;
         tier::refresh_cached_tiers(bootstrap, store, &mut values)?;
+        policy::refresh_cached_policies(bootstrap, store, &mut values)?;
         Self::retained(bootstrap, store, &values)
     }
     /// The floor already authenticates every cached digest; the cache never confers authority itself.
     pub fn save(&self, store: &Store) -> Result<()> {
         self.current(store)?;
+        policy::retain_context(store, &self.governance)?;
         let bytes = wire::encode_state(&a(records(&self.governance)?
             .iter()
             .map(|v| b(v))
@@ -199,6 +203,7 @@ impl CreatedRecord {
 enum Mode<'a> {
     Grant(grant::Prepared),
     Tier(tier::Prepared),
+    Policy(policy::Prepared),
     Refresh {
         minimum: Vec<VersionRef>,
         pages: Option<paging::Pages>,
@@ -223,6 +228,7 @@ struct GovernancePrepared<'a> {
 enum Outcome {
     Grant(grant::ResultState),
     Tier(tier::ResultState),
+    Policy(policy::ResultState),
     Context(Box<ContextState>),
     Page,
     Revoked(Box<CreatedRecord>),
@@ -450,6 +456,7 @@ impl<'a> GovernancePrepared<'a> {
                 grant.proposal.revision,
             ),
             Mode::Tier(tier) => (tier.action(), tier.resource(), tier.revision()?),
+            Mode::Policy(policy) => ("AuthorityPolicyApply", policy.network(), policy.revision()?),
             Mode::Refresh { .. } => (CONTEXT, descriptor.scope().network, 0),
             Mode::Revoke { target, .. } => (REVOKE, target.id, target.generation),
             Mode::Member(member) => (member.action, member.reference.id, 1),
@@ -509,6 +516,7 @@ impl<'a> GovernancePrepared<'a> {
         match self.mode {
             Mode::Grant(ref grant) => grant.action(),
             Mode::Tier(ref tier) => tier.action(),
+            Mode::Policy(_) => "AuthorityPolicyApply",
             Mode::Refresh { .. } => CONTEXT,
             Mode::Revoke { .. } => REVOKE,
             Mode::Member(ref member) => member.action,
@@ -543,8 +551,11 @@ impl<'a> GovernancePrepared<'a> {
         if let Mode::Tier(tier) = &self.mode {
             return tier.candidate(intent, &value, executed);
         }
+        if let Mode::Policy(policy) = &self.mode {
+            return policy.candidate(intent, &value, executed);
+        }
         let arity = match self.mode {
-            Mode::Tier(_) | Mode::Grant(_) => unreachable!(),
+            Mode::Tier(_) | Mode::Grant(_) | Mode::Policy(_) => unreachable!(),
             Mode::Member(_) | Mode::Revoke { .. } => 6,
             Mode::Refresh { .. } => 5,
         };
@@ -569,7 +580,7 @@ impl<'a> GovernancePrepared<'a> {
         proof::validate_versions(&versions, MAX_RECORDS)?;
         let scope = self.descriptor.scope();
         let (governance, decision) = match &self.mode {
-            Mode::Tier(_) | Mode::Grant(_) => unreachable!(),
+            Mode::Tier(_) | Mode::Grant(_) | Mode::Policy(_) => unreachable!(),
             Mode::Member(member) => member.candidate(intent, result, executed, &versions)?,
             Mode::Refresh { minimum, pages } => {
                 let encoded = wire::encode(&a(vec![
@@ -733,6 +744,7 @@ impl<'a> GovernancePrepared<'a> {
         match &self.mode {
             Mode::Refresh { .. } => ActionValidation::governance_context(candidate.versions),
             Mode::Tier(tier) => tier.validation(candidate.versions),
+            Mode::Policy(policy) => policy.validation(candidate.versions),
             _ => ActionValidation::new(candidate.versions),
         }
     }
@@ -814,7 +826,7 @@ impl<'a> GovernancePrepared<'a> {
             )?;
         }
         let prefix = verified.point().prefix().clone();
-        let tier_value = if matches!(self.mode, Mode::Tier(_) | Mode::Grant(_)) {
+        let tier_value = if matches!(self.mode, Mode::Tier(_) | Mode::Grant(_) | Mode::Policy(_)) {
             Some(wire::decode(&verified.result.value)?)
         } else {
             None
@@ -855,6 +867,15 @@ impl<'a> GovernancePrepared<'a> {
                     tier.retain(accepted_store, &value)?;
                     return Ok(Outcome::Tier(tier::ResultState { value, prefix }));
                 }
+                if let Mode::Policy(policy) = &self.mode {
+                    let context = ContextState {
+                        descriptor: self.descriptor.clone(),
+                        governance: candidate.governance.context("policy context missing")?,
+                    };
+                    context.save(accepted_store)?;
+                    policy.retain(accepted_store)?;
+                    return Ok(Outcome::Policy(policy::ResultState { prefix }));
+                }
                 if let Some(pages) = &candidate.pages {
                     pages.save(&self.descriptor, self.grant, accepted_store)?;
                     if candidate.governance.is_none() {
@@ -869,7 +890,7 @@ impl<'a> GovernancePrepared<'a> {
                 };
                 context.save(accepted_store)?;
                 match self.mode {
-                    Mode::Tier(_) | Mode::Grant(_) => unreachable!(),
+                    Mode::Tier(_) | Mode::Grant(_) | Mode::Policy(_) => unreachable!(),
                     Mode::Refresh { .. } => Ok(Outcome::Context(Box::new(context))),
                     Mode::Member(member) => {
                         if let Some(path) = member.receipt {

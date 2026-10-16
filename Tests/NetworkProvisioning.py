@@ -153,6 +153,50 @@ def main():
         require(prepared['devicePublicKey'] != prepared['relayPublicKey'], 'Client and relay keys coincide')
         require(stat.S_IMODE(profile.stat().st_mode) == 0o600, 'Profile is not private')
         original = profile.read_bytes()
+        preview = run(['network', 'diagnose', '--profile', profile])
+        snapshot = preview['snapshot']
+        require(preview['status'] == 'DiagnosticPreview' and snapshot['profile']['state'] == 'Valid'
+                and snapshot['profile']['clientState'] == 'Prepared'
+                and snapshot['profile']['permitsNetworkSearch'] is False
+                and snapshot['routes']['state'] == 'NotConfigured'
+                and snapshot['clock'] == 'NotConfigured'
+                and snapshot['networkUsed'] is False and snapshot['currentAuthority'] is False,
+                'Diagnostics misstated local profile state')
+        redacted = json.dumps(preview)
+        private_profile = json.loads(original)
+        for value in [str(root), pin, private_profile['device']['secretKey'],
+                      private_profile['device']['publicKey'], private_profile['relayIdentity']['secretKey'],
+                      'relay.invalid', 'admission.invalid']:
+            require(value not in redacted, 'Diagnostic preview exposed private identity or endpoint')
+        exported = root / 'Diagnostics.json'
+        result = run(['network', 'diagnose', '--profile', profile, '--preview-digest', preview['previewDigest'], '--output', exported])
+        require(result == {'status': 'DiagnosticExported', 'previewDigest': preview['previewDigest']}
+                and hashlib.sha256(exported.read_bytes()).hexdigest() == preview['previewDigest']
+                and json.loads(exported.read_bytes()) == snapshot
+                and stat.S_IMODE(exported.stat().st_mode) == 0o600,
+                'Diagnostic export differs from the private preview')
+        saved_export = exported.read_bytes()
+        refused = run(['network', 'diagnose', '--profile', profile, '--preview-digest', preview['previewDigest'], '--output', exported], ok=False)
+        require(b'DiagnosticOutputUnavailable' in refused.stderr and exported.read_bytes() == saved_export,
+                'Diagnostic export overwrote an existing file')
+        linked_export = root / 'LinkedDiagnostics.json'
+        linked_export.symlink_to(exported)
+        run(['network', 'diagnose', '--profile', profile, '--preview-digest', preview['previewDigest'], '--output', linked_export], ok=False)
+        require(exported.read_bytes() == saved_export, 'Diagnostic export followed a symlink')
+        private_profile['permitNetworkSearch'] = True
+        write(profile, json.dumps(private_profile).encode())
+        changed_destination = root / 'ChangedDiagnostics.json'
+        refused = run(['network', 'diagnose', '--profile', profile, '--preview-digest', preview['previewDigest'], '--output', changed_destination], ok=False)
+        require(b'DiagnosticSnapshotChanged' in refused.stderr and not changed_destination.exists(),
+                'Diagnostic export did not bind the selected snapshot')
+        write(profile, b'{"secretKey":"SecretCanary\\u001b[31m","error":"https://private.invalid/query"}')
+        unavailable = run(['network', 'diagnose', '--profile', profile])
+        require(unavailable['snapshot']['profile']['state'] == 'UnavailableOrInvalid'
+                and unavailable['snapshot']['profile']['permitsNetworkSearch'] is None
+                and all(value not in json.dumps(unavailable) for value in ['SecretCanary', 'secretKey', 'private.invalid', str(root)]),
+                'Invalid profile text escaped diagnostic redaction')
+        write(profile, original)
+        checks.append('Offline redacted diagnostic preview, exact private export and changed/overwrite/symlink refusals')
         inspection = run(['network', 'inspect', '--profile', profile])
         require('secretKey' not in json.dumps(inspection), 'Inspection exposed keys')
         require(inspection['trust']['authorityTransports'] == transports

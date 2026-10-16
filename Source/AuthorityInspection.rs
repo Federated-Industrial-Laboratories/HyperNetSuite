@@ -171,7 +171,8 @@ impl ContextState {
             let record = wire::decode(self.governance.record_bytes(102, root.fixed()?)?)?;
             root_subjects.push(record.array(17)?[8].fixed::<32>()?);
         }
-        let mut needed = std::collections::BTreeSet::from([(100, network), target.index()]);
+        let mut needed =
+            std::collections::BTreeSet::from([(100, network), (114, network), target.index()]);
         let mut seen = std::collections::BTreeSet::new();
         let mut cursor = grant;
         loop {
@@ -756,7 +757,7 @@ mod tests;
 #[path = "AuthorityGovernanceClient.rs"]
 mod governance_client;
 pub use governance_client::{MemberMutation, MemberRequest, RevokeRequest};
-pub(crate) use governance_client::{grant, tier};
+pub(crate) use governance_client::{grant, policy, tier};
 
 #[path = "AuthorityMemberOffer.rs"]
 pub(crate) mod member_offer;

@@ -35,6 +35,8 @@ mod challenge;
 mod local;
 #[path = "AuthoritySealedIdentityCliOnline.rs"]
 mod online;
+#[path = "AuthoritySealedIdentityCliRecovery.rs"]
+mod recovery;
 #[path = "AuthoritySealedIdentityCliRotation.rs"]
 mod rotation;
 
@@ -138,6 +140,60 @@ pub enum Command {
         submission: PathBuf,
         #[arg(long)]
         output: PathBuf,
+    },
+    /// Prepare lost-root recovery against the exact current recipient and custody policy.
+    RecoveryPrepare {
+        #[command(flatten)]
+        online: Online,
+        #[command(flatten)]
+        capability: Capability,
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        new_root_key: String,
+        #[arg(long)]
+        custody: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Inspect the exact public replacement, prior root and accepted recovery custody offline.
+    RecoveryInspect {
+        #[command(flatten)]
+        location: Location,
+        #[arg(long)]
+        proposal: PathBuf,
+    },
+    /// Sign an inspected recipient recovery using one independently held custody identity.
+    RecoverySign {
+        #[command(flatten)]
+        location: Location,
+        #[arg(long)]
+        proposal: PathBuf,
+        #[arg(long)]
+        proposal_digest: String,
+        #[arg(long)]
+        custody_key: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Combine custody approval with replacement-root possession and explicit member acceptance.
+    RecoveryAssemble {
+        #[command(flatten)]
+        local: Local,
+        #[arg(long)]
+        proposal: PathBuf,
+        #[arg(long)]
+        proposal_digest: String,
+        #[arg(long, required=true, num_args=1..=3)]
+        share: Vec<PathBuf>,
+        #[arg(long)]
+        member_key: PathBuf,
+        #[arg(long)]
+        trust_context: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        recovery_output: PathBuf,
     },
     /// Create candidate device keys and export a signed public key request.
     DeviceCreate {
@@ -418,6 +474,10 @@ fn emit(status: &str, record: &domain::Record, output: &Path) -> Result<()> {
 }
 pub fn run(command: Command) -> Result<()> {
     match command {
+        Command::RecoveryPrepare { .. }
+        | Command::RecoveryInspect { .. }
+        | Command::RecoverySign { .. }
+        | Command::RecoveryAssemble { .. } => recovery::run(command),
         Command::RootPrepare { .. } | Command::RootSign { .. } | Command::RootSubmit { .. } => {
             rotation::run(command)
         }

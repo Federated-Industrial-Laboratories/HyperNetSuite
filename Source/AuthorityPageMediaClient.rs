@@ -10,6 +10,7 @@ use crate::{
     authority_membership::Reservations,
 };
 pub fn ensure(
+    bootstrap: &Verified,
     store: &mut Store,
     authority: &Path,
     signer: &SigningKey,
@@ -17,7 +18,10 @@ pub fn ensure(
     mut clock: impl FnMut() -> Result<ClockHealth>,
 ) -> Result<()> {
     let descriptor = store.descriptor().clone();
-    stream_client::ensure_stream(&descriptor, authority, signer, store, session, &mut clock)
+    stream_client::ensure_stream(&descriptor, authority, signer, store, session, &mut clock)?;
+    crate::authority_inspection::policy::discover(
+        bootstrap, authority, signer, store, session, &mut clock,
+    )
 }
 pub fn prepare(
     bootstrap: &Verified,
@@ -54,6 +58,10 @@ pub fn prepare_domain(
         ),
         "only a finite media effect can leave the participant"
     );
+    let restrictive = domain_client::restrictive(&command);
+    if !restrictive {
+        crate::authority_inspection::policy::require_accepted(bootstrap, store)?;
+    }
     store.require_requester(signer.verifying_key().to_bytes())?;
     if let Some(pending) = store.resume_ordinary()? {
         let request = Request::parse(pending.signed())?;
@@ -62,6 +70,13 @@ pub fn prepare_domain(
             request.domain_command().value() == command.value() && old.grant == grant,
             "another media effect is pending; recover its exact operation first"
         );
+        if !restrictive {
+            crate::authority_inspection::policy::require_pending_policy(
+                bootstrap,
+                store,
+                request.intent(),
+            )?;
+        }
         return Ok(request);
     }
     let cache = Cache::load(bootstrap, store)?;
@@ -93,8 +108,14 @@ pub fn prepare_domain(
         "media effect preflight refused with code {}; refresh its exact publication and hosting consent",
         d.code
     );
-    if op.mutation() {
-        probe.expected = d.dependencies;
+    if op.mutation() || !restrictive {
+        probe.expected = if op.mutation() {
+            d.dependencies
+        } else {
+            vec![crate::authority_inspection::policy::current_reference(
+                bootstrap, store,
+            )?]
+        };
         op.snapshot = domain::snapshot(&a(vec![
             a(vec![
                 V::Uint(store.prefix().scope().epoch),

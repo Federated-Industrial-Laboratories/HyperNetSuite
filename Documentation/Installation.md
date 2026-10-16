@@ -7,6 +7,8 @@ prefix. See [Supported platforms](SupportedPlatforms.md) for runtime requirement
 The native [offline network commands](Networks.md) require no hosting runtime,
 service, inbound listener or external command. They prepare complete authenticated
 bootstrap material and private client profiles without making a connection.
+The installed [diagnostic command](Diagnostics.md) previews a bounded local summary
+and can export its exact redacted bytes to a new private file without host services.
 
 ## Signed offline package
 
@@ -19,12 +21,18 @@ archive is not sufficient evidence of publisher identity.
 Use a dedicated non-root account and a new prefix below an existing directory.
 Package operations require Python 3.11 or newer and OpenSSH `ssh-keygen` with
 Ed25519 SSHSIG support. No package operation downloads software.
+Before installation, initialise private package trust with `TrustInit` and an
+independently authenticated root fingerprint, then obtain its authorised target
+policy. [UpgradeRecovery](UpgradeRecovery.md) gives the complete trust and policy
+procedure; archive integrity verification alone does not authorise installation.
 
 ```sh
 python3 Tools/Bundle.py Verify --archive HyperNetSuite.tar \
   --signature HyperNetSuite.tar.sig --public-key Publisher.pub
 python3 Tools/Bundle.py Install --archive HyperNetSuite.tar \
   --signature HyperNetSuite.tar.sig --public-key Publisher.pub \
+  --trust-directory /Private/SuitePackageTrust \
+  --policy Target.json --policy-signature Target.json.sig \
   --prefix /Chosen/HyperNetSuiteCurrent
 python3 Tools/Bundle.py VerifyInstalled \
   --prefix /Chosen/HyperNetSuiteCurrent --public-key Publisher.pub
@@ -50,6 +58,8 @@ Its pseudoterminal checks do not establish native graphics support. It makes no 
 and does not qualify a remote service or an entire deployment.
 Qualification also exercises native governance drafting, independent recovery
 acceptance, offline profile creation, privacy-policy refusals and safe removal.
+It checks diagnostic redaction, exact preview-bound private export and refusal of
+changed snapshots, existing files and symbolic-link destinations.
 When `strace` is available, the provisioning check observes network system calls
 under an empty PATH and hostile proxy variables. Its report states whether this
 additional observation was available; `strace` is not a client runtime dependency.
