@@ -40,9 +40,44 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex, Weak},
 };
-static SELECTED: Mutex<Option<PathBuf>> = Mutex::new(None);
+pub(crate) struct AuthorityPool {
+    active: bool,
+    route: Option<Prepared>,
+}
+impl AuthorityPool {
+    pub(crate) fn shared() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self {
+            active: true,
+            route: None,
+        }))
+    }
+    pub(crate) fn take(pool: &Arc<Mutex<Self>>, endpoint: &Endpoint) -> Result<Option<Prepared>> {
+        let mut pool = pool
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority transport pool poisoned"))?;
+        let Some(mut route) = pool.route.take() else {
+            return Ok(None);
+        };
+        let reusable = pool.active && route.matches(endpoint)? && route.session.borrow().reusable();
+        if reusable {
+            route.reused = true;
+            Ok(Some(route))
+        } else {
+            Ok(None)
+        }
+    }
+    fn close(&mut self) {
+        self.active = false;
+        self.route = None;
+    }
+}
+struct Selected {
+    profile: PathBuf,
+    authority: Arc<Mutex<AuthorityPool>>,
+}
+static SELECTED: Mutex<Option<Selected>> = Mutex::new(None);
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Endpoint {
@@ -51,6 +86,9 @@ pub struct Endpoint {
     pub route: route_profile::Profile,
 }
 impl Endpoint {
+    pub(crate) fn same_identity(&self, other: &Self) -> Result<bool> {
+        Ok(serde_json::to_vec(self)? == serde_json::to_vec(other)?)
+    }
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = files::read_single(path, 600000, true)?;
         let endpoint: Self = serde_json::from_slice(&bytes)?;
@@ -69,7 +107,7 @@ impl Endpoint {
             .as_ref()
         {
             ensure!(
-                *selected == endpoint.profile,
+                selected.profile == endpoint.profile,
                 "endpoint belongs to another selected client profile"
             );
         }
@@ -77,7 +115,29 @@ impl Endpoint {
         Ok(endpoint)
     }
     pub fn prepare(self) -> Result<Prepared> {
+        check_cancelled()?;
         let key = crate::networks::route_key(&self.profile, &self.route)?;
+        let authority = {
+            let selected = SELECTED
+                .lock()
+                .map_err(|_| anyhow::anyhow!("route selection poisoned"))?;
+            if let Some(selected) = selected.as_ref() {
+                ensure!(
+                    selected.profile == self.profile,
+                    "selected client profile changed"
+                );
+            }
+            selected
+                .as_ref()
+                .filter(|_| self.route.protocol == 1)
+                .map(|selected| Arc::downgrade(&selected.authority))
+                .unwrap_or_default()
+        };
+        if let Some(pool) = authority.upgrade()
+            && let Some(route) = AuthorityPool::take(&pool, &self)?
+        {
+            return Ok(route);
+        }
         let deadline = crate::authority_challenge::boot_time_ms()?
             .checked_add(self.route.limits.duration_ms)
             .context("private route setup deadline overflow")?;
@@ -97,6 +157,9 @@ impl Endpoint {
             endpoint: self,
             deadline,
             session: std::cell::RefCell::new(session),
+            observed: std::cell::Cell::new(false),
+            authority,
+            reused: false,
         })
     }
 }
@@ -104,6 +167,9 @@ pub struct Prepared {
     endpoint: Endpoint,
     deadline: u64,
     session: std::cell::RefCell<crate::route_connector::Session<'static>>,
+    observed: std::cell::Cell<bool>,
+    authority: Weak<Mutex<AuthorityPool>>,
+    reused: bool,
 }
 impl Prepared {
     pub(crate) fn setup_deadline(&self) -> u64 {
@@ -119,10 +185,40 @@ impl Prepared {
             endpoint,
             deadline,
             session: std::cell::RefCell::new(session),
+            observed: std::cell::Cell::new(false),
+            authority: Weak::new(),
+            reused: false,
         }
     }
     pub(crate) fn route(&self) -> &route_profile::Profile {
         &self.endpoint.route
+    }
+    pub(crate) fn reused(&self) -> bool {
+        self.reused
+    }
+    pub(crate) fn fits_authority_challenge(&self) -> bool {
+        self.session.borrow().reusable()
+    }
+    fn matches(&self, endpoint: &Endpoint) -> Result<bool> {
+        self.endpoint.same_identity(endpoint)
+    }
+    #[cfg(test)]
+    pub(crate) fn in_pool(mut self, pool: &Arc<Mutex<AuthorityPool>>) -> Self {
+        self.authority = Arc::downgrade(pool);
+        self
+    }
+    /// Only a fully validated successful operation may retain its connection.
+    pub(crate) fn retain(self) {
+        if cancelled() || !self.session.borrow().reusable() {
+            return;
+        }
+        if let Some(pool) = self.authority.upgrade()
+            && let Ok(mut pool) = pool.lock()
+            && pool.active
+            && pool.route.is_none()
+        {
+            pool.route = Some(self);
+        }
     }
     pub fn exchange(&self, request: &[u8], deadline: u64, maximum: usize) -> Result<Vec<u8>> {
         let bytes = self
@@ -130,6 +226,9 @@ impl Prepared {
             .try_borrow_mut()
             .context("private route session already has an active exchange")?
             .exchange(request, deadline, maximum)?;
+        if self.observed.get() {
+            return Ok(bytes);
+        }
         let observation = serde_json::json!({
             "format":"HyperNetRouteObservation/1","network":hex::encode(self.endpoint.route.network),
             "incarnation":hex::encode(self.endpoint.route.incarnation),"relay":hex::encode(self.endpoint.route.relay.service),
@@ -154,6 +253,7 @@ impl Prepared {
             &serde_json::to_vec(&observation)?,
             true,
         )?;
+        self.observed.set(true);
         Ok(bytes)
     }
 }
@@ -176,21 +276,30 @@ pub fn require_local_allowed() -> Result<()> {
     );
     Ok(())
 }
-pub struct Selection;
+pub struct Selection {
+    authority: Arc<Mutex<AuthorityPool>>,
+}
 impl Selection {
     pub fn new(profile: &Path) -> Result<Self> {
         let mut selected = SELECTED
             .lock()
             .map_err(|_| anyhow::anyhow!("route selection poisoned"))?;
         ensure!(selected.is_none(), "a client network is already selected");
-        *selected = Some(profile.canonicalize()?);
-        Ok(Self)
+        let authority = AuthorityPool::shared();
+        *selected = Some(Selected {
+            profile: profile.canonicalize()?,
+            authority: authority.clone(),
+        });
+        Ok(Self { authority })
     }
 }
 impl Drop for Selection {
     fn drop(&mut self) {
         if let Ok(mut selected) = SELECTED.lock() {
             *selected = None;
+        }
+        if let Ok(mut pool) = self.authority.lock() {
+            pool.close();
         }
     }
 }

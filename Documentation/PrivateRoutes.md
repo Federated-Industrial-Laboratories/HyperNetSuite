@@ -38,6 +38,24 @@ normal durable checks. A missing usable checkpoint retains the existing bounded
 history path; malformed evidence refuses preparation. The original connection
 limits and five-second application challenge remain unchanged.
 
+Within one selected network command or browser session, successful authority
+operations can reuse the admitted authority connection. Each operation reloads
+and checks the exact endpoint and possession key, refreshes historical evidence
+against the latest retained floor, and obtains fresh policy and result proofs.
+Connection reuse does not cache current permission. Separate CLI processes open
+separate connections.
+
+Only a fully verified successful operation returns its connection for reuse.
+Failure or cancellation discards it. Reuse requires room for the existing full
+authority challenge within the original total limit. If successful history
+preparation consumes that room, the client can replace the reused connection once
+before issuing a challenge. Failed history does not trigger that replacement.
+Fresh connections retain their configured limits, including shorter routes.
+Reuse never replenishes time, idle or byte limits.
+Leaving the selected network closes its retained connection. Route observations
+are published once per connection and remain diagnostic information, not proof
+of current authority.
+
 `RouteReady` reports remaining total transport time after admission. Suite
 applies it from readiness receipt while retaining the original connection limit.
 Byte admission is shared across frames; progress never restarts total duration.
@@ -46,10 +64,10 @@ The relay and endpoint separately revalidate current permission under fresh
 an application deadline or restore a closed connection. I/O failure and cancellation
 close the session without automatic reconnection or replay of an unresolved action.
 
-Core reports at most four connection timing samples per process. Fixed stages
+Core reports at most 64 connection timing samples per process. Fixed stages
 and elapsed monotonic times distinguish admission queue delay, voucher checks,
 permission reservation, egress, readiness and final TLS. These diagnostics omit
-identities and request data. Each sampled connection includes at most four frame
+identities and request data. Each sampled connection includes at most 32 frame
 sequences and four permission renewals. Client failures identify authority
 submission, result polling, ancestry or checkpoint retrieval using fixed labels.
 

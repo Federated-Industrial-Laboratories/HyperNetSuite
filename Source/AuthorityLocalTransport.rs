@@ -102,7 +102,20 @@ impl LocalControl {
     }
     /// Historical continuity is verified before the caller samples its fresh challenge clock.
     pub fn prepare_authority(path: &Path, store: &crate::authority_floor::Store) -> Result<Self> {
-        Self::open(path)?.prefetch_authority(store)
+        let mut control = Self::open(path)?.prefetch_authority(store)?;
+        // History can consume the remaining admission. Replacement stays before a fresh challenge.
+        if matches!(&control.endpoint, Endpoint::Relay(route) if route.reused() && !route.fits_authority_challenge())
+        {
+            drop(control);
+            control = Self::open(path)?.prefetch_authority(store)?;
+        }
+        Ok(control)
+    }
+    /// Return only the admitted connection; history is refreshed against the next exact floor.
+    pub(crate) fn retain(self) {
+        if let Endpoint::Relay(route) = self.endpoint {
+            route.retain();
+        }
     }
     fn prefetch_authority(mut self, store: &crate::authority_floor::Store) -> Result<Self> {
         let Endpoint::Relay(route) = &self.endpoint else {
@@ -147,6 +160,15 @@ impl LocalControl {
         bytes: &[u8],
     ) -> Result<bool> {
         Ok(PrefetchedHistory::parse(store, bytes)?.is_some())
+    }
+    #[cfg(test)]
+    pub(crate) fn with_prefetch_for_test(
+        mut self,
+        store: &crate::authority_floor::Store,
+        bytes: &[u8],
+    ) -> Result<Self> {
+        self.history = PrefetchedHistory::parse(store, bytes)?;
+        Ok(self)
     }
     pub(crate) fn route(&self) -> Option<&crate::route_profile::Profile> {
         match &self.endpoint {
@@ -557,6 +579,12 @@ impl HistoryEvidence {
                 prefetched.validated.from() == prefix && prefetched.validated.prior() == head,
                 "prepared history differs from the exact retained floor or head"
             );
+        }
+        // A same-floor result or direct successor already carries its complete ancestry.
+        if node.height() - prefix.height() <= 1 {
+            return Ok(Self::direct(vec![target.to_vec()]));
+        }
+        if let Some(prefetched) = &control.history {
             let anchor = prefetched.validated.ordinary_checkpoint()?.prefix();
             if node.height() >= anchor.height() && node.height() - anchor.height() <= 128 {
                 if node.height() == anchor.height() {
@@ -585,9 +613,6 @@ impl HistoryEvidence {
             }
         }
         let gap = node.height() - prefix.height();
-        if gap <= 1 {
-            return Ok(Self::direct(vec![target.to_vec()]));
-        }
         if gap <= 128 {
             let query = wire::encode(&a(vec![
                 V::Uint(prefix.height()),

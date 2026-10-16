@@ -514,7 +514,7 @@ impl<'a> Prepared<'a> {
         clock: &mut C,
         mut prepare: impl FnMut() -> Result<LocalControl>,
         exchange: &mut impl FnMut(&Self, &mut C, &LocalControl) -> Result<T>,
-    ) -> Result<T> {
+    ) -> Result<(T, LocalControl)> {
         let mut initial = Some(control);
         crate::authority_local_transport::retry_expired_exchange(|| {
             let control = if let Some(control) = initial.take() {
@@ -551,8 +551,7 @@ impl<'a> Prepared<'a> {
                 self.exchange_with_history(signer, session, clock, &mut |attempt, clock| {
                     exchange(attempt, clock, &control)
                 });
-            drop(control);
-            Ok((self.deadline, result))
+            Ok((self.deadline, result.map(|value| (value, control))))
         })
     }
     fn exchange_with_history<T, C: FnMut() -> Result<ClockHealth>>(
@@ -898,15 +897,17 @@ pub fn local_with_objects(
             },
         );
         challenge = prepared.challenge.clone();
-        let (reply, evidence, outputs) = exchange?;
-        prepared.finish_with_objects(
+        let ((reply, evidence, outputs), control) = exchange?;
+        let result = prepared.finish_with_objects(
             reply,
             AncestryEvidence::from_shared(evidence),
             outputs,
             store,
             session,
             &mut clock,
-        )
+        )?;
+        control.retain();
+        Ok(result)
     })();
     if result.is_err() {
         session.discard(&challenge)?;

@@ -345,7 +345,7 @@ fn page_submit_expiry(second_expiry: bool) {
         );
         return;
     }
-    let (reply, evidence) = result.unwrap();
+    let ((reply, evidence), _control) = result.unwrap();
     offset.set(offset.get() + crate::authority_challenge::DELTA_MS + 1);
     let (published, _) = prepared
         .finish_with_objects(
@@ -499,7 +499,7 @@ fn page_history_expiry_uses_one_fresh_prepared_attempt() {
                 prepared.deadline
             );
         } else {
-            let (reply, evidence) = result.unwrap();
+            let ((reply, evidence), _control) = result.unwrap();
             elapsed.set(elapsed.get() + crate::authority_challenge::DELTA_MS + 1);
             prepared
                 .finish_with_objects(

@@ -101,7 +101,7 @@ pub fn discover(
             &parameters,
         )?
     };
-    let (reply, evidence, challenge, ordered, deadline) =
+    let (reply, evidence, challenge, ordered, deadline, control) =
         crate::authority_local_transport::retry_expired_exchange(|| {
             ensure!(
                 store
@@ -136,13 +136,14 @@ pub fn discover(
                 store.tree_head(),
                 &mut clock,
             );
-            drop(control);
             if exchange.is_err() {
                 session.discard(&challenge)?;
             }
             Ok((
                 deadline,
-                exchange.map(|(reply, evidence)| (reply, evidence, challenge, ordered, deadline)),
+                exchange.map(|(reply, evidence)| {
+                    (reply, evidence, challenge, ordered, deadline, control)
+                }),
             ))
         })?;
     let result = (|| {
@@ -208,6 +209,8 @@ pub fn discover(
     })();
     if result.is_err() {
         session.discard(&challenge)?;
+    } else {
+        control.retain();
     }
     result
 }

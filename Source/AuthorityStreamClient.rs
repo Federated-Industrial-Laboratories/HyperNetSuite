@@ -194,7 +194,10 @@ pub fn status_local(
     let prepared =
         ControlPrepared::new(descriptor, request, None, signer, store, session, clock()?)?;
     match prepared.local(&control, store, session, &mut clock)? {
-        StreamResponse::Status(metadata) => Ok(metadata),
+        StreamResponse::Status(metadata) => {
+            control.retain();
+            Ok(metadata)
+        }
         _ => bail!("status returned another control result"),
     }
 }
