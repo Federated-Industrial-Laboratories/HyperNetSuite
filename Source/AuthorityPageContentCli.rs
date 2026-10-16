@@ -198,6 +198,18 @@ pub(super) fn job(
             Resolved::default(),
         )?;
     }
+    job_with_metadata(c, grant, placement, transport, path, effect, upload)
+}
+#[allow(clippy::too_many_arguments)]
+fn job_with_metadata(
+    c: &mut Client,
+    grant: VersionRef,
+    placement: VersionRef,
+    transport: &Transport,
+    path: &Path,
+    effect: Effect,
+    upload: Option<&[u8]>,
+) -> Result<Vec<u8>> {
     let scope = c.bootstrap.descriptor().scope();
     let mut progress = Progress::open(
         path,
@@ -213,7 +225,24 @@ pub(super) fn job(
         upload,
     )?;
     progress.begin_repair(c.store.resume_ordinary()?.is_some())?;
+    transfer_progress(c, grant, transport, path, &mut progress)?;
+    Ok(progress.bytes)
+}
+fn transfer_progress(
+    c: &mut Client,
+    grant: VersionRef,
+    transport: &Transport,
+    path: &Path,
+    progress: &mut Progress,
+) -> Result<()> {
+    let placement = progress.placement_ref.clone();
+    let effect = progress.effect;
     loop {
+        let complete = progress.offset == progress.placement.bytes
+            || (effect == Effect::Purge && progress.offset == 1);
+        if complete && c.store.resume_ordinary()?.is_none() {
+            break;
+        }
         client::ensure(
             &c.bootstrap,
             &mut c.store,
@@ -248,9 +277,7 @@ pub(super) fn job(
             );
             pending.command().clone()
         } else {
-            if progress.offset == progress.placement.bytes
-                || (effect == Effect::Purge && progress.offset == 1)
-            {
+            if complete {
                 break;
             }
             let offset = if effect == Effect::Purge {
@@ -319,7 +346,7 @@ pub(super) fn job(
             Resolved::default(),
         )?;
     }
-    Ok(progress.bytes)
+    Ok(())
 }
 fn transfer(
     exchange: Exchange,

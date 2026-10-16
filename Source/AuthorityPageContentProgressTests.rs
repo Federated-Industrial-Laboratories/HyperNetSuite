@@ -9,6 +9,34 @@ impl Drop for Directory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+fn disconnected_client(root: &Path) -> Client {
+    let fixture = deployment::Fixture::new();
+    let bootstrap = crate::trust_bootstrap::inspect(&fixture.bootstrap, true).unwrap();
+    let directory = root.join("Requester");
+    files::create_directory(&directory).unwrap();
+    let key = deployment::key(5);
+    let health = crate::authority_challenge::ClockHealth::new(5000, 5000, 30000, 100)
+        .unwrap()
+        .frozen();
+    let store = Store::initialise(
+        &directory,
+        bootstrap.descriptor().clone(),
+        key.verifying_key().to_bytes(),
+        health,
+    )
+    .unwrap();
+    Client {
+        bootstrap,
+        directory,
+        key,
+        store,
+        session: Session::new().unwrap(),
+        clock: authority_clock::Source::Private {
+            path: root.join("UnavailableClock.json"),
+        },
+        socket: root.join("UnavailableAuthority.sock"),
+    }
+}
 
 #[test]
 fn content_progress_reopens_before_ack_and_rejects_conflicting_ranges_and_corruption() {
@@ -153,6 +181,18 @@ fn progress_contract(effect: content::Effect) {
     )
     .unwrap();
     assert_eq!(job.offset, 32768);
+    let mut client = (effect == content::Effect::Read).then(|| disconnected_client(&root));
+    let transport = Transport::socket(host.id, root.join("UnavailableContent.sock"));
+    if let Some(client) = &mut client {
+        let error = transfer_progress(client, placement.grant.clone(), &transport, &root, &mut job)
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound,
+            "unfinished content must still prepare current authority"
+        );
+        assert_eq!(job.offset, 32768);
+    }
     job.begin_repair(false).unwrap();
     assert_eq!(job.offset, 32768);
     job.apply(&first, &response(0, &bytes[..32768])).unwrap();
@@ -183,6 +223,11 @@ fn progress_contract(effect: content::Effect) {
     assert_eq!(job.bytes, bytes);
     assert_eq!(job.offset, bytes.len() as u64);
     assert!(job.receipt.is_some());
+    if let Some(client) = &mut client {
+        transfer_progress(client, placement.grant.clone(), &transport, &root, &mut job).unwrap();
+        assert_eq!(job.bytes, bytes);
+        assert!(client.store.resume_ordinary().unwrap().is_none());
+    }
     job.begin_repair(true).unwrap();
     assert_eq!(job.offset, bytes.len() as u64);
     assert!(job.receipt.is_some());
