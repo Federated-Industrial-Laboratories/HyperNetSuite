@@ -208,7 +208,7 @@ pub(crate) fn fetch_source_from(
         hex::encode(host.id),
         effect.code()
     ));
-    job(
+    job_with_metadata(
         c,
         grant.clone(),
         placement.clone(),

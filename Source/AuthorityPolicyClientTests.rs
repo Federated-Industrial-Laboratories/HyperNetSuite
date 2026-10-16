@@ -46,6 +46,60 @@ fn discovery_requires_exact_linked_custody_and_current_candidate_references() {
 }
 
 #[test]
+fn policy_discovery_prepares_transport_before_sampling_challenge_clock() {
+    let mut f = Fixture::new();
+    let descriptor = f.store.descriptor().clone();
+    let scope = descriptor.scope();
+    let parameters = wire::encode(&a(vec![
+        V::Uint(200),
+        V::Uint(1),
+        V::Text("AuthorityPolicyContext".into()),
+        b(&scope.network),
+    ]))
+    .unwrap();
+    let original = prepare_ordinary(
+        &descriptor,
+        &f.signer,
+        &mut f.store,
+        "AuthorityPolicyContext",
+        scope.network,
+        0,
+        &[],
+        &parameters,
+    )
+    .unwrap();
+    assert!(!f.store.needs_stream_status().unwrap());
+    let socket = f.directory.0.join("Unavailable.sock");
+    for _ in 0..2 {
+        let mut sampled = false;
+        let error = discover(
+            &f.bootstrap,
+            &socket,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            || {
+                sampled = true;
+                Ok(f.issued)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(
+            !sampled,
+            "transport preparation consumed challenge freshness"
+        );
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().signed(),
+            original
+        );
+    }
+}
+
+#[test]
 fn pending_discovery_resumes_after_lost_reply_and_does_not_replace_a_domain_intent() {
     use crate::authority_inspection::tests::{
         certified_request, live_clock, mature, receive_control, send_control, submitted,

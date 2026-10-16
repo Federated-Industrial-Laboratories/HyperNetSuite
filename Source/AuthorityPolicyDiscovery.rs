@@ -101,6 +101,7 @@ pub fn discover(
             &parameters,
         )?
     };
+    let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
     let health = clock()?;
     let issued = health.observe()?;
     let challenge = session.issue(&intent, signer, random_id()?, DURATION, health)?;
@@ -118,8 +119,6 @@ pub fn discover(
         .checked_add(DURATION)
         .context("policy discovery deadline overflow")?;
     let result = (|| {
-        let control =
-            crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
         let (reply, evidence) = crate::authority_local_transport::exchange(
             &descriptor,
             &ordered,
