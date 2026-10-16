@@ -101,33 +101,51 @@ pub fn discover(
             &parameters,
         )?
     };
-    let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
-    let health = clock()?;
-    let issued = health.observe()?;
-    let challenge = session.issue(&intent, signer, random_id()?, DURATION, health)?;
-    let parsed = Challenge::from_signed(&challenge)?;
-    let ordered = wire::encode(&a(vec![
-        V::Uint(22),
-        V::Uint(1),
-        scope.value(),
-        b(&intent),
-        b(&challenge),
-        V::Uint(parsed.expires_at_ms),
-    ]))?;
-    let deadline = issued
-        .boot_ms
-        .checked_add(DURATION)
-        .context("policy discovery deadline overflow")?;
+    let (reply, evidence, challenge, ordered, deadline) =
+        crate::authority_local_transport::retry_expired_exchange(|| {
+            ensure!(
+                store
+                    .resume_ordinary()?
+                    .is_some_and(|p| p.signed() == intent),
+                "policy exchange lost its exact pending intent"
+            );
+            let control =
+                crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
+            let health = clock()?;
+            let issued = health.observe()?;
+            let challenge = session.issue(&intent, signer, random_id()?, DURATION, health)?;
+            let parsed = Challenge::from_signed(&challenge)?;
+            let ordered = wire::encode(&a(vec![
+                V::Uint(22),
+                V::Uint(1),
+                scope.value(),
+                b(&intent),
+                b(&challenge),
+                V::Uint(parsed.expires_at_ms),
+            ]))?;
+            let deadline = issued
+                .boot_ms
+                .checked_add(DURATION)
+                .context("policy discovery deadline overflow")?;
+            let exchange = crate::authority_local_transport::exchange(
+                &descriptor,
+                &ordered,
+                deadline,
+                &control,
+                store.prefix(),
+                store.tree_head(),
+                &mut clock,
+            );
+            drop(control);
+            if exchange.is_err() {
+                session.discard(&challenge)?;
+            }
+            Ok((
+                deadline,
+                exchange.map(|(reply, evidence)| (reply, evidence, challenge, ordered, deadline)),
+            ))
+        })?;
     let result = (|| {
-        let (reply, evidence) = crate::authority_local_transport::exchange(
-            &descriptor,
-            &ordered,
-            deadline,
-            &control,
-            store.prefix(),
-            store.tree_head(),
-            &mut clock,
-        )?;
         let evidence = AncestryEvidence::from_shared(evidence);
         let mut pair = None;
         let verified = proof::verify_response(

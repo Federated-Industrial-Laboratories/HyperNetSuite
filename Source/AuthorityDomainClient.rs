@@ -504,6 +504,57 @@ impl<'a> Prepared<'a> {
                 .context("domain deadline overflow")?,
         })
     }
+    #[allow(clippy::too_many_arguments)]
+    fn exchange_with_recovery<T, C: FnMut() -> Result<ClockHealth>>(
+        &mut self,
+        control: LocalControl,
+        store: &Store,
+        signer: &SigningKey,
+        session: &mut Session,
+        clock: &mut C,
+        mut prepare: impl FnMut() -> Result<LocalControl>,
+        exchange: &mut impl FnMut(&Self, &mut C, &LocalControl) -> Result<T>,
+    ) -> Result<T> {
+        let mut initial = Some(control);
+        crate::authority_local_transport::retry_expired_exchange(|| {
+            let control = if let Some(control) = initial.take() {
+                control
+            } else {
+                ensure!(
+                    store
+                        .resume_ordinary()?
+                        .is_some_and(|p| p.signed() == self.intent),
+                    "expired exchange lost its exact pending intent"
+                );
+                session.discard(&self.challenge)?;
+                let control = prepare()?;
+                let health = clock()?;
+                let issued = health.observe()?;
+                self.challenge =
+                    session.issue(&self.intent, signer, random_id()?, DURATION, health)?;
+                let parsed = Challenge::from_signed(&self.challenge)?;
+                self.ordered = wire::encode(&a(vec![
+                    V::Uint(22),
+                    V::Uint(1),
+                    self.descriptor.scope().value(),
+                    b(&self.intent),
+                    b(&self.challenge),
+                    V::Uint(parsed.expires_at_ms),
+                ]))?;
+                self.deadline = issued
+                    .boot_ms
+                    .checked_add(DURATION)
+                    .context("domain deadline overflow")?;
+                control
+            };
+            let result =
+                self.exchange_with_history(signer, session, clock, &mut |attempt, clock| {
+                    exchange(attempt, clock, &control)
+                });
+            drop(control);
+            Ok((self.deadline, result))
+        })
+    }
     fn exchange_with_history<T, C: FnMut() -> Result<ClockHealth>>(
         &mut self,
         signer: &SigningKey,
@@ -528,6 +579,9 @@ impl<'a> Prepared<'a> {
                         .deadline
                         .checked_sub(health.observe()?.boot_ms)
                         .filter(|remaining| *remaining > 0)
+                        .ok_or(crate::authority_local_transport::RequestDeadlineExpired {
+                            deadline: self.deadline,
+                        })
                         .context("original domain query deadline expired")?;
                     self.challenge = session
                         .issue(&self.intent, signer, random_id()?, duration, health)
@@ -819,14 +873,20 @@ pub fn local_with_objects(
                 .cloned()
                 .collect(),
         )?;
-        let exchange =
-            prepared.exchange_with_history(signer, session, &mut clock, &mut |attempt, clock| {
+        let exchange = prepared.exchange_with_recovery(
+            control,
+            store,
+            signer,
+            session,
+            &mut clock,
+            || LocalControl::prepare_authority(path, store),
+            &mut |attempt, clock, control| {
                 crate::authority_local_transport::exchange_objects(
                     &descriptor,
                     &attempt.ordered,
                     &submission,
                     attempt.deadline,
-                    &control,
+                    control,
                     store.prefix(),
                     store.tree_head(),
                     clock,
@@ -835,7 +895,8 @@ pub fn local_with_objects(
                         domains::response_inputs(&intent, &wire::decode(&result.value)?)
                     },
                 )
-            });
+            },
+        );
         challenge = prepared.challenge.clone();
         let (reply, evidence, outputs) = exchange?;
         prepared.finish_with_objects(
