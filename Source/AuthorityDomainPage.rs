@@ -129,6 +129,6 @@ fn identity(label: &str, fields: Vec<V>) -> Result<Digest> {
 
 #[cfg(test)]
 #[path = "AuthorityPageTests.rs"]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) use tests::complete_content;

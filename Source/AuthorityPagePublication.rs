@@ -61,7 +61,7 @@ pub(crate) struct Publication {
 pub(crate) fn fetch(c: &mut Client, grant: &VersionRef, page_id: [u8; 16]) -> Result<Publication> {
     content_cli::resume_source(c, grant, page::content::Effect::Read)?;
     let (result, _) = c.action(
-        Action::Read { page: page_id },
+        Action::View { page: page_id },
         Some(grant.clone()),
         Resolved::default(),
     )?;
@@ -88,7 +88,7 @@ pub(crate) fn fetch(c: &mut Client, grant: &VersionRef, page_id: [u8; 16]) -> Re
         .record(141, review.statement.revision.id)?;
     let source = page::Revision::parse(&revision.payload, scope.network, scope.incarnation)?;
     let placement = content_cli::selected_placement(&result.cache.state, &source)?;
-    let bytes = content_cli::fetch_source(c, grant, &placement, page::content::Effect::Read)?;
+    let bytes = content_cli::fetch_view_source(c, grant, &placement, &result)?;
     source.verify_source(&bytes)?;
     let encoded = Bundle::encode(&bytes, &source.author.bytes, &review.statement.bytes)?;
     object.verify(&encoded)?;

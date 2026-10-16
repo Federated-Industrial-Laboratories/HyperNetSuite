@@ -147,6 +147,35 @@ pub fn retain(options: Options) -> Result<()> {
         &json!({"status":"ContentRouteRetained","routes":routes.len(),"directory":options.directory}),
     )
 }
+/// Only the just-accepted combined view can replace a separate content metadata query.
+pub(crate) fn fetch_view_source(
+    c: &mut Client,
+    grant: &VersionRef,
+    placement: &VersionRef,
+    view: &ResultState,
+) -> Result<Vec<u8>> {
+    let fields = view.value.array(5)?;
+    let versions = fields[3]
+        .list(64)?
+        .iter()
+        .map(domain::version)
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        view.prefix == *c.store.prefix()
+            && fields[4].array(4)?[0].text()? == "PageView"
+            && versions.contains(placement)
+            && view.cache.state.record(159, placement.id)?.reference == *placement,
+        "source fetch requires its exact current certified Page view"
+    );
+    let value = content::Placement::parse(&view.cache.state.record(159, placement.id)?.payload)?;
+    for host in &value.hosts {
+        ensure!(
+            versions.contains(&view.cache.state.record(147, host.id)?.reference),
+            "Page view omits its current content host"
+        );
+    }
+    fetch_source_with_metadata(c, grant, placement, Effect::Read, None)
+}
 pub(crate) fn fetch_source(
     c: &mut Client,
     grant: &VersionRef,
@@ -176,6 +205,15 @@ pub(crate) fn fetch_source_from(
             Resolved::default(),
         )?;
     }
+    fetch_source_with_metadata(c, grant, placement, effect, selected_host)
+}
+fn fetch_source_with_metadata(
+    c: &mut Client,
+    grant: &VersionRef,
+    placement: &VersionRef,
+    effect: Effect,
+    selected_host: Option<&VersionRef>,
+) -> Result<Vec<u8>> {
     let cache = c.cache()?;
     let record = cache.state.record(159, placement.id)?;
     ensure!(

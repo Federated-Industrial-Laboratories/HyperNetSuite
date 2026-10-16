@@ -350,6 +350,7 @@ fn refreshable_page_query(command: &Command) -> bool {
             Command::Page(
                 Page::Context { .. }
                     | Page::Read { .. }
+                    | Page::View { .. }
                     | Page::List { .. }
                     | Page::SearchList { .. }
                     | Page::LocalSearchLease { .. }

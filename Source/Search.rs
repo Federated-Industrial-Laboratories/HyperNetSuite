@@ -19,6 +19,8 @@ pub(crate) mod library;
 mod local;
 #[path = "SearchNetwork.rs"]
 mod network;
+#[cfg(test)]
+pub(crate) use network::current_view_for_test;
 #[path = "SearchRetain.rs"]
 mod retain;
 #[path = "SearchSource.rs"]

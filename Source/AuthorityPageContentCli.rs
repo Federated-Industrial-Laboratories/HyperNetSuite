@@ -11,7 +11,8 @@ use progress::Progress;
 mod routes;
 pub(crate) use routes::search_route;
 pub(crate) use routes::{
-    fetch_source, fetch_source_from, repair_source, selected_transport, upload_source,
+    fetch_source, fetch_source_from, fetch_view_source, repair_source, selected_transport,
+    upload_source,
 };
 #[derive(Args)]
 pub struct PlacementRef {
@@ -479,3 +480,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Purge { exchange } => transfer(exchange, Effect::Purge, None, None),
     }
 }
+
+#[cfg(test)]
+#[path = "AuthorityPageViewConsumerTests.rs"]
+pub(crate) mod view_tests;

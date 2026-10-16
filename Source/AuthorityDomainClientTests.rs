@@ -333,6 +333,7 @@ fn page_history_refresh_excludes_mutations_and_serving_authorisations() {
     };
     let queries = vec![
         Page::Read { page: [1; 16] },
+        Page::View { page: [1; 16] },
         Page::List {
             namespace: "Books".into(),
             after: None,

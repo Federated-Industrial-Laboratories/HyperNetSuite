@@ -633,3 +633,147 @@ fn page_source_metadata_survives_floor_before_cache_interruption() {
     let reopened = Cache::load(&f.bootstrap, &f.store).unwrap();
     assert_eq!(reopened.state.value(), authority.value());
 }
+
+#[test]
+fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogue_floor() {
+    let (bootstrap, mut authority, records, grant, placement, source) =
+        page::tests::view_tests::consumer_fixture();
+    let mut f = Fixture::with_bootstrap(bootstrap, crate::authority_deployment_tests::key(5), 6000);
+    let request = |command: PageCommand| Request {
+        command: command.into(),
+        grant: Some(grant.clone()),
+    };
+    let certify = |p: &Prepared, state: &State, at: u64, prefix: &Prefix| {
+        let intent = Intent::from_signed(&p.intent).unwrap();
+        let decision = Operation::parse(&intent)
+            .unwrap()
+            .prepare_with_inputs(
+                state,
+                &records,
+                &Reservations(p.bootstrap.reservations().to_vec()),
+                &intent,
+                at,
+                false,
+                true,
+                &Resolved::default(),
+            )
+            .unwrap();
+        assert_eq!(decision.code, 0);
+        let next = decision.state.clone().unwrap_or_else(|| state.clone());
+        let (packet, node) = certified_request(
+            &p.descriptor,
+            &p.intent,
+            &p.challenge,
+            &p.ordered,
+            decision.value,
+            at,
+            *prefix.node(),
+            prefix.height() + 1,
+            0,
+        );
+        let packet = wire::decode(&packet).unwrap();
+        let fields = packet.array(10).unwrap();
+        (
+            CertifiedReply {
+                node: node.clone(),
+                certificate: fields[7].bytes().unwrap().to_vec(),
+                result: fields[8].bytes().unwrap().to_vec(),
+            },
+            AncestryEvidence::direct(vec![node]),
+            next,
+        )
+    };
+    // The normal fresh challenge, independent domain proof verification, durable
+    // floor and cache publication produce the result consumed by the reader.
+    let prepared = Prepared::new(
+        &f.bootstrap,
+        request(PageCommand::View { page: [71; 16] }),
+        Cache::load(&f.bootstrap, &f.store).unwrap(),
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    let (reply, evidence, _) = certify(&prepared, &authority, 6000, f.store.prefix());
+    let view = prepared
+        .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
+            Ok(f.current)
+        })
+        .unwrap();
+    assert!(
+        crate::search::current_view_for_test(&f.store, &view, f.current.observe().unwrap())
+            .unwrap()
+    );
+    let mut client = crate::authority_pages::Client {
+        bootstrap: f.bootstrap,
+        directory: f.directory.0.clone(),
+        key: f.signer.clone(),
+        store: f.store,
+        session: f.session,
+        clock: crate::authority_clock::Source::Private {
+            path: f.directory.0.join("UnavailableClock.json"),
+        },
+        socket: f.directory.0.join("UnavailableAuthority.sock"),
+    };
+    crate::authority_pages::content_cli::view_tests::consume(
+        &mut client,
+        &grant,
+        &placement,
+        &view,
+        &source,
+    );
+    f.bootstrap = client.bootstrap;
+    f.store = client.store;
+    f.session = client.session;
+    let issue = f.current.observe().unwrap();
+    f.issued = f.current;
+    f.current = ClockHealth::new(
+        issue.wall_ms + 251,
+        issue.boot_ms + 251,
+        issue.boot_ms + 10000,
+        100,
+    )
+    .unwrap()
+    .frozen();
+    let prepared = Prepared::new(
+        &f.bootstrap,
+        request(PageCommand::Content(page::content::Command::Withdraw {
+            placement: placement.clone(),
+        })),
+        Cache::load(&f.bootstrap, &f.store).unwrap(),
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    let (reply, evidence, next) = certify(
+        &prepared,
+        &authority,
+        f.current.observe().unwrap().wall_ms,
+        f.store.prefix(),
+    );
+    authority = next;
+    prepared
+        .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
+            Ok(f.current)
+        })
+        .unwrap();
+    assert!(
+        authority
+            .records
+            .contains_key(&(page::content::TOMBSTONE_KIND, placement.id))
+    );
+    assert!(
+        f.store
+            .generations()
+            .iter()
+            .any(|r| r.kind == page::content::TOMBSTONE_KIND)
+    );
+    assert!(
+        !crate::search::current_view_for_test(&f.store, &view, f.current.observe().unwrap())
+            .unwrap(),
+        "an earlier catalogue cannot omit a newly retained content withdrawal"
+    );
+}

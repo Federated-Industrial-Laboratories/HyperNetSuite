@@ -6,7 +6,7 @@ use crate::{
         self as domain,
         page::{self, Command as Action, content},
     },
-    authority_inspection::page_media_client as media_client,
+    authority_inspection::{domain_client::ResultState, page_media_client as media_client},
     authority_objects::Resolved,
     authority_pages::{Client, content_cli},
 };
@@ -113,11 +113,28 @@ pub fn native(
 ) -> Result<library::Entry> {
     let (result, _) = c
         .action(
-            Action::Read { page: raw },
+            Action::View { page: raw },
             Some(grant.clone()),
             Resolved::default(),
         )
-        .context("native search PageRead authority failed")?;
+        .context("native search Page view authority failed")?;
+    native_view(c, grant, raw, query, diagnostics, &result)
+}
+fn native_view(
+    c: &mut Client,
+    grant: &VersionRef,
+    raw: [u8; 16],
+    query: Option<&Request>,
+    diagnostics: bool,
+    result: &ResultState,
+) -> Result<library::Entry> {
+    ensure!(
+        matches!(
+            result.value.array(5)?[4].array(4)?[0].text()?,
+            "PageView" | "PageSearchList"
+        ),
+        "native search requires a certified complete Page view"
+    );
     let n = result.prefix.scope().network;
     let i = result.prefix.scope().incarnation;
     let head = page::Ledger::parse(
@@ -148,14 +165,6 @@ pub fn native(
     let placement_ref = content_cli::selected_placement(&result.cache.state, &revision)?;
     let placement =
         content::Placement::parse(&result.cache.state.record(159, placement_ref.id)?.payload)?;
-    c.action(
-        Action::Content(content::Command::Get {
-            placement: placement_ref.clone(),
-        }),
-        Some(grant.clone()),
-        Resolved::default(),
-    )
-    .context("native search ContentGet authority failed")?;
     let (host, path) = content_cli::search_route(c, &placement, query.is_some())?;
     if let Some(query) = query {
         query.network_scope(n, i, page::namespace_id(&head.namespace)?)?;
@@ -266,6 +275,43 @@ pub fn native(
         lease: None,
     })
 }
+// A catalogue carries complete views, but earlier content exchanges can consume its
+// original validity. Refresh an aged item before preparing or disclosing its query.
+fn current_view(c: &Client, result: &ResultState) -> Result<bool> {
+    if result.prefix != *c.store.prefix() {
+        return Ok(false);
+    }
+    current_view_at(&c.store, result, c.clock.health()?.observe()?)
+}
+fn current_view_at(
+    store: &Store,
+    result: &ResultState,
+    now: crate::authority_challenge::Observation,
+) -> Result<bool> {
+    if result.prefix != *store.prefix()
+        || now.boot_ms >= result.deadline_boot_ms
+        || now
+            .wall_ms
+            .checked_add(crate::authority_challenge::DELTA_MS)
+            .is_none_or(|upper| upper >= result.expires_at_ms)
+    {
+        return Ok(false);
+    }
+    let versions = result.value.array(5)?[3]
+        .list(64)?
+        .iter()
+        .map(domain::version)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(domain::result::minimum(&versions, store.generations()).is_ok())
+}
+#[cfg(test)]
+pub(crate) fn current_view_for_test(
+    store: &Store,
+    result: &ResultState,
+    now: crate::authority_challenge::Observation,
+) -> Result<bool> {
+    current_view_at(store, result, now)
+}
 // Refresh only visible results and one continuation item, never the full candidate corpus.
 fn refresh_selection(
     hits: &[local::Hit],
@@ -332,13 +378,24 @@ pub fn run(
                 }
             }
             for raw in pages {
-                let entry = native(
-                    &mut c,
-                    &grant,
-                    raw,
-                    Some(&request),
-                    connection.local_diagnostics,
-                )?;
+                let entry = if current_view(&c, &result)? {
+                    native_view(
+                        &mut c,
+                        &grant,
+                        raw,
+                        Some(&request),
+                        connection.local_diagnostics,
+                        &result,
+                    )?
+                } else {
+                    native(
+                        &mut c,
+                        &grant,
+                        raw,
+                        Some(&request),
+                        connection.local_diagnostics,
+                    )?
+                };
                 ensure!(
                     entries.insert(entry.id, entry).is_none(),
                     "native search catalogue repeats a Page"
