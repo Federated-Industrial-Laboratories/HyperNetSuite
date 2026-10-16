@@ -202,6 +202,7 @@ impl Endpoint {
             observed: std::cell::Cell::new(false),
             authority,
             reused: false,
+            completed_floor: None,
         })
     }
 }
@@ -212,6 +213,10 @@ pub struct Prepared {
     observed: std::cell::Cell<bool>,
     authority: Weak<Mutex<AuthorityPool>>,
     reused: bool,
+    completed_floor: Option<(
+        crate::authority_proof::Prefix,
+        Option<crate::authority_history::TreeHead>,
+    )>,
 }
 impl Prepared {
     pub(crate) fn setup_deadline(&self) -> u64 {
@@ -230,6 +235,7 @@ impl Prepared {
             observed: std::cell::Cell::new(false),
             authority: Weak::new(),
             reused: false,
+            completed_floor: None,
         }
     }
     pub(crate) fn route(&self) -> &route_profile::Profile {
@@ -241,6 +247,14 @@ impl Prepared {
     pub(crate) fn fits_authority_challenge(&self) -> bool {
         self.session.borrow().reusable()
     }
+    pub(crate) fn take_completed_floor(
+        &mut self,
+    ) -> Option<(
+        crate::authority_proof::Prefix,
+        Option<crate::authority_history::TreeHead>,
+    )> {
+        self.completed_floor.take()
+    }
     fn matches(&self, endpoint: &Endpoint) -> Result<bool> {
         self.endpoint.same_identity(endpoint)
     }
@@ -250,10 +264,17 @@ impl Prepared {
         self
     }
     /// Only a fully validated successful operation may retain its connection.
-    pub(crate) fn retain(self) {
+    pub(crate) fn retain(
+        mut self,
+        completed_floor: Option<(
+            crate::authority_proof::Prefix,
+            Option<crate::authority_history::TreeHead>,
+        )>,
+    ) {
         if cancelled() || !self.session.borrow().reusable() {
             return;
         }
+        self.completed_floor = completed_floor;
         if let Some(pool) = self.authority.upgrade()
             && let Ok(mut pool) = pool.lock()
             && pool.active

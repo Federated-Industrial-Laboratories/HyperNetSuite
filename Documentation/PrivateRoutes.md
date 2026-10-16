@@ -29,7 +29,7 @@ Core enforces its forwarding permission beneath TLS, including implicit writes
 while reading TLS records. Expired permission pauses forwarding until a fresh
 proof arrives; failure or the original transport deadline closes the channel.
 
-For authority connections, Suite prepares certified historical evidence before
+For cold authority connections, Suite prepares certified historical evidence before
 creating the application challenge. It verifies the checkpoint quorum, scope,
 anchor and continuity from the exact retained floor and tree head. This temporary
 evidence cannot update the floor, stream state or current permissions. After the
@@ -40,8 +40,17 @@ limits and five-second application challenge remain unchanged.
 
 Within one selected network command or browser session, successful authority
 operations can reuse the admitted authority connection. Each operation reloads
-and checks the exact endpoint and possession key, refreshes historical evidence
-against the latest retained floor, and obtains fresh policy and result proofs.
+and checks the exact endpoint and possession key and obtains fresh policy and
+result proofs. After successful proof verification and durable completion, the
+connection can retain a local hint of that exact prefix and tree head. A healthy
+reused connection with that unchanged floor and a ready stream can defer the
+speculative latest-checkpoint query. Pending ordinary work or a fence, a changed
+floor, a new connection or an earlier failure requires normal preparation.
+The hint grants no permission and contains no cached result. Every new reply
+still verifies its exact ancestry: a direct successor supplies its node, a short
+gap fetches its chain, and longer or unavailable ancestry requires certified
+checkpoint history and continuity. This work remains inside the original
+challenge deadline; failure does not expose content or retry a completed effect.
 Connection reuse does not cache current permission. Separate CLI processes open
 separate connections.
 

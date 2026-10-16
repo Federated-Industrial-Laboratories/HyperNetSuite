@@ -861,22 +861,21 @@ fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogu
         "an earlier catalogue cannot omit a newly retained content withdrawal"
     );
     let authority = f.directory.0.join("UnavailableAuthority.sock");
+    let error = crate::authority_inspection::page_media_client::ensure_content_read(
+        &f.bootstrap,
+        &mut f.store,
+        &authority,
+        &f.signer,
+        &mut f.session,
+        || Ok(f.current),
+        Some((&view, &placement, &host)),
+    )
+    .unwrap_err();
     assert!(
-        crate::authority_inspection::page_media_client::ensure_content_read(
-            &f.bootstrap,
-            &mut f.store,
-            &authority,
-            &f.signer,
-            &mut f.session,
-            || Ok(f.current),
-            Some((&view, &placement, &host)),
-        )
-        .is_err()
+        error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+        "an advanced floor must prepare normal discovery on the unavailable authority socket"
     );
-    let pending = f.store.resume_ordinary().unwrap().unwrap();
-    assert_eq!(
-        Intent::from_signed(pending.signed()).unwrap().action,
-        "AuthorityPolicyContext",
-        "an advanced floor must take normal discovery before another Content effect"
-    );
+    assert!(f.store.resume_ordinary().unwrap().is_none());
 }

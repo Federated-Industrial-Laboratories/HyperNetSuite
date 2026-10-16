@@ -803,17 +803,46 @@ fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one
                 listener.accept().is_err(),
                 "proof retrieval must not open another admitted stream"
             );
+            // Exact completed-floor reuse must not send another speculative checkpoint query.
+            assert_eq!(framed_read(&mut inner), b"reused authority connection");
+            framed_send(&mut inner, b"same admitted connection");
+            let packet = framed_read(&mut inner);
+            let (ordered, intent, challenge) = submitted(&packet);
+            let parsed = Intent::from_signed(&intent).unwrap();
+            let pending = Prepared {
+                context,
+                request: request(),
+                target: context
+                    .governance
+                    .versions()
+                    .into_iter()
+                    .find(|v| v.kind == 100)
+                    .unwrap(),
+                expected: parsed.expected,
+                intent,
+                challenge,
+                ordered,
+                deadline: boot_time_ms().unwrap() + 5000,
+            };
+            let (reply, _) = certified(
+                &pending,
+                result_value(&pending),
+                mature(&pending.challenge),
+                wire::digest(&target),
+                162,
+            );
+            framed_send(&mut inner, &reply);
+            // Another verified result advances the local floor while this route is pooled.
             let query = wire::decode(&framed_read(&mut inner)).unwrap();
             let fields = record(&query, 41, 5).unwrap();
             assert_eq!(fields[3], V::Uint(4));
             let query = wire::decode(fields[4].bytes().unwrap()).unwrap();
             let query = query.array(5).unwrap();
-            assert_eq!(query[0], V::Uint(161));
-            assert_eq!(query[1], b(&wire::digest(&target)));
+            assert_eq!(query[0], V::Uint(163));
+            assert_eq!(query[2], V::Null);
             assert_eq!(query[3], V::Uint(160));
             framed_send(&mut inner, &unavailable_packet);
-            assert_eq!(framed_read(&mut inner), b"reused authority connection");
-            framed_send(&mut inner, b"same admitted connection");
+            // Pending recovery is also cold; malformed history must discard the connection.
             let query = wire::decode(&framed_read(&mut inner)).unwrap();
             assert_eq!(record(&query, 41, 5).unwrap()[3], V::Uint(4));
             framed_send(&mut inner, b"invalid checkpoint response");
@@ -883,7 +912,7 @@ fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one
         assert_eq!(f.store.tree_head().unwrap().size(), 160);
         assert!(f.store.resume_ordinary().unwrap().is_none());
         assert!(!LocalControl::validate_prefetch_for_test(&f.store, &unavailable_packet).unwrap());
-        control.retain();
+        control.retain(&f.store);
         // The next TUI request can run on another worker thread while its command owns the pool.
         let route = threads
             .spawn(|| {
@@ -907,7 +936,65 @@ fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one
             observed_inode
         );
         assert_eq!(std::fs::read(&observation).unwrap(), observed_bytes);
-        control.retain();
+        let result = context
+            .inspect_prepared(
+                &control,
+                request(),
+                &f.signer,
+                &mut f.store,
+                &mut f.session,
+                live_clock,
+            )
+            .unwrap();
+        assert_eq!(result.prefix().height(), 162);
+        control.retain(&f.store);
+        let pending = context
+            .prepare(
+                request(),
+                &f.signer,
+                &mut f.store,
+                &mut f.session,
+                live_clock().unwrap(),
+            )
+            .unwrap();
+        let (reply, target) = certified(
+            &pending,
+            result_value(&pending),
+            mature(&pending.challenge),
+            *f.store.prefix().node(),
+            163,
+        );
+        let reply = wire::decode(&reply).unwrap();
+        let reply = record(&reply, 42, 10).unwrap();
+        pending
+            .finish(
+                CertifiedReply {
+                    node: target.clone(),
+                    certificate: reply[7].bytes().unwrap().to_vec(),
+                    result: reply[8].bytes().unwrap().to_vec(),
+                },
+                vec![target],
+                &mut f.store,
+                &mut f.session,
+                &mut live_clock,
+            )
+            .unwrap();
+        assert_eq!(f.store.prefix().height(), 163);
+        let route = crate::private_route_client::AuthorityPool::take(&pool, &endpoint)
+            .unwrap()
+            .unwrap();
+        let control = LocalControl::prepared_for_test(route, &f.store).unwrap();
+        let pending = context
+            .prepare(
+                request(),
+                &f.signer,
+                &mut f.store,
+                &mut f.session,
+                live_clock().unwrap(),
+            )
+            .unwrap();
+        let pending_digest = f.store.resume_ordinary().unwrap().unwrap().digest();
+        control.retain(&f.store);
         let route = crate::private_route_client::AuthorityPool::take(&pool, &endpoint)
             .unwrap()
             .unwrap();
@@ -917,6 +1004,11 @@ fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().digest(),
+            pending_digest
+        );
+        pending.cancel(&mut f.session).unwrap();
         server.join().unwrap();
     });
 }

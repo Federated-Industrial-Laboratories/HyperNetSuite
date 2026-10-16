@@ -78,6 +78,7 @@ pub fn discover(
         V::Text(ACTION.into()),
         b(&scope.network),
     ]))?;
+    let mut initial_control = None;
     let intent = if let Some(pending) = store.resume_ordinary()? {
         let i = Intent::from_signed(pending.signed())?;
         ensure!(
@@ -90,6 +91,9 @@ pub fn discover(
         );
         pending.signed().to_vec()
     } else {
+        // Content-free transport preparation leaves the floor unchanged and precedes a new intent.
+        initial_control =
+            Some(crate::authority_local_transport::LocalControl::prepare_authority(path, store)?);
         prepare_ordinary(
             &descriptor,
             signer,
@@ -109,8 +113,11 @@ pub fn discover(
                     .is_some_and(|p| p.signed() == intent),
                 "policy exchange lost its exact pending intent"
             );
-            let control =
-                crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
+            let control = if let Some(control) = initial_control.take() {
+                control
+            } else {
+                crate::authority_local_transport::LocalControl::prepare_authority(path, store)?
+            };
             let health = clock()?;
             let issued = health.observe()?;
             let challenge = session.issue(&intent, signer, random_id()?, DURATION, health)?;
@@ -210,7 +217,7 @@ pub fn discover(
     if result.is_err() {
         session.discard(&challenge)?;
     } else {
-        control.retain();
+        control.retain(store);
     }
     result
 }

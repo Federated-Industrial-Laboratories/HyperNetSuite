@@ -907,7 +907,7 @@ pub fn local_with_objects(
             session,
             &mut clock,
         )?;
-        control.retain();
+        control.retain(store);
         Ok(result)
     })();
     if result.is_err() {

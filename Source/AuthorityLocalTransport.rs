@@ -100,7 +100,7 @@ impl LocalControl {
             history: None,
         })
     }
-    /// Historical continuity is verified before the caller samples its fresh challenge clock.
+    /// Cold history is prepared before the fresh challenge; an exact completed floor can defer it.
     pub fn prepare_authority(path: &Path, store: &crate::authority_floor::Store) -> Result<Self> {
         let mut control = Self::open(path)?.prefetch_authority(store)?;
         // History can consume the remaining admission. Replacement stays before a fresh challenge.
@@ -111,14 +111,23 @@ impl LocalControl {
         }
         Ok(control)
     }
-    /// Return only the admitted connection; history is refreshed against the next exact floor.
-    pub(crate) fn retain(self) {
+    /// Call only after proof verification and durable completion. The hint grants no authority.
+    pub(crate) fn retain(self, store: &crate::authority_floor::Store) {
         if let Endpoint::Relay(route) = self.endpoint {
-            route.retain();
+            let ready = Self::ready_for_new_request(store);
+            let Ok(ready) = ready else {
+                return;
+            };
+            route.retain(ready.then(|| (store.prefix().clone(), store.tree_head().cloned())));
         }
     }
+    fn ready_for_new_request(store: &crate::authority_floor::Store) -> Result<bool> {
+        Ok(store.resume_ordinary()?.is_none()
+            && store.resume_fence()?.is_none()
+            && !store.needs_stream_status()?)
+    }
     fn prefetch_authority(mut self, store: &crate::authority_floor::Store) -> Result<Self> {
-        let Endpoint::Relay(route) = &self.endpoint else {
+        let Endpoint::Relay(route) = &mut self.endpoint else {
             return Ok(self);
         };
         ensure!(
@@ -129,6 +138,15 @@ impl LocalControl {
         );
         let prefix = store.prefix();
         let head = store.tree_head();
+        let completed = route.take_completed_floor();
+        if route.reused()
+            && completed.is_some_and(|(old, prior)| old == *prefix && prior.as_ref() == head)
+            && Self::ready_for_new_request(store)?
+        {
+            // Final reply ancestry still binds the result to this exact floor and tree head.
+            return Ok(self);
+        }
+        let deadline = route.setup_deadline();
         let query = wire::encode(&a(vec![
             V::Uint(prefix.height()),
             b(prefix.node()),
@@ -136,10 +154,7 @@ impl LocalControl {
             V::Uint(head.map_or(0, |h| h.size())),
             head.map_or(V::Null, |h| b(h.root())),
         ]))?;
-        let bytes = self.exchange(
-            &HistoryEvidence::control(prefix, 4, &query)?,
-            route.setup_deadline(),
-        )?;
+        let bytes = self.exchange(&HistoryEvidence::control(prefix, 4, &query)?, deadline)?;
         self.history = PrefetchedHistory::parse(store, &bytes)?;
         Ok(self)
     }
