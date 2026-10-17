@@ -49,6 +49,8 @@ mod authority_operational_consent;
 mod authority_policies;
 #[path = "AuthorityProof.rs"]
 mod authority_proof;
+#[path = "AuthorityRead.rs"]
+mod authority_read;
 #[cfg(test)]
 #[path = "AuthorityRecipient.rs"]
 mod authority_recipient;

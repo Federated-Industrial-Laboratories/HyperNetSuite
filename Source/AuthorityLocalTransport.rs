@@ -122,9 +122,9 @@ impl LocalControl {
         }
     }
     fn ready_for_new_request(store: &crate::authority_floor::Store) -> Result<bool> {
-        Ok(store.resume_ordinary()?.is_none()
-            && store.resume_fence()?.is_none()
-            && !store.needs_stream_status()?)
+        // Historical evidence does not depend on ordinary stream initialization.
+        // Ordinary callers still reconcile their stream before issuing an operation.
+        Ok(store.resume_ordinary()?.is_none() && store.resume_fence()?.is_none())
     }
     fn prefetch_authority(mut self, store: &crate::authority_floor::Store) -> Result<Self> {
         let Endpoint::Relay(route) = &mut self.endpoint else {
@@ -568,6 +568,16 @@ impl HistoryEvidence {
             None => Ok(result),
         }
     }
+    pub fn attach_read(
+        &self,
+        store: &crate::authority_floor::Store,
+        result: crate::authority_read::VerifiedRead,
+    ) -> Result<crate::authority_read::VerifiedRead> {
+        match &self.history {
+            Some((checkpoint, history)) => store.attach_read_history(result, checkpoint, history),
+            None => Ok(result),
+        }
+    }
     fn control(prefix: &Prefix, operation: u64, payload: &[u8]) -> Result<Vec<u8>> {
         wire::encode(&a(vec![
             V::Uint(41),
@@ -747,6 +757,97 @@ impl HistoryEvidence {
             history: Some((checkpoint, history)),
         })
     }
+}
+
+/// Finite unavailability carries no permission and never becomes an ordered operation.
+#[derive(Debug)]
+pub(crate) struct ReadUnavailable {
+    pub(crate) code: u64,
+}
+impl std::fmt::Display for ReadUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "fresh authority read unavailable with code {}",
+            self.code
+        )
+    }
+}
+impl std::error::Error for ReadUnavailable {}
+
+#[allow(clippy::too_many_arguments)]
+pub fn exchange_read(
+    descriptor: &TrustDescriptor,
+    request: &[u8],
+    challenge: &[u8],
+    deadline: u64,
+    control: &LocalControl,
+    retained: &Prefix,
+    head: Option<&TreeHead>,
+    clock: &mut impl FnMut() -> Result<ClockHealth>,
+) -> Result<(CertifiedReply, HistoryEvidence)> {
+    let identity = crate::authority_read::read_id(request, challenge)?;
+    let submission = wire::encode(&a(vec![b(request), b(challenge)]))?;
+    let mut bytes = control.exchange(
+        &HistoryEvidence::control(retained, 6, &submission)?,
+        deadline,
+    )?;
+    let reply = loop {
+        let value = wire::decode(&bytes)?;
+        let fields = record(&value, 62, 10)?;
+        ensure!(
+            proof::Scope::parse(&fields[2])? == *descriptor.scope()
+                && fields[5].fixed::<32>()? == identity,
+            "fresh authority reply belongs to another read"
+        );
+        fields[9].array(0)?;
+        match fields[3].uint()? {
+            0 => {
+                ensure!(fields[4].uint()? == 0, "invalid pending fresh read code");
+                for field in &fields[6..9] {
+                    field.null()?;
+                }
+            }
+            1 => {
+                ensure!(fields[4].uint()? == 0, "invalid completed fresh read code");
+                break CertifiedReply {
+                    node: fields[6].bytes()?.to_vec(),
+                    certificate: fields[7].bytes()?.to_vec(),
+                    result: fields[8].bytes()?.to_vec(),
+                };
+            }
+            2 => {
+                ensure!(
+                    (1..=2).contains(&fields[4].uint()?),
+                    "invalid unavailable fresh read code"
+                );
+                for field in &fields[6..9] {
+                    field.null()?;
+                }
+                return Err(ReadUnavailable {
+                    code: fields[4].uint()?,
+                }
+                .into());
+            }
+            3 => {
+                for field in &fields[6..9] {
+                    field.null()?;
+                }
+                bail!(
+                    "fresh authority request rejected with code {}",
+                    fields[4].uint()?
+                );
+            }
+            _ => bail!("invalid fresh authority response status"),
+        }
+        clock()?.observe()?;
+        std::thread::sleep(Duration::from_millis(remaining(deadline)?.min(25)));
+        bytes = control.exchange(&HistoryEvidence::control(retained, 7, &identity)?, deadline)?;
+    };
+    remaining(deadline)?;
+    let evidence = HistoryEvidence::fetch(control, retained, head, &reply.node, deadline)?;
+    remaining(deadline)?;
+    Ok((reply, evidence))
 }
 
 pub fn exchange(

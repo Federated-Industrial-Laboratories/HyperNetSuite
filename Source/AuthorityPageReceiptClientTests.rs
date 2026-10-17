@@ -8,6 +8,163 @@ use crate::{
 use page::content::{self, Effect};
 use sha2::{Digest as _, Sha256};
 
+#[test]
+fn fresh_page_view_precedes_ordered_content_receipt_without_consuming_its_sequence() {
+    use crate::authority_inspection::read_client::tests::{response, submitted};
+    use crate::authority_inspection::tests::{receive_control, send_control};
+    use crate::authority_read::{self as read, Query};
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    let mut v = view(false);
+    let prefix = v.f.store.prefix().clone();
+    let metadata =
+        v.f.store
+            .stream_metadata()
+            .unwrap()
+            .unwrap()
+            .canonical()
+            .to_vec();
+    let receipt_value = wire::decode(&v.result.receipt).unwrap();
+    let node = receipt_value.array(9).unwrap()[8].bytes().unwrap().to_vec();
+    let revision = v
+        .state
+        .records
+        .values()
+        .find(|record| record.reference.kind == 141)
+        .unwrap();
+    let page_id = page::Revision::parse(&revision.payload, v.state.network, v.state.incarnation)
+        .unwrap()
+        .author
+        .raw_page;
+    let socket = v.f.directory.0.join("FreshPage.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let state = v.state.clone();
+    let records = v.records.clone();
+    let reservations = Reservations(v.f.bootstrap.reservations().to_vec());
+    let (p, r) = policy::current(&v.f.bootstrap, &v.f.store).unwrap();
+    let refs = [100, 114]
+        .into_iter()
+        .zip([&p, &r])
+        .map(|(kind, bytes)| {
+            crate::authority_policies::record_reference(
+                bytes,
+                state.network,
+                state.incarnation,
+                kind,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let policy_value = a(vec![
+        V::Uint(201),
+        V::Uint(1),
+        V::Text("AuthorityPolicyContext".into()),
+        a(refs.iter().map(version_value).collect()),
+        a(vec![b(&p), b(&r)]),
+    ]);
+    let anchor_state = *prefix.policy_state();
+    let server = std::thread::spawn(move || {
+        for index in 0..2 {
+            let (stream, bytes) = receive_control(&listener);
+            let (request, challenge) = submitted(&bytes);
+            let parsed = read::Request::from_signed(&request).unwrap();
+            let (value, expiry) = match &parsed.query {
+                Query::PolicyContext => {
+                    assert_eq!(index, 0);
+                    (policy_value.clone(), u64::MAX)
+                }
+                Query::Domain(operation) => {
+                    assert_eq!(index, 1);
+                    assert!(
+                        matches!(operation.command,Command::Page(PageCommand::View { page }) if page == page_id)
+                    );
+                    let decision = read::evaluate_domain(
+                        operation,
+                        &state,
+                        &records,
+                        &reservations,
+                        parsed.requester,
+                        7000,
+                    )
+                    .unwrap();
+                    assert_eq!(decision.code, 0);
+                    (decision.value, decision.expires_ms)
+                }
+            };
+            send_control(
+                stream,
+                &response(
+                    &request,
+                    &challenge,
+                    &node,
+                    anchor_state,
+                    value,
+                    7000,
+                    expiry,
+                    0,
+                ),
+            );
+        }
+    });
+    let old = v.f.current.observe().unwrap();
+    v.f.current = ClockHealth::new(7000, old.boot_ms + 1000, old.boot_ms + 30000, 100)
+        .unwrap()
+        .frozen();
+    v.result = local(
+        &v.f.bootstrap,
+        Request {
+            command: PageCommand::View { page: page_id }.into(),
+            grant: Some(v.grant.clone()),
+        },
+        &socket,
+        &v.f.signer,
+        &mut v.f.store,
+        &mut v.f.session,
+        || Ok(v.f.current),
+    )
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(v.result.prefix, prefix);
+    assert_eq!(v.result.evaluated_at_ms, 7000);
+    assert_eq!(
+        v.f.store.stream_metadata().unwrap().unwrap().canonical(),
+        metadata
+    );
+    assert!(v.f.store.resume_ordinary().unwrap().is_none());
+    assert!(
+        media::current_content_view(
+            &v.f.bootstrap,
+            &v.f.store,
+            &v.result,
+            &v.placement,
+            &v.host,
+            Effect::Read,
+            || v.f.current.observe()
+        )
+        .unwrap()
+    );
+    let request = content_request(&mut v, Effect::Read);
+    let bytes = receipt(&v, &request, *prefix.node(), false);
+    let mut completed = 0;
+    media::complete(
+        &v.f.bootstrap,
+        &bytes,
+        &v.f.directory.0.join("NoStatus.sock"),
+        &v.f.signer,
+        &mut v.f.store,
+        &mut v.f.session,
+        || Ok(v.f.current),
+        |_, _| {
+            completed += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(completed, 1);
+    assert!(v.f.store.resume_ordinary().unwrap().is_none());
+    assert_eq!(v.f.store.prefix().height(), prefix.height() + 1);
+}
+
 struct View {
     f: Fixture,
     state: State,

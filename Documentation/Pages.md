@@ -132,13 +132,19 @@ verified approval bundle. Current permission comes from a quorum-certified
 result, independently checked against the selected records and retained floors.
 Uncertified, substituted or missing result objects are not displayed.
 
-Reading and explicit TUI refresh use one certified PageView after fresh policy
-discovery. This one ordered result verifies both publication access and the
+Reading and explicit TUI refresh use one fresh quorum PageView after fresh policy
+discovery. This one read result verifies both publication access and the
 current exact content placement/host closure. A complete retained source can be
 reused only after that current view and its immutable source/approval hashes
 verify. Cold reads retain the selected host's separate current byte authorisation
 and stream completion. No old view, failed refresh or cached policy substitutes
 for a successful current request.
+
+Policy discovery and PageView do not consume ordinary stream sequences. Their
+separate nonce-bound certificates retain the applied anchor and a fresh evaluation
+time. Host content authorization and its exact effect receipt remain ordered.
+Explicit local-search leases retain their separate ordered authorization; a
+PageView receipt cannot substitute for a local-search lease.
 
 Replica delivery uses one exact consenting role1 host. Obtain its current
 identifier, generation and digest from host management. `pages replica-request`

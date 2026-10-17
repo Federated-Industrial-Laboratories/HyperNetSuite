@@ -9,6 +9,8 @@ use crate::{
 use crate::authority_inspection::policy;
 const CACHE: &str = "DomainState.cbor";
 const CACHE_LIMIT: usize = crate::authority_capacity::MAX_STATE_BYTES;
+#[path = "AuthorityDomainReadClient.rs"]
+mod fresh;
 
 /// A refusal returned only after the authority response and ancestry are verified.
 #[derive(Debug)]
@@ -841,6 +843,16 @@ pub fn local_with_objects(
         !request.command.serving(),
         "serving effects require the selected recipient exchange"
     );
+    if fresh::handles(&request.command) {
+        ensure!(
+            inputs.objects().next().is_none(),
+            "fresh read carries unexpected objects"
+        );
+        return Ok((
+            fresh::local(bootstrap, request, path, signer, store, session, &mut clock)?,
+            crate::authority_objects::Resolved::default(),
+        ));
+    }
     let descriptor = store.descriptor().clone();
     stream_client::ensure_stream(&descriptor, path, signer, store, session, &mut clock)?;
     // These owner-signed records already bind a Context/Directory/Prepare reply.

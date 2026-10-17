@@ -781,6 +781,9 @@ pub(crate) mod deployment_client;
 #[path = "AuthorityDomainClient.rs"]
 pub(crate) mod domain_client;
 
+#[path = "AuthorityReadClient.rs"]
+pub(crate) mod read_client;
+
 #[path = "AuthorityEpochClient.rs"]
 pub(crate) mod epoch_client;
 

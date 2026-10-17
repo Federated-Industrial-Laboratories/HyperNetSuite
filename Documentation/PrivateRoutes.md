@@ -43,9 +43,11 @@ operations can reuse the admitted authority connection. Each operation reloads
 and checks the exact endpoint and possession key and obtains fresh policy and
 result proofs. After successful proof verification and durable completion, the
 connection can retain a local hint of that exact prefix and tree head. A healthy
-reused connection with that unchanged floor and a ready stream can defer the
+reused connection with that unchanged floor and no pending effect can defer the
 speculative latest-checkpoint query. Pending ordinary work or a fence, a changed
 floor, a new connection or an earlier failure requires normal preparation.
+Fresh reads can retain this history hint before ordinary stream initialization;
+the hint never replaces a fresh proof or an ordinary operation's stream checks.
 The hint grants no permission and contains no cached result. Every new reply
 still verifies its exact ancestry: a direct successor supplies its node, a short
 gap fetches its chain, and longer or unavailable ancestry requires certified

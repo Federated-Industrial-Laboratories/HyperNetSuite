@@ -7,7 +7,7 @@ const ACCEPTED: &str = "AcceptedPolicy.cbor";
 const PENDING: &str = "PendingPolicy.cbor";
 #[path = "AuthorityPolicyDiscovery.rs"]
 mod discovery;
-pub use discovery::{discover, refresh_before_request, resume_pending_discovery};
+pub use discovery::{discover, refresh_before_request};
 fn validate_pair(p: &[u8], r: &[u8], n: [u8; 32], i: [u8; 32]) -> Result<()> {
     policies::record_reference(p, n, i, 100)?;
     let reference = policies::record_reference(r, n, i, 114)?;
