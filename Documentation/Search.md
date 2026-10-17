@@ -38,6 +38,24 @@ selected Content service and its existing encrypted transport. Authority request
 contain only publication, placement and permission scope; neither terms nor a
 query-derived digest is placed in the authority journal.
 
+The native catalogue supplies complete certified publication, placement and host
+contexts, so the first still-current item does not repeat PageRead and ContentGet.
+If earlier content exchanges consume that catalogue result's original validity,
+or the retained authority floor advances, the next item obtains a fresh PageView
+before query preparation. A catalogue context is reused only at its exact retained
+prefix. This does not extend a proof or reuse an operation permission.
+Fresh policy discovery still precedes catalogue or Page selection. Its complete
+result can supply the accepted policy for the first content request at that exact
+floor and original expiry, with no pending recovery and explicit search consent
+from the selected host. Otherwise normal discovery runs before query disclosure.
+The content service still checks current exact authorisation, including indexing
+capability. Its verified receipt establishes the exact requester completion when
+it connects the retained floor; uncertain continuity requires StreamStatus.
+Receipt and progress validation still precede final acknowledgement.
+Before displaying matches, the client obtains a fresh batched LocalSearchLease for
+the exact returned publications and any continuation item. Catalogue context never
+replaces this final revocation and application-permission check.
+
 Imports are selected explicitly with repeated `--bridge AGREEMENT=ROUTE` arguments.
 Each route identifies the importing network's Bridge protocol6 endpoint. Its
 signed profile must opt in with `federation bridge profile --search` and retain

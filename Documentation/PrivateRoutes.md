@@ -29,7 +29,7 @@ Core enforces its forwarding permission beneath TLS, including implicit writes
 while reading TLS records. Expired permission pauses forwarding until a fresh
 proof arrives; failure or the original transport deadline closes the channel.
 
-For authority connections, Suite prepares certified historical evidence before
+For cold authority connections, Suite prepares certified historical evidence before
 creating the application challenge. It verifies the checkpoint quorum, scope,
 anchor and continuity from the exact retained floor and tree head. This temporary
 evidence cannot update the floor, stream state or current permissions. After the
@@ -37,6 +37,76 @@ fresh result, Suite verifies its short suffix and accepts the result through the
 normal durable checks. A missing usable checkpoint retains the existing bounded
 history path; malformed evidence refuses preparation. The original connection
 limits and five-second application challenge remain unchanged.
+
+Within one selected network command or browser session, successful authority
+operations can reuse the admitted authority connection. Each operation reloads
+and checks the exact endpoint and possession key and obtains fresh policy and
+result proofs. After successful proof verification and durable completion, the
+connection can retain a local hint of that exact prefix and tree head. A healthy
+reused connection with that unchanged floor and no pending effect can defer the
+speculative latest-checkpoint query. Pending ordinary work or a fence, a changed
+floor, a new connection or an earlier failure requires normal preparation.
+Fresh reads can retain this history hint before ordinary stream initialization;
+the hint never replaces a fresh proof or an ordinary operation's stream checks.
+The hint grants no permission and contains no cached result. Every new reply
+still verifies its exact ancestry: a direct successor supplies its node, a short
+gap fetches its chain, and longer or unavailable ancestry requires certified
+checkpoint history and continuity. This work remains inside the original
+challenge deadline; failure does not expose content or retry a completed effect.
+Connection reuse does not cache current permission. Separate CLI processes open
+separate connections.
+
+Only a fully verified successful operation returns its connection for reuse.
+Failure or cancellation discards it. Reuse requires room for the existing full
+authority challenge within the original total limit. If successful history
+preparation consumes that room, the client can replace the reused connection once
+before issuing a challenge. Failed history does not trigger that replacement.
+Fresh connections retain their configured limits, including shorter routes.
+Reuse never replenishes time, idle or byte limits.
+Leaving the selected network closes its retained connection. Route observations
+are published once per connection and remain diagnostic information, not proof
+of current authority.
+
+A Page client can also retain one Content connection across chunks and Page
+navigation. Each request reloads the selected route and client profile, verifies
+the exact retained host binding, and performs current policy, effect and hosting
+checks. Only an established verified receipt and durable progress return
+the connection to that client. Failed requests, verification, progress or
+authority refusals discard it. Dropping an unfinished exchange also closes it.
+The connection keeps its original total, idle and byte limits. Reuse requires
+room for the existing effect plus completion allowance; an insufficient or
+changed route receives one fresh admission before sending application data.
+Fresh short routes keep their original bounds. The client sends no idle traffic;
+Core renews permission only for pending application work or writes. Separate
+CLI processes, network search and protocol 3 media do not share this Content
+connection.
+
+The first Content read immediately following a complete accepted PageView can
+use that result's policy evidence instead of a second policy discovery. This
+requires an ordinary stream ready for a new request, no pending recovery, the
+exact retained authority prefix, all retained version floors and the original
+monotonic and conservative absolute expiry. The result must contain the exact
+accepted network and linked recovery policies, current native publication,
+placement and selected consenting host. An expired or changed view follows
+normal policy discovery; malformed evidence fails closed. The option is consumed
+once, even if it cannot be used. The first native Search content request can use
+the same evidence from its complete PageView or catalogue result only when the
+exact selected host has explicit search consent. Initial discovery still precedes
+Page or catalogue selection. Later chunks and other effects discover policy
+normally. Content preparation still pins the current policy, and the host
+independently authorises each effect, including current indexing capability.
+Protocol 3 media does not use this shortcut.
+
+Native Content Read and Search receipts can establish their exact original
+completion directly when their verified proof connects the current requester
+floor. Independent domain and accepted-policy checks precede this durable update;
+restrictive metadata is retained before applying progress. The update does not
+acknowledge the request or release a local effect. Final acknowledgement follows
+successful durable progress. A failure leaves the exact request recoverable.
+An already established historical completion preserves the newer floor and
+retained generations. Missing continuity and refusal still obtain current
+StreamStatus; neither path replays a host effect. Other media effects retain
+their existing status reconciliation.
 
 `RouteReady` reports remaining total transport time after admission. Suite
 applies it from readiness receipt while retaining the original connection limit.
@@ -46,10 +116,10 @@ The relay and endpoint separately revalidate current permission under fresh
 an application deadline or restore a closed connection. I/O failure and cancellation
 close the session without automatic reconnection or replay of an unresolved action.
 
-Core reports at most four connection timing samples per process. Fixed stages
+Core reports at most 64 connection timing samples per process. Fixed stages
 and elapsed monotonic times distinguish admission queue delay, voucher checks,
 permission reservation, egress, readiness and final TLS. These diagnostics omit
-identities and request data. Each sampled connection includes at most four frame
+identities and request data. Each sampled connection includes at most 32 frame
 sequences and four permission renewals. Client failures identify authority
 submission, result polling, ancestry or checkpoint retrieval using fixed labels.
 

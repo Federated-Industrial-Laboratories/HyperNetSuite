@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Interrupted multi-record Page publication retains the original request and exact source identity.
-use super::super::tests::{Fixture, certified_request};
+use super::super::tests::{Fixture, certified_request, voters};
 use super::*;
 use crate::{
     authority_domains::page::{self, Command as PageCommand, objects::Author},
     authority_objects::Resolved,
 };
+use ed25519_dalek::Signer;
+
+#[path = "AuthorityPageReceiptClientTests.rs"]
+mod receipt_tests;
 
 fn current_clocks() -> (ClockHealth, ClockHealth) {
     let boot = boot_time_ms().unwrap();
@@ -345,7 +349,7 @@ fn page_submit_expiry(second_expiry: bool) {
         );
         return;
     }
-    let (reply, evidence) = result.unwrap();
+    let ((reply, evidence), _control) = result.unwrap();
     offset.set(offset.get() + crate::authority_challenge::DELTA_MS + 1);
     let (published, _) = prepared
         .finish_with_objects(
@@ -499,7 +503,7 @@ fn page_history_expiry_uses_one_fresh_prepared_attempt() {
                 prepared.deadline
             );
         } else {
-            let (reply, evidence) = result.unwrap();
+            let ((reply, evidence), _control) = result.unwrap();
             elapsed.set(elapsed.get() + crate::authority_challenge::DELTA_MS + 1);
             prepared
                 .finish_with_objects(
@@ -632,4 +636,259 @@ fn page_source_metadata_survives_floor_before_cache_interruption() {
     assert_eq!(result.cache.state.value(), authority.value());
     let reopened = Cache::load(&f.bootstrap, &f.store).unwrap();
     assert_eq!(reopened.state.value(), authority.value());
+}
+
+fn certify_view(
+    p: &Prepared,
+    state: &State,
+    records: &[Vec<u8>],
+    at: u64,
+    prefix: &Prefix,
+) -> (CertifiedReply, AncestryEvidence, State) {
+    let intent = Intent::from_signed(&p.intent).unwrap();
+    let decision = Operation::parse(&intent)
+        .unwrap()
+        .prepare_with_inputs(
+            state,
+            records,
+            &Reservations(p.bootstrap.reservations().to_vec()),
+            &intent,
+            at,
+            false,
+            true,
+            &Resolved::default(),
+        )
+        .unwrap();
+    assert_eq!(decision.code, 0);
+    let next = decision.state.clone().unwrap_or_else(|| state.clone());
+    let (packet, node) = certified_request(
+        &p.descriptor,
+        &p.intent,
+        &p.challenge,
+        &p.ordered,
+        decision.value,
+        at,
+        *prefix.node(),
+        prefix.height() + 1,
+        0,
+    );
+    let packet = wire::decode(&packet).unwrap();
+    let fields = packet.array(10).unwrap();
+    // The generic certificate fixture knows only challenge expiry. A domain
+    // evaluation must also clip it to the actual publication/placement/grant bound.
+    let envelope = wire::decode(fields[7].bytes().unwrap()).unwrap();
+    let mut executed = wire::decode(envelope.array(4).unwrap()[2].bytes().unwrap())
+        .unwrap()
+        .array(23)
+        .unwrap()
+        .to_vec();
+    let expiry = executed[19].uint().unwrap().min(decision.expires_ms);
+    assert!(at + crate::authority_governance::UNCERTAINTY_MS < expiry);
+    assert!(
+        Challenge::from_signed(&p.challenge)
+            .unwrap()
+            .completion_within_interval(at, expiry)
+    );
+    executed[19] = V::Uint(expiry);
+    let payload = wire::encode(&a(executed)).unwrap();
+    let signatures = voters()[..3]
+        .iter()
+        .map(|key| {
+            let public = key.verifying_key().to_bytes();
+            a(vec![
+                b(&public),
+                b(&key
+                    .sign(&wire::signature_message(&payload, &public))
+                    .to_bytes()),
+            ])
+        })
+        .collect();
+    let certificate =
+        wire::encode(&a(vec![V::Uint(0), V::Uint(1), b(&payload), a(signatures)])).unwrap();
+    (
+        CertifiedReply {
+            node: node.clone(),
+            certificate,
+            result: fields[8].bytes().unwrap().to_vec(),
+        },
+        AncestryEvidence::direct(vec![node]),
+        next,
+    )
+}
+
+#[test]
+fn certified_page_view_reads_exact_retained_source_and_rejects_advanced_catalogue_floor() {
+    let (bootstrap, mut authority, records, grant, placement, source) =
+        page::tests::view_tests::consumer_fixture(false);
+    let mut f = Fixture::with_bootstrap(bootstrap, crate::authority_deployment_tests::key(5), 6000);
+    let request = |command: PageCommand| Request {
+        command: command.into(),
+        grant: Some(grant.clone()),
+    };
+    // The normal fresh challenge, independent domain proof verification, durable
+    // floor and cache publication produce the result consumed by the reader.
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    // Anchor after durable setup, then advance one virtual clock across this recipient session.
+    let boot = boot_time_ms().unwrap();
+    let delta = crate::authority_challenge::DELTA_MS + 1;
+    let advance = |health: ClockHealth| {
+        let last = health.observe().unwrap();
+        ClockHealth::new(
+            last.wall_ms + delta,
+            last.boot_ms + delta,
+            boot + 30000,
+            100,
+        )
+        .unwrap()
+        .frozen()
+    };
+    f.issued = ClockHealth::new(6000 - delta, boot, boot + 30000, 100)
+        .unwrap()
+        .frozen();
+    f.current = advance(f.issued);
+    let prepared = Prepared::new(
+        &f.bootstrap,
+        request(PageCommand::View { page: [71; 16] }),
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    let (reply, evidence, _) =
+        certify_view(&prepared, &authority, &records, 6000, f.store.prefix());
+    let mut view = prepared
+        .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
+            Ok(f.current)
+        })
+        .unwrap();
+    assert!(
+        crate::search::current_view_for_test(&f.store, &view, f.current.observe().unwrap())
+            .unwrap()
+    );
+    let mut client = crate::authority_pages::Client {
+        bootstrap: f.bootstrap,
+        directory: f.directory.0.clone(),
+        key: f.signer.clone(),
+        store: f.store,
+        session: f.session,
+        clock: crate::authority_clock::Source::Private {
+            path: f.directory.0.join("UnavailableClock.json"),
+        },
+        socket: f.directory.0.join("UnavailableAuthority.sock"),
+        content: Default::default(),
+    };
+    crate::authority_pages::content_cli::view_tests::policy_view(
+        &mut client,
+        &placement,
+        &mut view,
+        f.current,
+    );
+    crate::authority_pages::content_cli::view_tests::consume(
+        &mut client,
+        &grant,
+        &placement,
+        &view,
+        &source,
+    );
+    f.bootstrap = client.bootstrap;
+    f.store = client.store;
+    f.session = client.session;
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    f.issued = f.current;
+    f.current = advance(f.issued);
+    let prepared = Prepared::new(
+        &f.bootstrap,
+        request(PageCommand::Content(page::content::Command::Withdraw {
+            placement: placement.clone(),
+        })),
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.issued,
+    )
+    .unwrap();
+    let host = page::content::Placement::parse(
+        &view.cache.state.record(159, placement.id).unwrap().payload,
+    )
+    .unwrap()
+    .hosts[0]
+        .clone();
+    assert!(
+        !crate::authority_inspection::page_media_client::current_content_view(
+            &f.bootstrap,
+            &f.store,
+            &view,
+            &placement,
+            &host,
+            page::content::Effect::Read,
+            || panic!("pending recovery must not request a new clock observation"),
+        )
+        .unwrap()
+    );
+    crate::authority_inspection::page_media_client::ensure_content_view(
+        &f.bootstrap,
+        &mut f.store,
+        &f.directory.0.join("UnavailableAuthority.sock"),
+        &f.signer,
+        &mut f.session,
+        || panic!("the exact pending operation must follow its existing recovery path"),
+        Some((&view, &placement, &host, page::content::Effect::Read)),
+    )
+    .unwrap();
+    assert_eq!(
+        f.store.resume_ordinary().unwrap().unwrap().signed(),
+        prepared.intent
+    );
+    let (reply, evidence, next) = certify_view(
+        &prepared,
+        &authority,
+        &records,
+        f.current.observe().unwrap().wall_ms,
+        f.store.prefix(),
+    );
+    authority = next;
+    prepared
+        .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
+            Ok(f.current)
+        })
+        .unwrap();
+    assert!(
+        authority
+            .records
+            .contains_key(&(page::content::TOMBSTONE_KIND, placement.id))
+    );
+    assert!(
+        f.store
+            .generations()
+            .iter()
+            .any(|r| r.kind == page::content::TOMBSTONE_KIND)
+    );
+    let now = f.current.observe().unwrap();
+    assert!(now.boot_ms < view.deadline_boot_ms);
+    assert!(now.wall_ms + crate::authority_challenge::DELTA_MS < view.expires_at_ms);
+    assert!(
+        !crate::search::current_view_for_test(&f.store, &view, now).unwrap(),
+        "an earlier catalogue cannot omit a newly retained content withdrawal"
+    );
+    let authority = f.directory.0.join("UnavailableAuthority.sock");
+    let error = crate::authority_inspection::page_media_client::ensure_content_view(
+        &f.bootstrap,
+        &mut f.store,
+        &authority,
+        &f.signer,
+        &mut f.session,
+        || Ok(f.current),
+        Some((&view, &placement, &host, page::content::Effect::Read)),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+        "an advanced floor must prepare normal discovery on the unavailable authority socket"
+    );
+    assert!(f.store.resume_ordinary().unwrap().is_none());
 }

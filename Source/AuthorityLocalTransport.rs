@@ -100,12 +100,34 @@ impl LocalControl {
             history: None,
         })
     }
-    /// Historical continuity is verified before the caller samples its fresh challenge clock.
+    /// Cold history is prepared before the fresh challenge; an exact completed floor can defer it.
     pub fn prepare_authority(path: &Path, store: &crate::authority_floor::Store) -> Result<Self> {
-        Self::open(path)?.prefetch_authority(store)
+        let mut control = Self::open(path)?.prefetch_authority(store)?;
+        // History can consume the remaining admission. Replacement stays before a fresh challenge.
+        if matches!(&control.endpoint, Endpoint::Relay(route) if route.reused() && !route.fits_authority_challenge())
+        {
+            drop(control);
+            control = Self::open(path)?.prefetch_authority(store)?;
+        }
+        Ok(control)
+    }
+    /// Call only after proof verification and durable completion. The hint grants no authority.
+    pub(crate) fn retain(self, store: &crate::authority_floor::Store) {
+        if let Endpoint::Relay(route) = self.endpoint {
+            let ready = Self::ready_for_new_request(store);
+            let Ok(ready) = ready else {
+                return;
+            };
+            route.retain(ready.then(|| (store.prefix().clone(), store.tree_head().cloned())));
+        }
+    }
+    fn ready_for_new_request(store: &crate::authority_floor::Store) -> Result<bool> {
+        // Historical evidence does not depend on ordinary stream initialization.
+        // Ordinary callers still reconcile their stream before issuing an operation.
+        Ok(store.resume_ordinary()?.is_none() && store.resume_fence()?.is_none())
     }
     fn prefetch_authority(mut self, store: &crate::authority_floor::Store) -> Result<Self> {
-        let Endpoint::Relay(route) = &self.endpoint else {
+        let Endpoint::Relay(route) = &mut self.endpoint else {
             return Ok(self);
         };
         ensure!(
@@ -116,6 +138,15 @@ impl LocalControl {
         );
         let prefix = store.prefix();
         let head = store.tree_head();
+        let completed = route.take_completed_floor();
+        if route.reused()
+            && completed.is_some_and(|(old, prior)| old == *prefix && prior.as_ref() == head)
+            && Self::ready_for_new_request(store)?
+        {
+            // Final reply ancestry still binds the result to this exact floor and tree head.
+            return Ok(self);
+        }
+        let deadline = route.setup_deadline();
         let query = wire::encode(&a(vec![
             V::Uint(prefix.height()),
             b(prefix.node()),
@@ -123,10 +154,7 @@ impl LocalControl {
             V::Uint(head.map_or(0, |h| h.size())),
             head.map_or(V::Null, |h| b(h.root())),
         ]))?;
-        let bytes = self.exchange(
-            &HistoryEvidence::control(prefix, 4, &query)?,
-            route.setup_deadline(),
-        )?;
+        let bytes = self.exchange(&HistoryEvidence::control(prefix, 4, &query)?, deadline)?;
         self.history = PrefetchedHistory::parse(store, &bytes)?;
         Ok(self)
     }
@@ -147,6 +175,15 @@ impl LocalControl {
         bytes: &[u8],
     ) -> Result<bool> {
         Ok(PrefetchedHistory::parse(store, bytes)?.is_some())
+    }
+    #[cfg(test)]
+    pub(crate) fn with_prefetch_for_test(
+        mut self,
+        store: &crate::authority_floor::Store,
+        bytes: &[u8],
+    ) -> Result<Self> {
+        self.history = PrefetchedHistory::parse(store, bytes)?;
+        Ok(self)
     }
     pub(crate) fn route(&self) -> Option<&crate::route_profile::Profile> {
         match &self.endpoint {
@@ -531,6 +568,16 @@ impl HistoryEvidence {
             None => Ok(result),
         }
     }
+    pub fn attach_read(
+        &self,
+        store: &crate::authority_floor::Store,
+        result: crate::authority_read::VerifiedRead,
+    ) -> Result<crate::authority_read::VerifiedRead> {
+        match &self.history {
+            Some((checkpoint, history)) => store.attach_read_history(result, checkpoint, history),
+            None => Ok(result),
+        }
+    }
     fn control(prefix: &Prefix, operation: u64, payload: &[u8]) -> Result<Vec<u8>> {
         wire::encode(&a(vec![
             V::Uint(41),
@@ -557,6 +604,12 @@ impl HistoryEvidence {
                 prefetched.validated.from() == prefix && prefetched.validated.prior() == head,
                 "prepared history differs from the exact retained floor or head"
             );
+        }
+        // A same-floor result or direct successor already carries its complete ancestry.
+        if node.height() - prefix.height() <= 1 {
+            return Ok(Self::direct(vec![target.to_vec()]));
+        }
+        if let Some(prefetched) = &control.history {
             let anchor = prefetched.validated.ordinary_checkpoint()?.prefix();
             if node.height() >= anchor.height() && node.height() - anchor.height() <= 128 {
                 if node.height() == anchor.height() {
@@ -585,9 +638,6 @@ impl HistoryEvidence {
             }
         }
         let gap = node.height() - prefix.height();
-        if gap <= 1 {
-            return Ok(Self::direct(vec![target.to_vec()]));
-        }
         if gap <= 128 {
             let query = wire::encode(&a(vec![
                 V::Uint(prefix.height()),
@@ -707,6 +757,97 @@ impl HistoryEvidence {
             history: Some((checkpoint, history)),
         })
     }
+}
+
+/// Finite unavailability carries no permission and never becomes an ordered operation.
+#[derive(Debug)]
+pub(crate) struct ReadUnavailable {
+    pub(crate) code: u64,
+}
+impl std::fmt::Display for ReadUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "fresh authority read unavailable with code {}",
+            self.code
+        )
+    }
+}
+impl std::error::Error for ReadUnavailable {}
+
+#[allow(clippy::too_many_arguments)]
+pub fn exchange_read(
+    descriptor: &TrustDescriptor,
+    request: &[u8],
+    challenge: &[u8],
+    deadline: u64,
+    control: &LocalControl,
+    retained: &Prefix,
+    head: Option<&TreeHead>,
+    clock: &mut impl FnMut() -> Result<ClockHealth>,
+) -> Result<(CertifiedReply, HistoryEvidence)> {
+    let identity = crate::authority_read::read_id(request, challenge)?;
+    let submission = wire::encode(&a(vec![b(request), b(challenge)]))?;
+    let mut bytes = control.exchange(
+        &HistoryEvidence::control(retained, 6, &submission)?,
+        deadline,
+    )?;
+    let reply = loop {
+        let value = wire::decode(&bytes)?;
+        let fields = record(&value, 62, 10)?;
+        ensure!(
+            proof::Scope::parse(&fields[2])? == *descriptor.scope()
+                && fields[5].fixed::<32>()? == identity,
+            "fresh authority reply belongs to another read"
+        );
+        fields[9].array(0)?;
+        match fields[3].uint()? {
+            0 => {
+                ensure!(fields[4].uint()? == 0, "invalid pending fresh read code");
+                for field in &fields[6..9] {
+                    field.null()?;
+                }
+            }
+            1 => {
+                ensure!(fields[4].uint()? == 0, "invalid completed fresh read code");
+                break CertifiedReply {
+                    node: fields[6].bytes()?.to_vec(),
+                    certificate: fields[7].bytes()?.to_vec(),
+                    result: fields[8].bytes()?.to_vec(),
+                };
+            }
+            2 => {
+                ensure!(
+                    (1..=2).contains(&fields[4].uint()?),
+                    "invalid unavailable fresh read code"
+                );
+                for field in &fields[6..9] {
+                    field.null()?;
+                }
+                return Err(ReadUnavailable {
+                    code: fields[4].uint()?,
+                }
+                .into());
+            }
+            3 => {
+                for field in &fields[6..9] {
+                    field.null()?;
+                }
+                bail!(
+                    "fresh authority request rejected with code {}",
+                    fields[4].uint()?
+                );
+            }
+            _ => bail!("invalid fresh authority response status"),
+        }
+        clock()?.observe()?;
+        std::thread::sleep(Duration::from_millis(remaining(deadline)?.min(25)));
+        bytes = control.exchange(&HistoryEvidence::control(retained, 7, &identity)?, deadline)?;
+    };
+    remaining(deadline)?;
+    let evidence = HistoryEvidence::fetch(control, retained, head, &reply.node, deadline)?;
+    remaining(deadline)?;
+    Ok((reply, evidence))
 }
 
 pub fn exchange(

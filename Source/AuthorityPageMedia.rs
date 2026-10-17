@@ -41,6 +41,25 @@ pub struct Transport {
     #[arg(long, default_value = "HyperNet")]
     core: PathBuf,
 }
+pub(crate) struct ContentExchange {
+    bytes: Vec<u8>,
+    route: Option<crate::private_route_client::Prepared>,
+    duration: u64,
+}
+impl ContentExchange {
+    /// Verified completion continuity and durable progress must succeed before transport retention.
+    pub(crate) fn complete<T>(
+        self,
+        pool: &mut crate::private_route_client::ContentPool,
+        verify: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<T> {
+        let result = verify(&self.bytes)?;
+        if let Some(route) = self.route {
+            pool.retain(route, self.duration);
+        }
+        Ok(result)
+    }
+}
 #[derive(Args)]
 pub struct Exchange {
     #[command(flatten)]
@@ -117,7 +136,7 @@ impl Transport {
     pub(crate) fn host(&self) -> Result<Digest> {
         id(&self.host)
     }
-    pub(super) fn socket(host: Digest, path: PathBuf) -> Self {
+    pub(crate) fn socket(host: Digest, path: PathBuf) -> Self {
         Self {
             host: hex::encode(host),
             service_socket: Some(path),
@@ -133,21 +152,68 @@ impl Transport {
             core,
         }
     }
+    pub(crate) fn exchange_content(
+        &self,
+        packet: &[u8],
+        progress: &Path,
+        pool: &mut crate::private_route_client::ContentPool,
+    ) -> Result<ContentExchange> {
+        use std::os::unix::fs::FileTypeExt;
+        let result = (|| {
+            let value = wire::decode(packet)?;
+            let request = page::MediaRequest::parse(value.array(6)?[3].bytes()?)?;
+            let Action::Content(page::content::Command::Authorise { host, .. }) = request.command()
+            else {
+                anyhow::bail!("Content exchange requires a finite Content effect")
+            };
+            ensure!(
+                host.id == self.host()?,
+                "Content transport differs from the requested host"
+            );
+            let duration = exchange_duration(&request)?;
+            if let Some(path) = &self.service_socket
+                && !std::fs::symlink_metadata(path)?.file_type().is_socket()
+            {
+                let route = pool.prepare(path, duration, |endpoint| {
+                    ensure!(
+                        endpoint.route.network == request.intent().network
+                            && endpoint.route.incarnation == request.intent().incarnation
+                            && crate::networks::route_subject(&endpoint.profile, &endpoint.route)? == host.id,
+                        "Content route differs from the requested network, incarnation or retained host"
+                    );
+                    Ok(())
+                })?;
+                let deadline = crate::authority_challenge::boot_time_ms()?
+                    .checked_add(duration)
+                    .context("Content exchange deadline overflow")?;
+                let bytes = route.exchange(packet, deadline, page::MEDIA_RECEIPT_LIMIT)?;
+                return Ok(ContentExchange {
+                    bytes,
+                    route: Some(route),
+                    duration,
+                });
+            }
+            pool.clear();
+            Ok(ContentExchange {
+                bytes: self.exchange(packet, progress)?,
+                route: None,
+                duration,
+            })
+        })();
+        if result.is_err() {
+            pool.clear();
+        }
+        result
+    }
     pub(crate) fn exchange(&self, packet: &[u8], progress: &Path) -> Result<Vec<u8>> {
         if let Some(socket) = &self.service_socket {
             let value = wire::decode(packet)?;
             let request = page::MediaRequest::parse(value.array(6)?[3].bytes()?)?;
-            let duration = crate::authority_challenge::maximum_duration_ms(
-                &crate::authority_proof::SignedRequest::Intent(request.intent().clone()),
-            );
+            let duration = exchange_duration(&request)?;
             return crate::authority_local_transport::LocalControl::open(socket)?.exchange_limit(
                 packet,
                 crate::authority_challenge::boot_time_ms()?
-                    .checked_add(
-                        duration
-                            .checked_add(crate::authority_challenge::MAXIMUM_DURATION_MS)
-                            .context("media exchange duration overflow")?,
-                    )
+                    .checked_add(duration)
                     .context("media exchange deadline overflow")?,
                 page::MEDIA_RECEIPT_LIMIT,
             );
@@ -186,6 +252,13 @@ impl Transport {
         );
         files::read_single(&output, page::MEDIA_RECEIPT_LIMIT, true)
     }
+}
+fn exchange_duration(request: &page::MediaRequest) -> Result<u64> {
+    crate::authority_challenge::maximum_duration_ms(&crate::authority_proof::SignedRequest::Intent(
+        request.intent().clone(),
+    ))
+    .checked_add(crate::authority_challenge::MAXIMUM_DURATION_MS)
+    .context("media exchange duration overflow")
 }
 fn resume_metadata(c: &mut Client, asset: &VersionRef) -> Result<()> {
     let Some(pending) = c.store.resume_ordinary()? else {

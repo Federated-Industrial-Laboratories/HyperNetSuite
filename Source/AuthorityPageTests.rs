@@ -359,7 +359,25 @@ impl Fixture {
         expires_ms: u64,
         content_bytes: u64,
     ) -> Vec<HostProfile> {
-        let f = deployment::Fixture::with_actions(vec![0, 2, 3, 5, 10, 11, 12, 13, 21, 26]);
+        self.hosts_with_content_consent(physical_bytes, expires_ms, content_bytes, false)
+    }
+    fn hosts_with_content_consent(
+        &mut self,
+        physical_bytes: u64,
+        expires_ms: u64,
+        content_bytes: u64,
+        search: bool,
+    ) -> Vec<HostProfile> {
+        let governance =
+            Governance::parse(self.state.network, self.state.incarnation, &self.records).unwrap();
+        let value = wire::decode(governance.record_bytes(102, self.grant.id).unwrap()).unwrap();
+        let actions = value.array(17).unwrap()[10]
+            .list(32)
+            .unwrap()
+            .iter()
+            .map(|v| v.uint().unwrap())
+            .collect();
+        let f = deployment::Fixture::with_actions(actions);
         let mut manifest = deployment::manifest();
         manifest.validity.1 = expires_ms;
         (self.records, _, _, _) = deployment::admitted(&f, &deployment::offer(manifest.clone()));
@@ -390,7 +408,7 @@ impl Fixture {
                         quarantine_bytes: (1024 * 1024).min(content_bytes),
                         maximum_objects: 128,
                         opaque: false,
-                        search: false,
+                        search,
                         failure_domain: [91; 32],
                         reviewers: vec![],
                     }),
@@ -1899,3 +1917,6 @@ fn expired_body_placement_preserves_metadata_but_refuses_serving() {
 
 #[path = "AuthorityBackupPageTests.rs"]
 mod backup_tests;
+
+#[path = "AuthorityPageViewTests.rs"]
+pub(crate) mod view_tests;

@@ -9,6 +9,8 @@ use crate::{
 use crate::authority_inspection::policy;
 const CACHE: &str = "DomainState.cbor";
 const CACHE_LIMIT: usize = crate::authority_capacity::MAX_STATE_BYTES;
+#[path = "AuthorityDomainReadClient.rs"]
+mod fresh;
 
 /// A refusal returned only after the authority response and ancestry are verified.
 #[derive(Debug)]
@@ -196,6 +198,7 @@ pub(crate) fn retain_media(
     )?;
     minimum(&candidate.versions, store.generations())?;
     policy::require_records_accepted(bootstrap, store, &candidate.records)?;
+    store.establish_media_completion(report)?;
     store.retain_media_context(report)?;
     policy::retain_records(bootstrap, store, &candidate.records)?;
     Cache {
@@ -350,6 +353,7 @@ fn refreshable_page_query(command: &Command) -> bool {
             Command::Page(
                 Page::Context { .. }
                     | Page::Read { .. }
+                    | Page::View { .. }
                     | Page::List { .. }
                     | Page::SearchList { .. }
                     | Page::LocalSearchLease { .. }
@@ -514,7 +518,7 @@ impl<'a> Prepared<'a> {
         clock: &mut C,
         mut prepare: impl FnMut() -> Result<LocalControl>,
         exchange: &mut impl FnMut(&Self, &mut C, &LocalControl) -> Result<T>,
-    ) -> Result<T> {
+    ) -> Result<(T, LocalControl)> {
         let mut initial = Some(control);
         crate::authority_local_transport::retry_expired_exchange(|| {
             let control = if let Some(control) = initial.take() {
@@ -551,8 +555,7 @@ impl<'a> Prepared<'a> {
                 self.exchange_with_history(signer, session, clock, &mut |attempt, clock| {
                     exchange(attempt, clock, &control)
                 });
-            drop(control);
-            Ok((self.deadline, result))
+            Ok((self.deadline, result.map(|value| (value, control))))
         })
     }
     fn exchange_with_history<T, C: FnMut() -> Result<ClockHealth>>(
@@ -840,6 +843,16 @@ pub fn local_with_objects(
         !request.command.serving(),
         "serving effects require the selected recipient exchange"
     );
+    if fresh::handles(&request.command) {
+        ensure!(
+            inputs.objects().next().is_none(),
+            "fresh read carries unexpected objects"
+        );
+        return Ok((
+            fresh::local(bootstrap, request, path, signer, store, session, &mut clock)?,
+            crate::authority_objects::Resolved::default(),
+        ));
+    }
     let descriptor = store.descriptor().clone();
     stream_client::ensure_stream(&descriptor, path, signer, store, session, &mut clock)?;
     // These owner-signed records already bind a Context/Directory/Prepare reply.
@@ -898,15 +911,17 @@ pub fn local_with_objects(
             },
         );
         challenge = prepared.challenge.clone();
-        let (reply, evidence, outputs) = exchange?;
-        prepared.finish_with_objects(
+        let ((reply, evidence, outputs), control) = exchange?;
+        let result = prepared.finish_with_objects(
             reply,
             AncestryEvidence::from_shared(evidence),
             outputs,
             store,
             session,
             &mut clock,
-        )
+        )?;
+        control.retain(store);
+        Ok(result)
     })();
     if result.is_err() {
         session.discard(&challenge)?;

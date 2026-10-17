@@ -8,6 +8,9 @@ use rustls::{
 };
 use std::{net::TcpListener, process::Command};
 
+#[path = "AuthorityPageContentTransportTests.rs"]
+mod content_transport_tests;
+
 fn prefetch_packet(f: &mut Fixture) -> (Vec<u8>, Vec<u8>) {
     let pending = f
         .context
@@ -36,6 +39,160 @@ fn unavailable(f: &Fixture) -> Vec<u8> {
         a(vec![]),
     ]))
     .unwrap()
+}
+#[test]
+fn prepared_direct_successor_requires_no_redundant_ancestry_request() {
+    let mut f = Fixture::new();
+    let socket = f.directory.0.join("DirectSuccessor.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let pending = f
+        .context
+        .prepare(request(), &f.signer, &mut f.store, &mut f.session, f.issued)
+        .unwrap();
+    let time = f.current.observe().unwrap().wall_ms;
+    let scope = f.store.prefix().scope().clone();
+    let (reply, anchor, _) = packets(&pending, 32, time, &f.status_node);
+    let mut nodes = vec![f.status_node.clone()];
+    for height in 2..32 {
+        nodes.push(
+            wire::encode(&a(vec![
+                V::Uint(14),
+                V::Uint(1),
+                scope.value(),
+                V::Uint(height),
+                V::Uint(height),
+                b(&wire::digest(nodes.last().unwrap())),
+                b(&[80; 32]),
+                V::Uint(time),
+                b(&[81; 32]),
+            ]))
+            .unwrap(),
+        );
+    }
+    nodes.push(anchor.clone());
+    let response = wire::decode(&reply).unwrap();
+    let response = record(&response, 42, 10).unwrap();
+    pending
+        .finish(
+            CertifiedReply {
+                node: anchor.clone(),
+                certificate: response[7].bytes().unwrap().to_vec(),
+                result: response[8].bytes().unwrap().to_vec(),
+            },
+            nodes[1..].to_vec(),
+            &mut f.store,
+            &mut f.session,
+            &mut || Ok(f.current),
+        )
+        .unwrap();
+    assert_eq!(f.store.prefix().height(), 32);
+    assert!(f.store.tree_head().is_none());
+    let statement = wire::encode(&a(vec![
+        V::Uint(45),
+        V::Uint(1),
+        scope.value(),
+        V::Uint(32),
+        b(&wire::digest(&anchor)),
+        V::Uint(time),
+        b(f.store.prefix().policy_state()),
+        V::Uint(32),
+        b(&tree(&nodes)),
+        V::Bool(false),
+    ]))
+    .unwrap();
+    let checkpoint = wire::encode(&a(vec![
+        V::Uint(46),
+        V::Uint(1),
+        b(&signed(&statement)),
+        b(&anchor),
+    ]))
+    .unwrap();
+    let history = wire::encode(&a(vec![
+        V::Uint(47),
+        V::Uint(1),
+        scope.value(),
+        V::Uint(32),
+        b(&wire::digest(&anchor)),
+        b(&wire::digest(&statement)),
+        a(inclusion(&nodes, 31).iter().map(|value| b(value)).collect()),
+        V::Uint(0),
+        V::Null,
+        a(vec![]),
+    ]))
+    .unwrap();
+    let packet = wire::encode(&a(vec![
+        V::Uint(54),
+        V::Uint(1),
+        scope.value(),
+        b(&wire::digest(&anchor)),
+        b(&checkpoint),
+        b(&history),
+        a(vec![]),
+    ]))
+    .unwrap();
+    let observed = f.current.observe().unwrap();
+    let advance = crate::authority_governance::UNCERTAINTY_MS + 1;
+    let completed = ClockHealth::new(
+        observed.wall_ms + advance,
+        observed.boot_ms + advance,
+        observed.boot_ms + 30000,
+        100,
+    )
+    .unwrap()
+    .frozen();
+    let pending = f
+        .context
+        .prepare(
+            request(),
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            f.current,
+        )
+        .unwrap();
+    let (reply, target) = certified(
+        &pending,
+        result_value(&pending),
+        completed.observe().unwrap().wall_ms,
+        wire::digest(&anchor),
+        33,
+    );
+    let control = LocalControl::open(&socket)
+        .unwrap()
+        .with_prefetch_for_test(&f.store, &packet)
+        .unwrap();
+    let evidence = crate::authority_local_transport::HistoryEvidence::fetch(
+        &control,
+        f.store.prefix(),
+        f.store.tree_head(),
+        &target,
+        pending.deadline,
+    )
+    .unwrap();
+    assert_eq!(evidence.nodes, vec![target.clone()]);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let response = wire::decode(&reply).unwrap();
+    let response = record(&response, 42, 10).unwrap();
+    let result = pending
+        .finish_evidence(
+            CertifiedReply {
+                node: target,
+                certificate: response[7].bytes().unwrap().to_vec(),
+                result: response[8].bytes().unwrap().to_vec(),
+            },
+            AncestryEvidence::from_shared(evidence),
+            &mut f.store,
+            &mut f.session,
+            &mut || Ok(completed),
+        )
+        .unwrap();
+    assert_eq!(result.prefix().height(), 33);
+    assert_eq!(f.store.prefix().height(), 33);
 }
 #[test]
 fn prepared_history_requires_quorum_exact_continuity_and_no_floor_mutation() {
@@ -509,6 +666,7 @@ fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one
         profile: profile_path,
         route: profile.clone(),
     };
+    let pool = crate::private_route_client::AuthorityPool::shared();
     let context = &f.context;
     std::thread::scope(|threads| {
         let server = threads.spawn(|| {
@@ -645,15 +803,71 @@ fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one
                 listener.accept().is_err(),
                 "proof retrieval must not open another admitted stream"
             );
+            // Exact completed-floor reuse must not send another speculative checkpoint query.
+            assert_eq!(framed_read(&mut inner), b"reused authority connection");
+            framed_send(&mut inner, b"same admitted connection");
+            let packet = framed_read(&mut inner);
+            let (ordered, intent, challenge) = submitted(&packet);
+            let parsed = Intent::from_signed(&intent).unwrap();
+            let pending = Prepared {
+                context,
+                request: request(),
+                target: context
+                    .governance
+                    .versions()
+                    .into_iter()
+                    .find(|v| v.kind == 100)
+                    .unwrap(),
+                expected: parsed.expected,
+                intent,
+                challenge,
+                ordered,
+                deadline: boot_time_ms().unwrap() + 5000,
+            };
+            let (reply, _) = certified(
+                &pending,
+                result_value(&pending),
+                mature(&pending.challenge),
+                wire::digest(&target),
+                162,
+            );
+            framed_send(&mut inner, &reply);
+            // Another verified result advances the local floor while this route is pooled.
+            let query = wire::decode(&framed_read(&mut inner)).unwrap();
+            let fields = record(&query, 41, 5).unwrap();
+            assert_eq!(fields[3], V::Uint(4));
+            let query = wire::decode(fields[4].bytes().unwrap()).unwrap();
+            let query = query.array(5).unwrap();
+            assert_eq!(query[0], V::Uint(163));
+            assert_eq!(query[2], V::Null);
+            assert_eq!(query[3], V::Uint(160));
+            framed_send(&mut inner, &unavailable_packet);
+            // Pending recovery is also cold; malformed history must discard the connection.
+            let query = wire::decode(&framed_read(&mut inner)).unwrap();
+            assert_eq!(record(&query, 41, 5).unwrap()[3], V::Uint(4));
+            framed_send(&mut inner, b"invalid checkpoint response");
+            match inner.read(&mut [0; 1]) {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {}
+                other => panic!("failed history validation retained its connection: {other:?}"),
+            }
         });
         let deadline = boot_time_ms().unwrap() + 30000;
         let channel =
             crate::route_connector::Session::connect(&profile, &possession, deadline, &|| false)
                 .unwrap();
-        let route =
-            crate::private_route_client::Prepared::from_channel(endpoint, channel, deadline);
+        let route = crate::private_route_client::Prepared::from_channel(
+            endpoint.clone(),
+            channel,
+            deadline,
+        )
+        .in_pool(&pool);
         let start = boot_time_ms().unwrap();
         let control = LocalControl::prepared_for_test(route, &f.store).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let observation = crate::private_route_client::observation_path(&endpoint.profile).unwrap();
+        let observed_inode = std::fs::metadata(&observation).unwrap().ino();
+        let observed_bytes = std::fs::read(&observation).unwrap();
         assert!(boot_time_ms().unwrap() - start >= 5000);
         assert_eq!(f.store.prefix(), &prefix);
         assert_eq!(
@@ -698,6 +912,103 @@ fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one
         assert_eq!(f.store.tree_head().unwrap().size(), 160);
         assert!(f.store.resume_ordinary().unwrap().is_none());
         assert!(!LocalControl::validate_prefetch_for_test(&f.store, &unavailable_packet).unwrap());
+        control.retain(&f.store);
+        // The next TUI request can run on another worker thread while its command owns the pool.
+        let route = threads
+            .spawn(|| {
+                crate::private_route_client::AuthorityPool::take(&pool, &endpoint)
+                    .unwrap()
+                    .unwrap()
+            })
+            .join()
+            .unwrap();
+        assert_eq!(route.setup_deadline(), deadline);
+        assert!(route.reused());
+        let control = LocalControl::prepared_for_test(route, &f.store).unwrap();
+        assert_eq!(
+            control
+                .exchange(b"reused authority connection", deadline)
+                .unwrap(),
+            b"same admitted connection"
+        );
+        assert_eq!(
+            std::fs::metadata(&observation).unwrap().ino(),
+            observed_inode
+        );
+        assert_eq!(std::fs::read(&observation).unwrap(), observed_bytes);
+        let result = context
+            .inspect_prepared(
+                &control,
+                request(),
+                &f.signer,
+                &mut f.store,
+                &mut f.session,
+                live_clock,
+            )
+            .unwrap();
+        assert_eq!(result.prefix().height(), 162);
+        control.retain(&f.store);
+        let pending = context
+            .prepare(
+                request(),
+                &f.signer,
+                &mut f.store,
+                &mut f.session,
+                live_clock().unwrap(),
+            )
+            .unwrap();
+        let (reply, target) = certified(
+            &pending,
+            result_value(&pending),
+            mature(&pending.challenge),
+            *f.store.prefix().node(),
+            163,
+        );
+        let reply = wire::decode(&reply).unwrap();
+        let reply = record(&reply, 42, 10).unwrap();
+        pending
+            .finish(
+                CertifiedReply {
+                    node: target.clone(),
+                    certificate: reply[7].bytes().unwrap().to_vec(),
+                    result: reply[8].bytes().unwrap().to_vec(),
+                },
+                vec![target],
+                &mut f.store,
+                &mut f.session,
+                &mut live_clock,
+            )
+            .unwrap();
+        assert_eq!(f.store.prefix().height(), 163);
+        let route = crate::private_route_client::AuthorityPool::take(&pool, &endpoint)
+            .unwrap()
+            .unwrap();
+        let control = LocalControl::prepared_for_test(route, &f.store).unwrap();
+        let pending = context
+            .prepare(
+                request(),
+                &f.signer,
+                &mut f.store,
+                &mut f.session,
+                live_clock().unwrap(),
+            )
+            .unwrap();
+        let pending_digest = f.store.resume_ordinary().unwrap().unwrap().digest();
+        control.retain(&f.store);
+        let route = crate::private_route_client::AuthorityPool::take(&pool, &endpoint)
+            .unwrap()
+            .unwrap();
+        assert!(LocalControl::prepared_for_test(route, &f.store).is_err());
+        assert!(
+            crate::private_route_client::AuthorityPool::take(&pool, &endpoint)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().digest(),
+            pending_digest
+        );
+        pending.cancel(&mut f.session).unwrap();
         server.join().unwrap();
     });
 }

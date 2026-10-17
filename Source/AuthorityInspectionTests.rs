@@ -140,6 +140,17 @@ impl Fixture {
     }
     pub(super) fn with_actions_and_signer(actions: Vec<u64>, signer: SigningKey) -> Self {
         let current_wall = wall();
+        Self::with_bootstrap(
+            bootstrap_actions(current_wall, true, actions),
+            signer,
+            current_wall,
+        )
+    }
+    pub(super) fn with_bootstrap(
+        bootstrap: Verified,
+        signer: SigningKey,
+        current_wall: u64,
+    ) -> Self {
         let current_boot = boot_time_ms().unwrap();
         let issued = ClockHealth::new(
             current_wall - 2000,
@@ -152,7 +163,6 @@ impl Fixture {
         let current = ClockHealth::new(current_wall, current_boot, current_boot + 30000, 100)
             .unwrap()
             .frozen();
-        let bootstrap = bootstrap_actions(current_wall, true, actions);
         let directory = Directory::new();
         let status_issued = ClockHealth::new(
             current_wall - 4000,

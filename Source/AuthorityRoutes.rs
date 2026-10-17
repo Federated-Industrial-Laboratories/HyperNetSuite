@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 #[path = "AuthorityRoutesEvaluation.rs"]
 mod evaluation;
 pub use evaluation::evaluate;
+pub(crate) use evaluation::evaluate_read;
 
 #[derive(Clone, Debug)]
 pub struct RegisteredProfile {

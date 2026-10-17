@@ -2,6 +2,40 @@
 // A signed remote effect report completes only its exact outgoing request and never releases a permit.
 use super::*;
 impl Store {
+    /// Probe exact receipt continuity without acknowledging its returned data or effect.
+    pub(crate) fn media_completion_connected(
+        &self,
+        report: &crate::authority_domains::page::MediaReport,
+    ) -> Result<bool> {
+        media_operation(report.request())?;
+        let known = self.remote_known(report.result(), "AuthorityDomain")?;
+        if self.resume_fence()?.is_some() {
+            return Ok(false);
+        }
+        Ok(known
+            || (report.result().point().prefix().scope() == self.descriptor.scope()
+                && report.result().extends(self.prefix()).is_ok()))
+    }
+
+    /// Learn a verified original completion; progress and final acknowledgement remain outstanding.
+    pub(crate) fn establish_media_completion(
+        &mut self,
+        report: &crate::authority_domains::page::MediaReport,
+    ) -> Result<()> {
+        media_operation(report.request())?;
+        let result = report.result();
+        if self.remote_known(result, "AuthorityDomain")? {
+            self.descriptor_for_scope(result.point().prefix().scope())?;
+            return Ok(());
+        }
+        ensure!(
+            result.point().prefix().scope() == self.descriptor.scope(),
+            "media completion needs current own-stream status"
+        );
+        self.check_history(result)?;
+        self.advance(result, self.stored.wall_floor_ms)
+    }
+
     /// Retain restrictive metadata from an exact already-known remote completion without releasing its effect.
     pub fn retain_media_context(
         &mut self,

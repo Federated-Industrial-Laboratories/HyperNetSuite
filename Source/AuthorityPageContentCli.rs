@@ -11,7 +11,8 @@ use progress::Progress;
 mod routes;
 pub(crate) use routes::search_route;
 pub(crate) use routes::{
-    fetch_source, fetch_source_from, repair_source, selected_transport, upload_source,
+    fetch_source, fetch_source_from, fetch_view_source, repair_source, selected_transport,
+    upload_source,
 };
 #[derive(Args)]
 pub struct PlacementRef {
@@ -188,17 +189,19 @@ pub(super) fn job(
     effect: Effect,
     upload: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    resume_metadata(c, &placement)?;
-    if c.store.resume_ordinary()?.is_none() {
-        c.action(
-            Action::Content(content::Command::Get {
-                placement: placement.clone(),
-            }),
-            Some(grant.clone()),
-            Resolved::default(),
-        )?;
-    }
-    job_with_metadata(c, grant, placement, transport, path, effect, upload)
+    c.content_operation(|c| {
+        resume_metadata(c, &placement)?;
+        if c.store.resume_ordinary()?.is_none() {
+            c.action(
+                Action::Content(content::Command::Get {
+                    placement: placement.clone(),
+                }),
+                Some(grant.clone()),
+                Resolved::default(),
+            )?;
+        }
+        job_with_metadata(c, grant, placement, transport, path, effect, upload, None)
+    })
 }
 #[allow(clippy::too_many_arguments)]
 fn job_with_metadata(
@@ -209,24 +212,33 @@ fn job_with_metadata(
     path: &Path,
     effect: Effect,
     upload: Option<&[u8]>,
+    view: Option<&ResultState>,
 ) -> Result<Vec<u8>> {
-    let scope = c.bootstrap.descriptor().scope();
-    let mut progress = Progress::open(
-        path,
-        (
-            scope.network,
-            scope.incarnation,
-            c.key.verifying_key().to_bytes(),
-        ),
-        &c.cache()?.state,
-        &placement,
-        transport.host()?,
-        effect,
-        upload,
-    )?;
-    progress.begin_repair(c.store.resume_ordinary()?.is_some())?;
-    transfer_progress(c, grant, transport, path, &mut progress)?;
-    Ok(progress.bytes)
+    // Cancellation or any failure drops the checked-out connection, including errors before I/O.
+    let mut pool = std::mem::take(&mut c.content);
+    let result = (|| {
+        let scope = c.bootstrap.descriptor().scope();
+        let mut progress = Progress::open(
+            path,
+            (
+                scope.network,
+                scope.incarnation,
+                c.key.verifying_key().to_bytes(),
+            ),
+            &c.cache()?.state,
+            &placement,
+            transport.host()?,
+            effect,
+            upload,
+        )?;
+        progress.begin_repair(c.store.resume_ordinary()?.is_some())?;
+        transfer_progress(c, grant, transport, path, &mut progress, &mut pool, view)?;
+        Ok(progress.bytes)
+    })();
+    if result.is_ok() {
+        c.content = pool;
+    }
+    result
 }
 fn transfer_progress(
     c: &mut Client,
@@ -234,6 +246,8 @@ fn transfer_progress(
     transport: &Transport,
     path: &Path,
     progress: &mut Progress,
+    pool: &mut crate::private_route_client::ContentPool,
+    mut view: Option<&ResultState>,
 ) -> Result<()> {
     let placement = progress.placement_ref.clone();
     let effect = progress.effect;
@@ -243,13 +257,16 @@ fn transfer_progress(
         if complete && c.store.resume_ordinary()?.is_none() {
             break;
         }
-        client::ensure(
+        client::ensure_content_view(
             &c.bootstrap,
             &mut c.store,
             &c.socket,
             &c.key,
             &mut c.session,
             || c.clock.health(),
+            view.take()
+                .filter(|_| effect == Effect::Read)
+                .map(|view| (view, &placement, &progress.host, effect)),
         )?;
         let pending = client::pending(&c.store)?;
         let reconcile = pending.is_some();
@@ -323,17 +340,20 @@ fn transfer_progress(
             c.clock.health()?,
         )?;
         let packet = client::packet(&request, &payload, reconcile)?;
-        let receipt = transport.exchange(&packet, path)?;
-        client::complete(
-            &c.bootstrap,
-            &receipt,
-            &c.socket,
-            &c.key,
-            &mut c.store,
-            &mut c.session,
-            || c.clock.health(),
-            |request, response| progress.apply(request, response),
-        )?;
+        transport
+            .exchange_content(&packet, path, pool)?
+            .complete(pool, |receipt| {
+                client::complete(
+                    &c.bootstrap,
+                    receipt,
+                    &c.socket,
+                    &c.key,
+                    &mut c.store,
+                    &mut c.session,
+                    || c.clock.health(),
+                    |request, response| progress.apply(request, response),
+                )
+            })?;
     }
     if matches!(effect, Effect::Upload | Effect::Repair) {
         let receipt = progress
@@ -479,3 +499,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Purge { exchange } => transfer(exchange, Effect::Purge, None, None),
     }
 }
+
+#[cfg(test)]
+#[path = "AuthorityPageViewConsumerTests.rs"]
+pub(crate) mod view_tests;

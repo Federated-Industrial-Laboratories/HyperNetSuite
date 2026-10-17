@@ -46,6 +46,15 @@ fn retained_subject_pins_complete_route_before_connection_preparation() {
         let mut unpinned = serde_json::to_value(&pinned).unwrap();
         unpinned.as_object_mut().unwrap().remove("routeDigest");
         assert!(serde_json::from_value::<SavedRoute>(unpinned).is_err());
+        let original = Endpoint {
+            format: "HyperNetRelayEndpoint/1".into(),
+            profile: PathBuf::from("/AbsentSearchRouteProfile.json"),
+            route: route.clone(),
+        };
+        assert!(original.same_identity(&original).unwrap());
+        let mut other_profile = original.clone();
+        other_profile.profile = PathBuf::from("/OtherProfile.json");
+        assert!(!original.same_identity(&other_profile).unwrap());
         for changed in 0..8 {
             let mut selected = route.clone();
             match changed {
@@ -63,6 +72,7 @@ fn retained_subject_pins_complete_route_before_connection_preparation() {
                 profile: PathBuf::from("/AbsentSearchRouteProfile.json"),
                 route: selected,
             };
+            assert!(!original.same_identity(&endpoint).unwrap());
             let result = LocalControl::from_relay_checked(endpoint, |loaded| {
                 assert_eq!(
                     loaded.unwrap().profile,

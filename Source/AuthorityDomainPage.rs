@@ -39,6 +39,7 @@ pub use commands::{Command, MediaEffect};
 #[path = "AuthorityPageEvaluation.rs"]
 mod evaluation;
 pub(crate) use evaluation::context::Evaluation;
+pub(crate) use evaluation::evaluate_read;
 pub use evaluation::{evaluate, expected_recipient};
 #[path = "AuthorityPageResponse.rs"]
 mod response;
@@ -129,6 +130,6 @@ fn identity(label: &str, fields: Vec<V>) -> Result<Digest> {
 
 #[cfg(test)]
 #[path = "AuthorityPageTests.rs"]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) use tests::complete_content;

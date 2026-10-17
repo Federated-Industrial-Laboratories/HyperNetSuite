@@ -53,6 +53,25 @@ ancestry, capability, current restriction, durable floor and single-use checks.
 The floor can be reopened by a later invocation or used with another eligible
 replica in the same accepted configuration.
 
+Policy discovery, complete Page views, route lookup and voucher context use a
+distinct fresh quorum read. Each query binds the requester, an unpredictable
+nonce, the retained authority floor and a new recipient challenge. Three current
+voters must agree on the exact applied anchor, evaluation time and result. The
+client verifies ancestry, current authorization and accepted policy minima before
+durably retaining the authority and record floors. The fresh evaluation time is
+separate from the anchor's historical commit time. Reopening verifies the retained
+read certificate as authority evidence; it does not revive its expired permission.
+
+These reads do not allocate an ordinary stream sequence, acknowledge an effect or
+resolve an uncertain operation. Pending effects and fences require their existing
+reconciliation. Transport admission and cold history preparation precede the
+five-second challenge; polling and proof retention consume its original lifetime.
+Unavailable quorum reads return a finite error without an automatic ordered
+fallback. Invalid requests and certified authorization refusals are distinct from
+temporary unavailability. Content disclosure still follows accepted policy
+discovery. Host content authorization, connection-budget consumption and stream
+status retain their ordered execution, exact claims and receipt checks.
+
 Long gaps use a quorum-certified checkpoint when contiguous repair exceeds 128
 nodes or the replica reports that short history is unavailable. The request
 names the actual durable prefix and any retained history-tree head. The client
