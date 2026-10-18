@@ -7,10 +7,12 @@ Forms, recipient-approved file transfers and separately consented OpenSSH servic
 The client and infrastructure have separate repositories, builds and packages.
 
 Current authority results require an independently accepted bootstrap, a verified
-three-of-four executed-result certificate, exact capability references and durable
-requester floors. Serving effects additionally require the selected service's
-separate recipient journal. Applications receive separately scoped authority. Membership
-alone never grants hosting, review, voting or confidential-content access.
+three-of-four certificate, exact capability references and durable requester
+floors. Policy discovery, Page views, route lookups and voucher context use
+distinct fresh-read certificates. Mutations and serving authorizations retain
+ordered results. Serving effects additionally require the selected service's
+separate recipient journal. Applications receive separately scoped authority.
+Membership alone never grants hosting, review, voting or confidential-content access.
 
 Build with Rust 1.91 or newer:
 

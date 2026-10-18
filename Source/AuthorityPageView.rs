@@ -105,13 +105,80 @@ fn catalogue(
         location: Location::Catalogue(namespace, after),
         publication: None,
         document,
-        metadata: vec![format!(
-            "Catalogue verified at authority height {}",
-            result.prefix.height()
-        )],
+        metadata: catalogue_metadata(result.prefix.height(), next),
         next,
         view: page_view::View::new(),
     })
+}
+fn catalogue_metadata(height: u64, next: Option<Digest>) -> Vec<String> {
+    let mut metadata = vec![format!("Catalogue verified at authority height {height}")];
+    if let Some(cursor) = next {
+        metadata.push(format!(
+            "Continue catalogue with --after {}",
+            hex::encode(cursor)
+        ));
+    }
+    metadata
+}
+fn same_publication(a: &publication::Identity, b: &publication::Identity) -> bool {
+    // A new pending revision can change the ledger without changing the approved publication.
+    a.network == b.network
+        && a.incarnation == b.incarnation
+        && a.page == b.page
+        && a.revision == b.revision
+        && a.approval == b.approval
+        && a.bundle == b.bundle
+}
+fn refreshed_view(
+    previous: Option<&publication::Identity>,
+    next: Option<&publication::Identity>,
+    view: &page_view::View,
+) -> page_view::View {
+    if previous
+        .zip(next)
+        .is_some_and(|(a, b)| same_publication(a, b))
+    {
+        view.clone()
+    } else {
+        page_view::View::new()
+    }
+}
+fn install_entry(
+    current: &mut Entry,
+    history: &mut VecDeque<Entry>,
+    mut entry: Entry,
+    refresh: bool,
+    preflight: impl FnOnce(&markup::Document, &page_view::View) -> Result<()>,
+) -> Result<()> {
+    if refresh {
+        entry.view = refreshed_view(
+            current.publication.as_ref().map(|p| &p.identity),
+            entry.publication.as_ref().map(|p| &p.identity),
+            &current.view,
+        );
+    }
+    preflight(&entry.document, &entry.view)?;
+    let previous = std::mem::replace(current, entry);
+    if !refresh {
+        // Sixteen maximum-size sources keep retained Page text below 256 KiB.
+        if history.len() == 16 {
+            history.pop_front();
+        }
+        history.push_back(previous);
+    }
+    Ok(())
+}
+fn previous_entry(
+    current: &mut Entry,
+    history: &mut VecDeque<Entry>,
+    preflight: impl FnOnce(&markup::Document, &page_view::View) -> Result<()>,
+) -> Result<bool> {
+    let Some(entry) = history.back() else {
+        return Ok(false);
+    };
+    preflight(&entry.document, &entry.view)?;
+    *current = history.pop_back().unwrap();
+    Ok(true)
 }
 fn load(c: &mut Client, grant: &VersionRef, location: Location) -> Result<Entry> {
     match location {
@@ -338,25 +405,30 @@ fn view(
                 status = reader::bounded_status(&format!("Could not complete action: {error:#}"))
             }
             Ok(Some(entry)) => {
-                session.preflight(&entry.document, &entry.view)?;
-                if !matches!(action, reader::Action::Refresh) {
-                    // Sixteen maximum-size sources keep retained Page text below 256 KiB.
-                    if history.len() == 16 {
-                        history.pop_front();
+                match install_entry(
+                    &mut current,
+                    &mut history,
+                    entry,
+                    matches!(action, reader::Action::Refresh),
+                    |document, view| session.preflight(document, view),
+                ) {
+                    Ok(()) => status.clear(),
+                    Err(error) => {
+                        status =
+                            reader::bounded_status(&format!("Could not display Page: {error:#}"))
                     }
-                    history.push_back(current);
                 }
-                current = entry;
-                status.clear();
             }
             Ok(None) => {
                 if matches!(action, reader::Action::Back | reader::Action::Previous) {
-                    if let Some(entry) = history.pop_back() {
-                        session.preflight(&entry.document, &entry.view)?;
-                        current = entry;
-                        status = "Retained display; refresh to check current authority".into();
-                    } else {
-                        status = "No retained history".into();
+                    status = match previous_entry(&mut current, &mut history, |document, view| {
+                        session.preflight(document, view)
+                    }) {
+                        Ok(true) => "Retained display; refresh to check current authority".into(),
+                        Ok(false) => "No retained history".into(),
+                        Err(error) => reader::bounded_status(&format!(
+                            "Could not display retained Page: {error:#}"
+                        )),
                     }
                 }
             }
@@ -414,3 +486,7 @@ pub fn browse(args: Browse) -> Result<()> {
     };
     view(session, c, grant, current, online, options)
 }
+
+#[cfg(test)]
+#[path = "AuthorityPageNavigationTests.rs"]
+mod tests;

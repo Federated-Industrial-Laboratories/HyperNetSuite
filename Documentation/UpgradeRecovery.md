@@ -145,6 +145,13 @@ archive must pass the same signature, inventory and current update policy checks
 as an initial install. `Verify`, `VerifyInstalled` and `Remove` check historical
 integrity only; they do not assert update freshness or lower the retained floor.
 
+## Service metadata
+
+After a service update, domain operations reconcile obsolete deployment metadata
+with the retained certified successor. The successor must match the current quorum
+floor and its signed manifest and consent. Missing or altered evidence refuses
+resumption. Existing transfer progress and requester journals remain intact.
+
 ## Removal
 
 From an independently trusted copy of the verifier:

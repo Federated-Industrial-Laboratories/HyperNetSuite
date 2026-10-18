@@ -5,6 +5,46 @@ use super::*;
 pub(super) fn versions(scope: &proof::Scope, entries: &[Vec<u8>]) -> Result<Vec<VersionRef>> {
     Governance::record_versions(scope.network, scope.incarnation, entries)
 }
+/// Replace obsolete deployment metadata only from an independently certified successor cache.
+pub(crate) fn refresh_cached_deployments(
+    bootstrap: &Verified,
+    store: &Store,
+    entries: &mut Vec<Vec<u8>>,
+) -> Result<()> {
+    let scope = store.descriptor().scope();
+    let old = versions(scope, entries)?;
+    let mut selected = old
+        .iter()
+        .cloned()
+        .zip(entries.iter().cloned())
+        .map(|(reference, bytes)| (reference.index(), (reference, bytes)))
+        .collect::<BTreeMap<_, _>>();
+    let deployments = old
+        .iter()
+        .filter(|r| {
+            matches!(r.kind, 105 | 117 | 129 | 130)
+                && store.generations().iter().any(|current| {
+                    current.index() == r.index() && current.generation > r.generation
+                })
+        })
+        .map(|r| r.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    for deployment in deployments {
+        let current = Cache::load(bootstrap, store, deployment, None)?;
+        for bytes in current.entries {
+            let reference = versions(scope, std::slice::from_ref(&bytes))?.remove(0);
+            if let Some((prior, _)) = selected.get(&reference.index()) {
+                ensure!(
+                    prior.generation < reference.generation || *prior == reference,
+                    "cached deployment conflicts with its certified successor"
+                );
+            }
+            selected.insert(reference.index(), (reference, bytes));
+        }
+    }
+    *entries = selected.into_values().map(|(_, bytes)| bytes).collect();
+    Ok(())
+}
 pub(super) fn merged(bootstrap: &Verified, entries: &[Vec<u8>]) -> Result<Vec<Vec<u8>>> {
     let scope = bootstrap.descriptor().scope();
     let mut selected = BTreeMap::new();

@@ -132,6 +132,11 @@ impl Cache {
             store,
             &mut result.records,
         )?;
+        crate::authority_inspection::deployment_client::refresh_cached_deployments(
+            bootstrap,
+            store,
+            &mut result.records,
+        )?;
         let pending = store
             .resume_ordinary()?
             .map(|p| Intent::from_signed(p.signed()))
