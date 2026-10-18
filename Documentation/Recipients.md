@@ -1,5 +1,7 @@
 # Sealed recipient identities
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Sealed Pages use separate user roots, device signing keys and X25519 encryption
 keys. Network membership does not silently create or replace them. A network
 administrator admits devices within explicit capabilities; the reader's accepted

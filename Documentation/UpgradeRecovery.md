@@ -1,5 +1,7 @@
 # Upgrade and recovery
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Software and private user data have separate lifecycles. Keep all profiles,
 identity files, mail vaults, recovery files and downloads outside an installed
 software prefix. Package removal never revokes network grants or deletes those

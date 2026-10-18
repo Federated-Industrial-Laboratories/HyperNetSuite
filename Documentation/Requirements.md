@@ -1,9 +1,11 @@
 # Requirements
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 These requirements describe intended behaviour. They are not implementation or
 security certification claims.
 
-- Provide a small Rust terminal and command-line suite.
+- Provide independently usable Rust native graphical, terminal and command-line clients.
 - Keep the clients independently installable and releasable from HyperNet.
 - Use documented interfaces without direct access to server databases or secrets.
 - Keep page viewing separate from mail, transfers and service authorisation.

@@ -1,5 +1,7 @@
 # Source layout
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 `Source/Main.rs` declares the Rust modules and command entry point. Source files
 are grouped by responsibility. Tests stay beside the implementation they exercise.
 
@@ -14,6 +16,7 @@ are grouped by responsibility. Tests stay beside the implementation they exercis
 | Pages | Publication, catalogue, browsing and retained navigation |
 | HyperPage | Inert markup, component, form and media schemas |
 | Presentation | Layout, focus, scrolling, borders, forms and local motion |
+| Graphical | Native browser windows, Markdown formatting, settings and Page rendering |
 | Terminal | Terminal session, input and graphics output |
 | Media | Isolated import, canonical media and resumable retrieval |
 | Forms, Mail, Transfers, Services | Explicit application workflows |

@@ -1,5 +1,7 @@
 # Private mail
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 The Mail client uses a fully accepted, independently pinned bootstrap, retained
 quorum floors, an age-encrypted vault and explicitly selected Mail services.
 The authority certifies public metadata and one-use package claims. It does not

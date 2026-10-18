@@ -1,5 +1,7 @@
 # Local authority inspection
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 The local operator client verifies a current governance record against a
 three-of-four executed-result certificate. It uses the private authority control
 socket. This command does not join a network, open a reader route or grant an

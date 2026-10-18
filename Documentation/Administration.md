@@ -1,5 +1,7 @@
 # Tier and grant administration
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Tier rank controls display order. Authority comes from explicit actions, scopes,
 validity, limits and delegation chains. A tier edit does not rewrite a grant or
 restore a revoked grant. Current restrictions apply to existing grants pinned to

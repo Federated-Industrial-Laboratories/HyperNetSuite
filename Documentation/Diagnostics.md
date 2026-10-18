@@ -1,5 +1,7 @@
 # Local diagnostics
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 `network diagnose` previews a bounded, redacted snapshot of one selected local
 profile. It requires only the installed client. It does not connect, probe a
 service, run an external program, start a monitor or upload anything.
@@ -78,3 +80,26 @@ Check local ownership and permissions separately with an appropriately private
 operator inspection. [Network inspection](Networks.md) and
 [connection status](PrivateRoutes.md) intentionally expose more local detail;
 their outputs are not this redacted export.
+
+## Recover a refused connection
+
+Keep the selected profile, requester floor and pending operation files intact.
+Start with local inspection; a diagnostic snapshot cannot repair or renew authority.
+
+| Symptom | Next step |
+| --- | --- |
+| Clock unavailable or stale | Check `network clock status --directory /Private/Clock` for the selected local monitor. Confirm that it is running, uses the intended chrony socket and publishes a current observation for this boot. Follow [local clock health](PrivateRoutes.md#local-clock-health). |
+| Missing or changed route | Inspect `network status --profile /Private/Client/Profile.json`. Authenticate replacement route material independently and accept it through `network retain-route`; keep the existing requester floor. |
+| Expired invitation, voucher, grant or consent | Obtain the corresponding authorised renewal from its issuer or host owner. Rejoining or deleting local state does not extend an expired permission. |
+| Authority unavailable or no quorum | Ask the network operator to restore the required authority and service readiness. Retain any unresolved request and use that operation's exact retry or recovery procedure. |
+| Unsafe local path or private-state refusal | Check the intended file's ownership, permissions and path without printing its contents. Preserve state before repairing it; do not replace it with a newly initialised floor. |
+
+Clock observations expire quickly and must continue to be refreshed while the
+client operates. A one-time observation is not a replacement for a running
+monitor. Never change the clock, edit an expiry, reset a floor or weaken privacy
+requirements to make a refusal disappear. A failed refresh can leave a previously
+verified Page on screen; that retained display is not current permission.
+
+If a send or mutation times out, its effect may already have occurred. Inspect the
+retained outbox or request state before retrying. Do not issue a new identity for
+the same intended operation merely because its acknowledgement was lost.

@@ -1,5 +1,7 @@
 # Offline network recovery
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 `HyperNetSuite network recovery` prepares and accepts a new network identity after
 authority loss. It does not restore the old network or activate a connection.
 The successor needs a new network ID, a new incarnation ID and its own complete,

@@ -1,79 +1,122 @@
-# HyperNetSuite
+<h1 align="center">HyperNetSuite</h1>
+<p align="center">Native graphical, terminal and command-line clients for HyperNet.</p>
+<p align="center"><a href="Documentation/ReadMe.md">Documentation</a> | <a href="Documentation/Installation.md">Installation</a> | <a href="Documentation/Security.md">Security</a> | <a href="https://github.com/Federated-Industrial-Laboratories/HyperNet">HyperNet infrastructure</a></p>
 
-HyperNetSuite is the independent graphical and terminal client for
-[HyperNet](https://github.com/Federated-Industrial-Laboratories/HyperNet).
-It provides inert HyperPages, explicit media reveal, encrypted Mail, reviewed
-Forms, recipient-approved file transfers and separately consented OpenSSH services.
-The client and infrastructure have separate repositories, builds and packages.
+Read and publish reviewed Pages, exchange encrypted Mail and files, and use
+explicitly approved services on a selected HyperNet network. HyperNetSuite is
+independently installed from HyperNet infrastructure. Local Page preview works
+without a network, account or hosting service.
 
-Current authority results require an independently accepted bootstrap, a verified
-three-of-four certificate, exact capability references and durable requester
-floors. Policy discovery, Page views, route lookups and voucher context use
-distinct fresh-read certificates. Mutations and serving authorizations retain
-ordered results. Serving effects additionally require the selected service's
-separate recipient journal. Applications receive separately scoped authority.
-Membership alone never grants hosting, review, voting or confidential-content access.
+The native Linux browser supports Page navigation, explicit media reveal and
+reviewed Forms. Mail, transfers and administration use the command line.
+Terminal browsing and plain output remain available without a graphical desktop.
 
-Build with Rust 1.95 or newer. The default build includes the native Linux browser;
-see [Graphical browser](Documentation/GraphicalBrowser.md) for desktop dependencies.
+**In development.** The current package version is 0.7.5, with the evolving
+0.8.0 network contracts documented separately. This is not a qualified production
+Internet deployment. Native x86_64 GNU/Linux is the current platform;
+AArch64, Windows and macOS remain unqualified. See
+[supported platforms](Documentation/SupportedPlatforms.md).
+
+## Features
+
+| Capability | What you can do |
+| --- | --- |
+| Pages and browsing | Author inert HyperPages, review exact revisions and navigate verified publications in native or terminal views. |
+| Media and layout | Use panels, rows, scroll boxes and bounded local motion; reveal approved images explicitly. |
+| Search | Query a selected network or search an explicitly retained encrypted local catalogue. |
+| Sealed Pages | Publish encrypted content for independently accepted recipient devices through the CLI. |
+| Private Mail and Forms | Exchange encrypted messages and review typed submissions before sending. |
+| Transfers and services | Accept exact file offers and approve separately consented OpenSSH sessions. |
+| Federation and archives | Share reviewed Pages between agreed networks and restore consented encrypted content archives. |
+| Administration | Inspect authority, manage scoped grants and accept explicit policy or recovery changes. |
+
+Page content cannot run scripts, choose local credentials or submit a Form
+automatically. Membership alone grants no hosting, review or confidential-content
+access. Network operations require independently accepted trust, current verified
+authority and the capability for that operation. Read the
+[security boundaries](Documentation/Security.md) before connecting.
+
+## Requirements
+
+| Use | Requirements |
+| --- | --- |
+| Installed client | Native x86_64 GNU/Linux and the host libraries recorded by its package manifest. |
+| Native browser | A graphical build, X11 or Wayland session, and usable EGL/GLX libraries and graphics driver. |
+| Source build | Rust 1.95 or newer, Cargo, a C toolchain/linker and native graphical development dependencies. |
+| Terminal viewer | An interactive terminal; text works without a terminal graphics protocol. |
+| Signed package tools | Python 3.11 or newer and OpenSSH `ssh-keygen` with Ed25519 SSHSIG support. |
+| Network access | Authenticated bootstrap, approved membership and grants, current clock health and accepted relay/service routes. |
+| SSH service sessions | Separately consented service access and OpenSSH 10.6 or newer. |
+
+Python is not needed to run the client binary. It is needed for package tools
+and the optional example generator. The [installation guide](Documentation/Installation.md)
+covers graphical dependencies, a terminal-only build and signed offline packages.
+
+## Install from source
+
+From an authenticated checkout with the build prerequisites installed:
 
 ```sh
-cargo build --locked --release
-bash Tools/Check.sh
+bash Tools/Install.sh "$HOME/.local/opt/HyperNetSuite"
+export PATH="$HOME/.local/opt/HyperNetSuite/Bin:$PATH"
+HyperNetSuite --help
 ```
 
-Use `cargo build --locked --release --no-default-features` for a terminal-only
-build. Open the native browser with `browse --gui` or preview a local document
-with `pages preview Draft.txt --gui`. The default command behavior remains terminal
-or plain output. Both viewers use the same HyperPage format and authority checks.
+The installer builds the locked release and copies the executable, manuals and
+examples into the chosen prefix. It needs no elevation and starts no services.
+Keep private profiles, keys, vaults and downloads outside that prefix. Installed
+manuals start at `Documentation/HyperNetSuite/ReadMe.md` within the prefix.
 
-The test gate uses a private persistent directory under the user's state home.
-Set `HYPERNET_TEST_DIRECTORY` to another private persistent directory when needed.
-See [Installation](Documentation/Installation.md) for signed offline packages and
-[Usage](Documentation/Usage.md) for identity creation and operator workflows.
+For an independently authenticated signed package, follow
+[offline installation](Documentation/Installation.md#signed-offline-package)
+and its required update-trust procedure. No public release download is assumed.
 
-[Networks](Documentation/Networks.md) prepares authenticated trust and separate
-client keys. [Private routes](Documentation/PrivateRoutes.md) joins through an
-approved relay, retains verified membership and supplies normal client commands
-with their selected network. Current operator workflows remain explicitly local.
-Reader failures, reconnection and cancellation never select a direct fallback.
+## Try a local Page
 
-[Pages](Documentation/Pages.md) covers authoring, exact-content review and verified
-publication. [HyperPage](Documentation/HyperPage.md) defines responsive panels,
-rows, scroll boxes, borders, colours and explicit local controls without scripts.
-[Browser](Documentation/Browser.md) covers terminal navigation and recoverable
-errors. [Graphical browser](Documentation/GraphicalBrowser.md) covers native
-navigation, inert Markdown formatting and persistent display preferences.
-[Search](Documentation/Search.md) provides explicit selected-network
-queries and encrypted retained local catalogues, including sealed publications. [Media](Documentation/Media.md) adds isolated bitmap/SVG import, explicit
-asset inspection, terminal graphics and bounded client-side motion.
-[Examples](Examples/ReadMe.md) contains fictional businesses for local preview.
-[Content backups](Documentation/Backups.md) preserves approved Pages and their assets
-in explicitly consented encrypted archives, with current-authority restore.
+After the source installation above, open the supplied example:
 
-[Private Mail](Documentation/PrivateMail.md) provides owner-controlled addresses,
-scoped devices, explicit encrypted storage and protected history transfer.
-[Forms](Documentation/Forms.md) adds typed input, explicit confirmation and
-independently accepted intake. Foreign Forms cannot target a local mailbox through
-Federation. [Transfers and services](Documentation/TransfersAndServices.md)
-uses exact recipient acceptance and separate service consent.
-[Federation](Documentation/Federation.md) defines bilateral agreements, original
-author sharing and destination review without merging network membership.
+```sh
+HyperNetSuite pages preview "$HOME/.local/opt/HyperNetSuite/Examples/GraphicalPage.txt" --gui
+```
 
-[Application access](Documentation/ApplicationAccess.md) and
-[Adapters](Documentation/Adapters.md) cover separately consented credentials and
-explicit data disclosure. Model recommendations remain inert data.
-[Authority inspection](Documentation/AuthorityInspection.md),
-[tier and grant administration](Documentation/Administration.md),
-[network policies](Documentation/NetworkPolicies.md),
-[committee replacement](Documentation/AuthorityEpochs.md) and
-[network recovery](Documentation/NetworkRecovery.md) describe installed control
-workflows and independently authenticated recovery.
-[Recipient identities](Documentation/Recipients.md) covers local keys, verified
-contacts and threshold recovery when a recipient root is lost.
+Use `--tui` instead of `--gui` for the terminal viewer, or omit both for plain
+output. The example needs no profile or media preparation. It shows panels,
+Markdown formatting in the native viewer and local controls. Preview is visibly
+unapproved; it cannot navigate a network or send Forms. Animation is off by
+default in the native browser and can be enabled in Settings.
 
-[Source layout](Documentation/SourceLayout.md) identifies implementation modules.
-[Security](Documentation/Security.md), [supported platforms](Documentation/SupportedPlatforms.md)
-and [runtime contracts](Documentation/Contracts.md) state the boundaries and
-remaining qualification. Native ARM runtime qualification remains pending. This prerelease is not a qualified production
-Internet deployment. Licensed under the [MIT License](Licence.txt).
+[Examples](Examples/ReadMe.md) also provides five fictional business Pages with
+explicitly imported media. [Graphical browser](Documentation/GraphicalBrowser.md)
+and [terminal controls](Documentation/TerminalLayout.md) explain the viewers.
+
+## Connect to a network
+
+Obtain and independently authenticate the network's bootstrap and route material.
+Follow [network preparation](Documentation/Networks.md), then
+[join and retain routes](Documentation/PrivateRoutes.md#prepare-and-join).
+Preparation is offline and does not grant membership. Once joined, with current
+routes retained, select that profile explicitly:
+
+```sh
+HyperNetSuite network connect --profile /Private/Client/Profile.json -- browse --gui --namespace News
+```
+
+Replace the path and namespace with your approved values. Omit `--gui` for terminal
+browsing. Expired authority, missing routes or insufficient privacy cause refusal;
+the client never silently selects a direct connection.
+
+## Documentation
+
+The [documentation index](Documentation/ReadMe.md) separates reader and author
+guides, operator workflows and protocol references. Start with
+[installation](Documentation/Installation.md), [client use](Documentation/Usage.md)
+and the viewer of your choice.
+
+For maintenance, use [upgrade and recovery](Documentation/UpgradeRecovery.md),
+[local diagnostics](Documentation/Diagnostics.md) and
+[content backups](Documentation/Backups.md). Developers can consult
+[source layout](Documentation/SourceLayout.md),
+[contracts](Documentation/Contracts.md) and
+[dependency licences](Documentation/Dependencies.md).
+
+Licensed under the [MIT License](Licence.txt).

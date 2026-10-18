@@ -1,5 +1,7 @@
 # Page media
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Media is immutable content bound to one exact signed Page revision. HyperNetSuite
 imports canonical assets, uploads to explicitly selected consenting hosts, and
 independently validates complete downloaded assets. Pages cannot select a local
@@ -32,8 +34,9 @@ asset needs an Image reference and an explicit Reveal control:
 @Button {"label":"Reveal diagram","action":{"kind":"Reveal","target":"DiagramView"}}
 ```
 
-Use `pages preview Draft.txt --tui --media Diagram=Artwork/Diagram.Vector` to
-inspect a local draft. Local mappings are explicit and are read only on reveal.
+Use `pages preview Draft.txt --gui --media Diagram=Artwork/Diagram.Vector` to
+inspect a local draft in the native browser. Replace `--gui` with `--tui` for
+terminal viewing and select a supported [graphics protocol](MediaViewer.md). Local mappings are explicit and are read only on reveal.
 Alt text remains available without a supported graphics protocol.
 
 Sign and submit the Page with the separate `pages author` and `pages submit`

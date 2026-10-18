@@ -1,5 +1,7 @@
 # Third-party dependencies
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Cargo.lock records exact Rust source versions and checksums. This inventory includes optional, build and target-specific dependencies; inclusion does not imply that a crate is linked into the supported client. The notices preserve upstream licence files.
 
 | Package | Version | Declared licence |

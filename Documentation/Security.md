@@ -1,5 +1,7 @@
 # Security boundaries
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 HyperNetSuite treats remote data as untrusted. Page markup is inert. Plain output
 escapes terminal controls, and only trusted renderer operations generate terminal
 sequences. Links, downloads and SSH sessions require explicit actions. Offline
@@ -8,6 +10,12 @@ policy; they do not establish a working reader connection. Current local operato
 commands use that independent bootstrap pin and a retained requester floor with
 an explicitly selected private control socket. Federation bridge endpoints are
 separately constrained by their accepted manifests and certificate pins.
+
+The native browser renders HyperPage components and bounded inert Markdown;
+it embeds no web engine or script runtime. Browser controls and Form review stay
+separate from publisher content. Media remains hidden until explicit Reveal and
+passes the existing confined decoding path before display. Local preview cannot
+navigate the network or send Forms. See [Graphical browser](GraphicalBrowser.md).
 
 Application grants and mail-device credentials retain their separate scopes.
 Adapter exports require explicit disclosure consent. A policy digest, expiry or
@@ -39,3 +47,12 @@ the locked Rust inputs and known advisory qualifications. Host libraries and
 external OpenSSH remain the operator's responsibility. The package does not
 include their shared objects. A public Internet deployment requires a separate
 independent security assessment; local qualification is not a certification.
+
+## Report a security issue
+
+Send suspected vulnerabilities privately to
+[contact@federatedindustrial.com](mailto:contact@federatedindustrial.com).
+Include the affected version, commands and a minimal reproduction using synthetic
+data. Do not include private profiles, keys, vaults or unredacted operational logs.
+Use the [diagnostic preview](Diagnostics.md) to inspect any proposed attachment
+before sharing it.

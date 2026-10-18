@@ -1,5 +1,7 @@
 # Media import and display
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 `media import` converts a PNG, JPEG or static SVG file into a canonical media
 asset and a separate Asset declaration. The original file is never published.
 Select an asset ID, its consented host identities and required copy count. Both

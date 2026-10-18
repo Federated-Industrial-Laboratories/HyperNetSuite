@@ -1,5 +1,7 @@
 # Pages
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Pages contain inert HyperNetPage/2 components. The client does not execute Page
 code, interpret HTML or fetch external links. Images have exact manifests and
 require explicit reveal. Effects run on the viewer; animation frames are not
@@ -9,9 +11,9 @@ For private encrypted authoring, manual approval and device-owned reads, use
 [Sealed Pages](SealedPages.md).
 
 Use separate reader, author, reviewer and host identities. Hosting consent does
-not grant ordinary membership or publication rights. Every online Page command
-uses a separately accepted bootstrap, a private requester directory, an identity,
-a clock witness and the explicit authority control socket. Initialise the
+not grant ordinary membership or publication rights. For local operator access,
+online Page commands use a separately accepted bootstrap, a private requester
+directory, an identity, a clock witness and the explicit authority control socket. Initialise the
 requester directory with `authority-inspection initialise` before using it.
 Capability-bearing commands take `--grant` and optionally the exact
 `--grant-record` when that record is not already retained.
@@ -19,6 +21,15 @@ The shared online options are `--bootstrap`, `--bootstrap-digest`, `--directory`
 `--key`, `--socket` and `--clock-witness`, with both monitor pins when using a
 signed clock witness. [Authority inspection](AuthorityInspection.md) describes
 their trust requirements. Page `--expires-ms` values use absolute Unix milliseconds.
+
+Ordinary readers use [private routes](PrivateRoutes.md): `network connect` supplies
+the retained trust and approved endpoint for the selected profile. It does not
+grant authoring or review authority merely because the reader has joined.
+
+Choose the [native browser](GraphicalBrowser.md) with `--gui` or the
+[terminal viewer](Browser.md) with `--tui` for ordinary Page preview and reading.
+Publishing and moderation remain explicit command-line operations. The
+[supplied example](../Examples/ReadMe.md) works locally without network trust.
 
 ## Authoring and approval
 
