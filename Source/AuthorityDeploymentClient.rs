@@ -11,6 +11,7 @@ const CACHE_LIMIT: usize = 98304;
 #[path = "AuthorityDeploymentCache.rs"]
 mod cache;
 pub use cache::Cache;
+pub(crate) use cache::refresh_cached_deployments;
 use cache::{merged, minimum, versions};
 
 #[allow(

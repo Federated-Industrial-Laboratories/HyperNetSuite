@@ -4,6 +4,8 @@ use super::super::tests::{Fixture, voters};
 use super::*;
 use ed25519_dalek::Signer;
 
+#[path = "AuthorityDeploymentDomainTests.rs"]
+mod domain;
 #[path = "AuthorityDeploymentReplayTests.rs"]
 mod replay;
 fn certified(
