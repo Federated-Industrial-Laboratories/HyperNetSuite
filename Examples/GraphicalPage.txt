@@ -1,0 +1,35 @@
+HyperNetPage/2
+# Signal / Research notes
+@Panel {"label":"EXPERIMENT 17","border":"Rounded","colour":"Cyan","id":"Signal","motion":{"preset":"BorderEmphasis","durationMs":4000}}
+@Text {"value":"[ . . : : | | : : . . ]","id":"Spectrum","colour":"BrightCyan","motion":{"preset":"ColourPulse","durationMs":3000}}
+: **Observation:** the smaller model converged earlier.
+: The result is *synthetic*; uncertainty remains explicit.
+@End
+@Row {"minChildColumns":30,"gap":2}
+@Column {"weight":1}
+@Panel {"label":"MEASUREMENTS","border":"Double"}
+: | Run | Loss | Tokens |
+: | --- | --- | --- |
+: | A | 0.31 | 4096 |
+: | B | 0.28 | 8192 |
+@End
+@End
+@Column {"weight":1}
+@Panel {"label":"METHOD","border":"Light"}
+: 1. Fix the seed.
+: 2. Retain the raw observations.
+: 3. Compare the held-out samples.
+@End
+@End
+@End
+@ScrollBox {"id":"Notes","label":"Notebook","rows":8,"border":"Rounded"}
+: ### Reproduction
+: ```rust
+: let samples = [0.31, 0.28];
+: let total: f64 = samples.iter().sum();
+: ```
+: <script>literal text only</script>
+@End
+@Progress {"label":"Samples reviewed","value":72,"maximum":100,"colour":"Green","motion":{"preset":"ProgressSweep","durationMs":3000}}
+@Button {"label":"Pause border","action":{"kind":"Motion","target":"Signal","running":false}}
+@Button {"label":"Start border","action":{"kind":"Motion","target":"Signal","running":true}}

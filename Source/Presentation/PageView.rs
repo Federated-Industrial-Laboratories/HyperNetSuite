@@ -7,8 +7,28 @@ use crate::{
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(feature = "gui")]
+#[derive(Clone)]
+pub(crate) struct FormEdit {
+    pub text: String,
+    pub invalid: bool,
+}
+#[cfg(feature = "gui")]
+impl Drop for FormEdit {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.text);
+    }
+}
+
 #[derive(Clone)]
 pub struct View {
+    #[cfg(feature = "gui")]
+    pub instance: u64,
+    #[cfg(feature = "gui")]
+    pub catalogue_next: bool,
+    // Only declared fields populate this map; document bounds permit at most 64 entries.
+    #[cfg(feature = "gui")]
+    pub(crate) form_edits: BTreeMap<(String, String), FormEdit>,
     pub offset: usize,
     pub focused: Option<usize>,
     pub scrolls: BTreeMap<usize, usize>,
@@ -21,7 +41,15 @@ pub struct View {
 }
 impl View {
     pub fn new() -> Self {
+        #[cfg(feature = "gui")]
+        static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            #[cfg(feature = "gui")]
+            instance: NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            #[cfg(feature = "gui")]
+            catalogue_next: false,
+            #[cfg(feature = "gui")]
+            form_edits: BTreeMap::new(),
             offset: 0,
             focused: None,
             scrolls: BTreeMap::new(),

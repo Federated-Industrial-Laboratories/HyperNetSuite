@@ -98,6 +98,7 @@ impl Inspection {
         crate::media::local_show(
             &document,
             &[metadata.to_string()],
+            false,
             display.tui,
             display.ascii,
             &display.graphics,

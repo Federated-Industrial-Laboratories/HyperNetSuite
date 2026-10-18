@@ -1,6 +1,6 @@
 # HyperNetSuite
 
-HyperNetSuite is the independent terminal client for
+HyperNetSuite is the independent graphical and terminal client for
 [HyperNet](https://github.com/Federated-Industrial-Laboratories/HyperNet).
 It provides inert HyperPages, explicit media reveal, encrypted Mail, reviewed
 Forms, recipient-approved file transfers and separately consented OpenSSH services.
@@ -14,12 +14,18 @@ ordered results. Serving effects additionally require the selected service's
 separate recipient journal. Applications receive separately scoped authority.
 Membership alone never grants hosting, review, voting or confidential-content access.
 
-Build with Rust 1.91 or newer:
+Build with Rust 1.95 or newer. The default build includes the native Linux browser;
+see [Graphical browser](Documentation/GraphicalBrowser.md) for desktop dependencies.
 
 ```sh
 cargo build --locked --release
 bash Tools/Check.sh
 ```
+
+Use `cargo build --locked --release --no-default-features` for a terminal-only
+build. Open the native browser with `browse --gui` or preview a local document
+with `pages preview Draft.txt --gui`. The default command behavior remains terminal
+or plain output. Both viewers use the same HyperPage format and authority checks.
 
 The test gate uses a private persistent directory under the user's state home.
 Set `HYPERNET_TEST_DIRECTORY` to another private persistent directory when needed.
@@ -36,7 +42,9 @@ Reader failures, reconnection and cancellation never select a direct fallback.
 publication. [HyperPage](Documentation/HyperPage.md) defines responsive panels,
 rows, scroll boxes, borders, colours and explicit local controls without scripts.
 [Browser](Documentation/Browser.md) covers terminal navigation and recoverable
-errors. [Search](Documentation/Search.md) provides explicit selected-network
+errors. [Graphical browser](Documentation/GraphicalBrowser.md) covers native
+navigation, inert Markdown formatting and persistent display preferences.
+[Search](Documentation/Search.md) provides explicit selected-network
 queries and encrypted retained local catalogues, including sealed publications. [Media](Documentation/Media.md) adds isolated bitmap/SVG import, explicit
 asset inspection, terminal graphics and bounded client-side motion.
 [Examples](Examples/ReadMe.md) contains fictional businesses for local preview.
