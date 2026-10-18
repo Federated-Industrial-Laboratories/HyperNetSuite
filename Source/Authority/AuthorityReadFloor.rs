@@ -91,7 +91,7 @@ impl Store {
         &mut self,
         result: VerifiedRead,
         session: &mut Session,
-        health: ClockHealth,
+        clock: &mut impl FnMut() -> Result<ClockHealth>,
         not_before: u64,
     ) -> Result<()> {
         self.read_ready(&result)?;
@@ -99,21 +99,27 @@ impl Store {
             result.result.disposition == Disposition::Refuse,
             "fresh observation requires a refusal"
         );
-        let now = session.check_read(&result, not_before, health)?;
+        let now = session
+            .check_read(&result, not_before, clock()?)
+            .context("fresh refusal initial validation failed")?;
         ensure!(
             now.wall_ms >= self.stored.wall_floor_ms,
             "fresh read wall clock below durable floor"
         );
         self.advance_read(&result, now.wall_ms)?;
-        let consumed = session.consume_read(&result, not_before, health)?;
-        session.finish_consumption(consumed, health)?;
+        let consumed = session
+            .consume_read(&result, not_before, clock()?)
+            .context("fresh refusal validation after persistence failed")?;
+        session
+            .finish_consumption(consumed, clock()?)
+            .context("fresh refusal final validation failed")?;
         Ok(())
     }
     pub fn accept_read<T>(
         &mut self,
         result: VerifiedRead,
         session: &mut Session,
-        health: ClockHealth,
+        clock: &mut impl FnMut() -> Result<ClockHealth>,
         not_before: u64,
         publish: impl FnOnce(&OperationResult, &mut Store) -> Result<T>,
     ) -> Result<T> {
@@ -122,16 +128,24 @@ impl Store {
             result.result.disposition == Disposition::Permit,
             "fresh read permit required"
         );
-        let now = session.check_read(&result, not_before, health)?;
+        let now = session
+            .check_read(&result, not_before, clock()?)
+            .context("fresh read initial validation failed")?;
         ensure!(
             now.wall_ms >= self.stored.wall_floor_ms,
             "fresh read wall clock below durable floor"
         );
         self.advance_read(&result, now.wall_ms)?;
-        let consumed = session.consume_read(&result, not_before, health)?;
+        // Durable writes can outlive a monitor sample. Recheck the same challenge
+        // with current health; its original authority deadline remains unchanged.
+        let consumed = session
+            .consume_read(&result, not_before, clock()?)
+            .context("fresh read validation after persistence failed")?;
         let output = publish(&result.result, self)?;
         self.unchanged()?;
-        session.finish_consumption(consumed, health)?;
+        session
+            .finish_consumption(consumed, clock()?)
+            .context("fresh read final validation failed")?;
         Ok(output)
     }
 }

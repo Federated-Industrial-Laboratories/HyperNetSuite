@@ -317,3 +317,152 @@ fn replayed_read_certificate_cannot_satisfy_a_new_query_nonce() {
     );
     assert!(f.store.resume_ordinary().unwrap().is_none());
 }
+
+#[test]
+fn fresh_read_resamples_signed_health_after_persistence_without_extending_authority() {
+    use crate::authority_clock;
+    use std::cell::Cell;
+
+    for (invalid_clock, short_authority) in [(false, false), (true, false), (false, true)] {
+        let mut f = Fixture::new();
+        let monitor = SigningKey::from_bytes(&[93; 32]);
+        let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .unwrap()
+            .trim()
+            .to_owned();
+        let path = f.directory.0.join("ClockHealth.cbor");
+        let source = authority_clock::Source::select(
+            &path,
+            Some(&hex::encode(monitor.verifying_key().to_bytes())),
+            Some(&boot),
+        )
+        .unwrap();
+        let publish_health = |invalid: bool| {
+            let wall_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let boot_ms = crate::authority_challenge::boot_time_ms().unwrap();
+            let bytes = wire::sign_envelope(
+                &wire::encode(&a(vec![
+                    V::Uint(44),
+                    V::Uint(1),
+                    V::Text(boot.clone()),
+                    V::Uint(wall_ms.saturating_sub(if invalid { 1000 } else { 0 })),
+                    V::Uint(boot_ms),
+                    V::Uint(boot_ms + 1000),
+                    V::Uint(20),
+                    V::Text("192.0.2.1".into()),
+                ]))
+                .unwrap(),
+                &monitor,
+            )
+            .unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        publish_health(false);
+        let issued = source.health().unwrap();
+        let at = issued.observe().unwrap();
+        let descriptor = f.store.descriptor().clone();
+        let requester = f.signer.verifying_key().to_bytes();
+        let request = read::Request::sign(
+            descriptor.scope(),
+            &f.signer,
+            requester,
+            [94; 32],
+            f.store.prefix().height(),
+            Query::PolicyContext,
+        )
+        .unwrap();
+        let challenge = f
+            .session
+            .issue_read(&request, &f.signer, [94; 32], DURATION, issued)
+            .unwrap();
+        let (p, r) = policy::current(&f.bootstrap, &f.store).unwrap();
+        let scope = descriptor.scope();
+        let refs = [100, 114]
+            .into_iter()
+            .zip([&p, &r])
+            .map(|(kind, bytes)| {
+                crate::authority_policies::record_reference(
+                    bytes,
+                    scope.network,
+                    scope.incarnation,
+                    kind,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let reply = response(
+            &request,
+            &challenge,
+            &f.status_node,
+            *f.store.prefix().policy_state(),
+            a(vec![
+                V::Uint(201),
+                V::Uint(1),
+                V::Text("AuthorityPolicyContext".into()),
+                a(refs.iter().map(version_value).collect()),
+                a(vec![b(&p), b(&r)]),
+            ]),
+            at.wall_ms,
+            if short_authority {
+                at.wall_ms + 1400
+            } else {
+                u64::MAX
+            },
+            0,
+        );
+        let decoded = wire::decode(&reply).unwrap();
+        let fields = decoded.array(10).unwrap();
+        let verified = read::verify_response(
+            &descriptor,
+            &request,
+            &challenge,
+            read::Response {
+                node: fields[6].bytes().unwrap(),
+                certificate: fields[7].bytes().unwrap(),
+                result: fields[8].bytes().unwrap(),
+                ancestry: std::slice::from_ref(&f.status_node),
+            },
+            |_, _, _| Ok(refs.clone()),
+        )
+        .unwrap();
+        let calls = Cell::new(0);
+        let published = Cell::new(false);
+        let previous = Cell::<Option<ClockHealth>>::new(None);
+        let result = f.store.accept_read(
+            verified,
+            &mut f.session,
+            &mut || {
+                calls.set(calls.get() + 1);
+                if published.get() {
+                    // The callback completed after the preceding signed sample expired.
+                    assert!(previous.get().unwrap().observe().is_err());
+                }
+                publish_health(invalid_clock && published.get());
+                let health = source.health()?;
+                previous.set(Some(health));
+                Ok(health)
+            },
+            0,
+            |_, _| {
+                files::write_new(&f.directory.0.join("ReadOutput"), b"Verified")?;
+                std::thread::sleep(Duration::from_millis(1500));
+                published.set(true);
+                Ok("Verified")
+            },
+        );
+        assert!(published.get());
+        assert_eq!(calls.get(), 3);
+        if invalid_clock {
+            assert!(format!("{:#}", result.unwrap_err()).contains("clock error exceeds"));
+        } else if short_authority {
+            assert!(format!("{:#}", result.unwrap_err()).contains("absolute validity interval"));
+        } else {
+            assert_eq!(result.unwrap(), "Verified");
+        }
+        assert!(f.store.resume_ordinary().unwrap().is_none());
+    }
+}

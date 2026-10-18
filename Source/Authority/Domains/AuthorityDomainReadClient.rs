@@ -83,7 +83,7 @@ pub(super) fn local(
         let verified = exchange.evidence.attach_read(store, verified)?;
         if verified.result.disposition != Disposition::Permit {
             let code = verified.result.code;
-            store.observe_read(verified, session, clock()?, 0)?;
+            store.observe_read(verified, session, clock, 0)?;
             return Err(Refusal { code }.into());
         }
         let candidate = candidate.context("permitted fresh read lacks validated context")?;
@@ -101,7 +101,7 @@ pub(super) fn local(
             b(&exchange.reply.node),
         ]))?;
         remaining(exchange.deadline)?;
-        store.accept_read(verified, session, clock()?, 0, |_, store| {
+        store.accept_read(verified, session, clock, 0, |_, store| {
             let cache = Cache {
                 state: candidate.state,
                 records: candidate.records,

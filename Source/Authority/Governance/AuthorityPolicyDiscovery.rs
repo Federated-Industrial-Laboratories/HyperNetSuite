@@ -83,7 +83,7 @@ pub fn discover(
         )?;
         let verified = exchange.evidence.attach_read(store, verified)?;
         if verified.result.disposition != Disposition::Permit {
-            store.observe_read(verified, session, clock()?, 0)?;
+            store.observe_read(verified, session, &mut clock, 0)?;
             bail!("policy discovery refused");
         }
         let (p, r) = pair.context("certified policy pair absent")?;
@@ -94,7 +94,7 @@ pub fn discover(
             &super::pair(&p, &r)?,
             true,
         )?;
-        store.accept_read(verified, session, clock()?, 0, |_, store| {
+        store.accept_read(verified, session, &mut clock, 0, |_, store| {
             retain_pair(store, &p, &r)
         })?;
         remaining(exchange.deadline)?;
