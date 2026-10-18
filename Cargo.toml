@@ -2,9 +2,13 @@
 name = "hypernet-suite"
 version = "0.7.5"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.95"
 license = "MIT"
-description = "Independent command-line client for HyperNet"
+description = "Independent graphical and terminal client for HyperNet"
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:pulldown-cmark"]
 
 [[bin]]
 name = "HyperNetSuite"
@@ -15,6 +19,8 @@ name = "TerminalSafety"
 path = "Tests/TerminalSafety.rs"
 
 [dependencies]
+eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"], optional = true }
+pulldown-cmark = { version = "=0.13.4", default-features = false, optional = true }
 anyhow = "1"
 base64 = "0.22"
 bech32 = "=0.9.1"

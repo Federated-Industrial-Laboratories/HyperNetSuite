@@ -77,6 +77,9 @@ mod borders;
 mod files;
 #[path = "Presentation/FormUi.rs"]
 mod form_ui;
+#[cfg(feature = "gui")]
+#[path = "Graphical/Browser.rs"]
+mod graphical;
 #[path = "Mail/MailCrypto.rs"]
 mod mail_crypto;
 #[path = "Mail/MailProtocol.rs"]
@@ -131,6 +134,8 @@ mod terminal_graphics;
 mod terminal_input;
 #[path = "Transfers/TransferFiles.rs"]
 mod transfer_files;
+#[path = "Presentation/Viewer.rs"]
+mod viewer;
 pub(crate) use transfer_files as authority_files;
 #[path = "Transfers/TransferProtocol.rs"]
 mod transfer_protocol;

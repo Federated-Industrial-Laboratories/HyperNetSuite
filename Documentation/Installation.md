@@ -71,14 +71,21 @@ account privileges from modifying software after verification.
 
 ## Source installation
 
-Install Rust 1.91 or newer, Cargo, a C linker and the platform development
-libraries. Build from the authenticated source tree using the locked graph:
+Install Rust 1.95 or newer, Cargo, a C linker and the platform development
+libraries. The default build includes the native graphical browser. Linux requires
+X11 or Wayland and an OpenGL 2.1 / OpenGL ES 2.0 compatible driver, including Mesa
+software rendering. The graphical backend loads the display and graphics libraries
+at runtime. Build from the authenticated source tree using the locked graph:
 
 ```sh
 cargo build --locked --release
 bash Tools/Check.sh
 bash Tools/Install.sh /Chosen/SourcePrefix
 ```
+
+Use `cargo build --locked --release --no-default-features` for a terminal-only
+binary. That build rejects `--gui` before starting a browser connection.
+See [GraphicalBrowser.md](GraphicalBrowser.md) for native viewing and settings.
 
 This maintainer installer copies the binary, manuals and examples. It retains its original
 interface and can refresh an existing source installation. It provides no

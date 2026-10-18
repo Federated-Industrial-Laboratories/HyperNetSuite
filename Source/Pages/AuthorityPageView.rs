@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Retained views distinguish previously verified content from fresh authorised reads.
 use super::*;
-use crate::{markup, page_view, reader};
+use crate::{markup, page_view, reader, viewer};
 use std::collections::VecDeque;
 #[derive(Clone)]
 enum Location {
@@ -31,6 +31,13 @@ fn publication(c: &mut Client, grant: &VersionRef, page_id: [u8; 16]) -> Result<
     let document =
         markup::parse(std::str::from_utf8(&bundle.source)?).map_err(anyhow::Error::msg)?;
     let metadata = vec![
+        format!(
+            "hypernet://{}/{}/{}/{}",
+            value.identity.network,
+            hex::encode(bundle.author.intent.requester),
+            bundle.author.namespace,
+            value.identity.page
+        ),
         "Approved at fetch; retained display. Refresh checks current authority.".into(),
         format!(
             "Network {} | namespace {} | Page {}",
@@ -101,13 +108,20 @@ fn catalogue(
     } else {
         Some(body[3].fixed()?)
     };
+    let view = page_view::View::new();
+    #[cfg(feature = "gui")]
+    let view = {
+        let mut view = view;
+        view.catalogue_next = next.is_some();
+        view
+    };
     Ok(Entry {
         location: Location::Catalogue(namespace, after),
         publication: None,
         document,
         metadata: catalogue_metadata(result.prefix.height(), next),
         next,
-        view: page_view::View::new(),
+        view,
     })
 }
 fn catalogue_metadata(height: u64, next: Option<Digest>) -> Vec<String> {
@@ -214,7 +228,7 @@ fn open(c: &mut Client, grant: &VersionRef, target: &str) -> Result<Entry> {
     Ok(entry)
 }
 fn reveal(
-    session: &reader::Session,
+    session: &viewer::Session,
     client: &mut Option<Client>,
     grant: &VersionRef,
     entry: &mut Entry,
@@ -260,7 +274,7 @@ fn reveal(
     Ok(true)
 }
 fn view(
-    session: reader::Session,
+    session: viewer::Session,
     c: Client,
     grant: VersionRef,
     mut current: Entry,
@@ -442,49 +456,51 @@ pub(super) fn read(
     output: Option<PathBuf>,
     options: Display,
 ) -> Result<()> {
-    options.interactions.check()?;
-    let session = reader::Session::new(options.tui, options.ascii)?;
-    session.configure_graphics(&options.graphics)?;
-    let Some((c, grant, current, online)) = session.request(move || {
-        let mut c = Client::new(&online)?;
-        let grant = c.grant(capability)?;
-        let current = publication(&mut c, &grant, raw(&page_id)?)?;
-        Ok((c, grant, current, online))
-    })?
-    else {
-        return Ok(());
-    };
-    if let Some(path) = output {
-        files::write_new(&path, &current.publication.as_ref().unwrap().bundle.bytes)?;
-    }
-    view(session, c, grant, current, online, options)
+    viewer::run(options.gui, options.tui, options.ascii, move |session| {
+        options.interactions.check()?;
+        session.configure_graphics(&options.graphics)?;
+        let Some((c, grant, current, online)) = session.request(move || {
+            let mut c = Client::new(&online)?;
+            let grant = c.grant(capability)?;
+            let current = publication(&mut c, &grant, raw(&page_id)?)?;
+            Ok((c, grant, current, online))
+        })?
+        else {
+            return Ok(());
+        };
+        if let Some(path) = output {
+            files::write_new(&path, &current.publication.as_ref().unwrap().bundle.bytes)?;
+        }
+        view(session, c, grant, current, online, options)
+    })
 }
 pub fn browse(args: Browse) -> Result<()> {
     let mut options = args.display;
-    options.tui = true;
-    options.interactions.check()?;
-    let session = reader::Session::new(true, options.ascii)?;
-    session.configure_graphics(&options.graphics)?;
-    let Some((c, grant, current, online)) = session.request(move || {
-        let mut c = Client::new(&args.online)?;
-        let grant = c.grant(args.capability)?;
-        let current = if let Some(uri) = args.uri {
-            open(&mut c, &grant, &uri)?
-        } else {
-            catalogue(
-                &mut c,
-                &grant,
-                args.namespace
-                    .context("--namespace is required without a Page address")?,
-                args.after.as_deref().map(id).transpose()?,
-            )?
+    options.tui = !options.gui;
+    viewer::run(options.gui, options.tui, options.ascii, move |session| {
+        options.interactions.check()?;
+        session.configure_graphics(&options.graphics)?;
+        let Some((c, grant, current, online)) = session.request(move || {
+            let mut c = Client::new(&args.online)?;
+            let grant = c.grant(args.capability)?;
+            let current = if let Some(uri) = args.uri {
+                open(&mut c, &grant, &uri)?
+            } else {
+                catalogue(
+                    &mut c,
+                    &grant,
+                    args.namespace
+                        .context("--namespace is required without a Page address")?,
+                    args.after.as_deref().map(id).transpose()?,
+                )?
+            };
+            Ok((c, grant, current, args.online))
+        })?
+        else {
+            return Ok(());
         };
-        Ok((c, grant, current, args.online))
-    })?
-    else {
-        return Ok(());
-    };
-    view(session, c, grant, current, online, options)
+        view(session, c, grant, current, online, options)
+    })
 }
 
 #[cfg(test)]

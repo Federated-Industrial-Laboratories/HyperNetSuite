@@ -6,6 +6,7 @@ fn display(bytes: &[u8], metadata: &[String], options: &Display) -> Result<()> {
     crate::media::local_show(
         &document,
         metadata,
+        options.gui,
         options.tui,
         options.ascii,
         &options.graphics,

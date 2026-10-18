@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Page actions use explicit operator-selected media routes and a separate Mail device.
 use super::*;
-use crate::{authority_mail, markup, reader};
+use crate::{authority_mail, markup, viewer};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Args)]
@@ -111,7 +111,7 @@ impl Options {
 
 /// Return the client even on ordinary failure, preserving its exact pending operation.
 pub(super) fn request<T, F>(
-    session: &reader::Session,
+    session: &viewer::Session,
     client: &mut Option<Client>,
     operation: F,
 ) -> Result<Option<Result<T>>>
@@ -195,7 +195,7 @@ pub(super) fn media_bytes(
     reason = "Keep protocol inputs, state and validation callbacks explicit."
 )]
 pub(super) fn submit(
-    session: &reader::Session,
+    session: &viewer::Session,
     client: &mut Option<Client>,
     grant: &VersionRef,
     online: &Online,
