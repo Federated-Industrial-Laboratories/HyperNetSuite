@@ -245,10 +245,61 @@ pub(super) fn submit(
     else {
         return Ok(None);
     };
-    match sent {
-        Ok(_) => Ok(Some(format!("Form sent; message {retained}"))),
+    match sent.and_then(|value| delivery_status(&value, &retained)) {
+        Ok(status) => Ok(Some(status)),
         Err(error) => anyhow::bail!(
             "confirmed message {retained} remains in the outbox; retry its exact Forms Send command: {error:#}"
         ),
+    }
+}
+
+fn delivery_status(value: &serde_json::Value, message: &str) -> Result<String> {
+    let confirmed = value["confirmedCopies"]
+        .as_u64()
+        .context("missing confirmed copy count")?;
+    let required = value["requiredCopies"]
+        .as_u64()
+        .context("missing required copy count")?;
+    let delivered = value["delivered"]
+        .as_bool()
+        .context("missing delivery state")?;
+    ensure!(
+        value["status"] == "MailStored"
+            && value["message"] == message
+            && required > 0
+            && delivered == (confirmed >= required),
+        "inconsistent form delivery result"
+    );
+    if delivered {
+        Ok(format!(
+            "Form sent; message {message}; {confirmed}/{required} copies confirmed"
+        ))
+    } else {
+        Ok(format!(
+            "Form delivery incomplete; message {message}; {confirmed}/{required} copies confirmed. Retained in outbox; use forms send --message {message} with another approved store."
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn form_delivery_reports_incomplete_placement_and_exact_message() {
+        let message = "ab".repeat(32);
+        let mut value = json!({"status":"MailStored", "message":message,
+            "confirmedCopies":1, "requiredCopies":2, "delivered":false});
+        let status = delivery_status(&value, &message).unwrap();
+        assert!(status.contains("incomplete") && status.contains("1/2 copies"));
+        assert!(status.contains(&format!("forms send --message {message}")));
+        assert!(!status.contains("Form sent"));
+        value["confirmedCopies"] = json!(2);
+        value["delivered"] = json!(true);
+        let status = delivery_status(&value, &message).unwrap();
+        assert!(status.contains("Form sent") && status.contains("2/2 copies"));
+        assert!(delivery_status(&value, &"cd".repeat(32)).is_err());
+        value["delivered"] = json!(false);
+        assert!(delivery_status(&value, &message).is_err());
     }
 }

@@ -107,11 +107,16 @@ removing a profile does not erase uncertain effects or revoke remote membership.
 ## Prepare governance and recovery acceptance
 
 The native offline authoring workflow creates an explicit bootstrap from public
-material. Generate each role key under its intended custody with the ordinary
-`HyperNetSuite keygen --output Private/Identity.json` command. Only the public key
-is copied into the governance specification. Keep voter, administrator, relay,
-admission and offline recovery keys separate. File names or signatures do not
-prove that keys have independent owners or protection.
+material. Generate administrator and recovery keys under their intended custody
+with `HyperNetSuite keygen --output Private/Identity.json`. Each authority host
+prepares its own voter identity and transport key through Core's
+[native provisioning](https://github.com/Federated-Industrial-Laboratories/HyperNet/blob/master/Documentation/RuntimeProvisioning.md).
+Use the independently authenticated public request's `identity` as the voter key
+and its `transport` as that voter's `authorityTransports` value. Reserve the public
+keys returned by `authority-clock initialise-export` in `clockMonitors` before
+assembling the bootstrap. No private key is copied into the specification.
+Keep voter, transport, monitor, administrator, relay, admission and offline
+recovery keys separate. File names or signatures do not prove independent custody.
 
 Select one recovery policy:
 
@@ -134,10 +139,22 @@ keys must be sorted by `(principal, publicKey)`. Action codes are sorted unique
 values from [PolicyContract](PolicyContract.md), not implicit tier permissions.
 Principal and service/domain identifiers are nonzero 32-byte lowercase hexadecimal
 identifiers agreed through the operator's identity process.
+`authorityTransports` must map exactly the four voter keys to four distinct
+transport public keys. `clockMonitors` contains one to four distinct monitor
+public keys; each authority host needs its own local clock observation. These
+keys are immutable bootstrap reservations and cannot be substituted during
+replica preparation.
 
 ```json
 {
   "voters": ["VOTER1", "VOTER2", "VOTER3", "VOTER4"],
+  "authorityTransports": {
+    "VOTER1": "AUTHORITY_TRANSPORT1",
+    "VOTER2": "AUTHORITY_TRANSPORT2",
+    "VOTER3": "AUTHORITY_TRANSPORT3",
+    "VOTER4": "AUTHORITY_TRANSPORT4"
+  },
+  "clockMonitors": ["MONITOR1", "MONITOR2", "MONITOR3", "MONITOR4"],
   "administrator": "ADMINISTRATOR_KEY",
   "administratorActions": [9, 10, 11, 12, 13, 21, 22, 25, 27, 28],
   "enrolment": "InvitationOnly",

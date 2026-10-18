@@ -275,7 +275,7 @@ The wrapper supplies the accepted bootstrap, requester directory, device key,
 clock witness, reader grant and authority endpoint:
 
 ```sh
-HyperNetSuite network connect --profile /Private/Client/Profile.json -- browse --tui
+HyperNetSuite network connect --profile /Private/Client/Profile.json -- browse --namespace NAMESPACE
 HyperNetSuite network connect --profile /Private/Client/Profile.json -- pages list --namespace NAMESPACE
 HyperNetSuite network status --profile /Private/Client/Profile.json
 ```

@@ -73,9 +73,10 @@ restores that view's page offset, selected control and scrollbox offsets. It doe
 not fetch or claim current permission for previously received content. There is
 no persistent browsing history or automatic background refresh.
 
-Refreshing an unchanged exact publication preserves its view. A changed
-publication resets document-specific state. The monochrome setting remains a
-reader preference across navigation; a nonempty `NO_COLOR` variable forces it.
+Refreshing an unchanged exact publication preserves its scroll positions, focus,
+local form values and revealed-image selection. A changed publication resets
+document-specific state. The monochrome setting remains a reader preference
+across navigation; a nonempty `NO_COLOR` variable forces it.
 Resizing recomputes layout within the existing bounds and reveals selected controls.
 
 ## Errors, waiting and plain output
@@ -84,8 +85,9 @@ Status and help are browser-owned content outside the page rectangle. A failed
 load leaves the previous verified page visible, with a bounded sanitised error.
 A failed refresh does not promote that retained display to a current publication.
 A page whose layout exceeds the cell budget is refused before replacing the
-current view. If resizing makes a retained page too large to lay out, trusted
-chrome reports `Layout unavailable` and keeps navigation and help available.
+current view. Failed navigation or Back layout leaves the current view and
+retained history available. If resizing makes a retained page too large to lay
+out, trusted chrome reports `Layout unavailable` and keeps navigation and help available.
 Shrinking the terminal retries layout without refetching the page.
 
 Withdrawal, revocation or an unavailable authority can prevent new reads without
@@ -126,7 +128,7 @@ stream or background fetch. See [Media](Media.md) for commands and
 
 ## Explicit media and form access
 
-Pass `--media-route HOST=/Private/MediaControl.sock`, or
+For local operator access, pass `--media-route HOST=/Private/MediaControl.sock`, or
 `--media-service HOST=/Private/InstalledService` with `--media-core /Path/HyperNet`.
 Each host must already occur in the exact approved asset manifest. Repeat these
 options for distinct hosts. No endpoint comes from Page text. Select an existing
@@ -137,8 +139,11 @@ inspection can instead bind `--media AssetId=/Explicit/CanonicalFile`.
 
 Enable form submissions with `--form-directory`, `--form-vault`, `--form-age-key`,
 `--form-mailbox` and `--form-service`. The Mail directory belongs to a separately
-scoped requester, in the same network and incarnation. Choose either an explicit
-`--form-socket` or `--form-service-directory` and optional `--form-core`.
+scoped requester, in the same network and incarnation. Local operator access
+requires either `--form-socket` or `--form-service-directory` and optional
+`--form-core`. With `network connect`, retain the approved Media and Mail routes
+first; the wrapper supplies media routes and the selected form service's socket.
+Do not pass local transport overrides through that wrapper.
 `--form-retention-seconds` defaults to3600; the recipient's current policy must
 permit the requested duration. Choose a shorter duration when its policy requires
 it. This setting never extends mailbox or device expiry.
@@ -148,8 +153,10 @@ Read all values, identities and placement details before typing SEND. Confirmati
 rechecks the exact displayed publication and Mail versions, then durably records
 the immutable outbox entry before sending. Changed content or placement requires
 new review. Cancellation sends nothing and retains the draft for the Forms CLI.
-A failed send reports the exact message identity to resume with `forms send`;
-closing the terminal does not cancel an already confirmed transmission.
+The send status reports confirmed and required copies. Incomplete placement is
+not reported as complete; use `forms send` with the same message ID and another
+permitted store. A failed send also reports the exact message identity to resume.
+Closing the terminal does not cancel an already confirmed transmission.
 
 ## Catalogue discovery
 

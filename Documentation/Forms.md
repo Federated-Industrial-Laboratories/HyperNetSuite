@@ -71,9 +71,12 @@ If current policy no longer matches the confirmed consent, prepare and confirm
 a new submission. No command silently edits the existing message to fit it.
 
 The browser uses these same operations while borrowing its existing Page
-connection. Its trusted confirmation must display every value and the actual
-recipient and storage policy before explicit approval. Pages cannot choose
-credentials, local files, service sockets or the user's confirmation.
+connection. Its trusted confirmation displays every value and the actual
+recipient and storage policy before explicit approval. The send result reports
+confirmed and required copies. An incomplete placement retains the same message
+in the outbox; use `forms send` with that message ID and another permitted store
+to complete the required copies. Pages cannot choose credentials, local files,
+service sockets or the user's confirmation.
 
 ## Terminal editing
 
@@ -122,6 +125,9 @@ replay entries are not evicted. Removing a local archived letter does not remove
 its replay identity. Normal network effects continue to use current quorum,
 clock, device, one-use claim and serving-receipt checks.
 
-This workflow uses explicit local control and installed service exchange.
-Scope-safe remote reader routes are a separate requirement; no direct reader
-network fallback is supplied here.
+For remote use, [PrivateRoutes](PrivateRoutes.md) supplies the accepted authority
+and Mail routes through `network connect`. Retain the selected Mail store route
+first. The wrapper supplies `--service-socket` for Forms commands and
+`--form-socket` for the browser's selected `--form-service`; local transport
+overrides are refused. Mail credentials and the separate device floor remain
+explicit. Route failure never selects a direct connection.
