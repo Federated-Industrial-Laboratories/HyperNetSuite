@@ -216,9 +216,9 @@ impl Renderer<'_> {
                         rich
                     };
                     if let Some(destination) = link {
-                        if ui.link(rich).on_hover_text(destination).clicked()
-                            && self.action.is_none()
-                        {
+                        let response = ui.link(rich).on_hover_text(destination);
+                        super::scrolling::reveal_focus(&response);
+                        if response.clicked() && self.action.is_none() {
                             self.action = Some(Action::Address(destination.to_owned()));
                         }
                     } else {
