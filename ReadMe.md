@@ -64,6 +64,7 @@ workflows and independently authenticated recovery.
 [Recipient identities](Documentation/Recipients.md) covers local keys, verified
 contacts and threshold recovery when a recipient root is lost.
 
+[Source layout](Documentation/SourceLayout.md) identifies implementation modules.
 [Security](Documentation/Security.md), [supported platforms](Documentation/SupportedPlatforms.md)
 and [runtime contracts](Documentation/Contracts.md) state the boundaries and
 remaining qualification. Native ARM runtime qualification remains pending. This prerelease is not a qualified production

@@ -1,146 +1,146 @@
-#[path = "AuthorityCapacity.rs"]
+#[path = "Authority/AuthorityCapacity.rs"]
 mod authority_capacity;
-#[path = "AuthorityDeploymentRecords.rs"]
+#[path = "Authority/Deployments/AuthorityDeploymentRecords.rs"]
 mod authority_deployment_records;
-#[path = "AuthorityDeployments.rs"]
+#[path = "Authority/Deployments/AuthorityDeployments.rs"]
 mod authority_deployments;
-#[path = "AuthorityHistory.rs"]
+#[path = "Authority/AuthorityHistory.rs"]
 mod authority_history;
-#[path = "RuntimeBootstrapKeys.rs"]
+#[path = "Runtime/RuntimeBootstrapKeys.rs"]
 mod runtime_bootstrap_keys;
-#[path = "RuntimeManifest.rs"]
+#[path = "Runtime/RuntimeManifest.rs"]
 mod runtime_manifest;
-#[path = "SealedCrypto.rs"]
+#[path = "Sealed/SealedCrypto.rs"]
 mod sealed_crypto;
-#[path = "SealedPageData.rs"]
+#[path = "Sealed/SealedPageData.rs"]
 mod sealed_page_data;
-#[path = "SealedVault.rs"]
+#[path = "Sealed/SealedVault.rs"]
 mod sealed_vault;
 // SPDX-License-Identifier: MIT
-#[path = "AuthorityApplications.rs"]
+#[path = "Authority/Governance/AuthorityApplications.rs"]
 mod authority_applications;
-#[path = "AuthorityChallenge.rs"]
+#[path = "Authority/AuthorityChallenge.rs"]
 mod authority_challenge;
-#[path = "AuthorityClock.rs"]
+#[path = "Authority/AuthorityClock.rs"]
 mod authority_clock;
-#[path = "AuthorityDomains.rs"]
+#[path = "Authority/Domains/AuthorityDomains.rs"]
 mod authority_domains;
-#[path = "AuthorityEpoch.rs"]
+#[path = "Authority/Epochs/AuthorityEpoch.rs"]
 mod authority_epoch;
-#[path = "AuthorityFloor.rs"]
+#[path = "Authority/AuthorityFloor.rs"]
 mod authority_floor;
-#[path = "AuthorityGovernance.rs"]
+#[path = "Authority/Governance/AuthorityGovernance.rs"]
 mod authority_governance;
-#[path = "AuthorityGrantReview.rs"]
+#[path = "Authority/Governance/AuthorityGrantReview.rs"]
 mod authority_grant_review;
-#[path = "AuthorityInspection.rs"]
+#[path = "Authority/AuthorityInspection.rs"]
 mod authority_inspection;
-#[path = "AuthorityInspectionCli.rs"]
+#[path = "Authority/AuthorityInspectionCli.rs"]
 mod authority_inspection_cli;
-#[path = "AuthorityLocalTransport.rs"]
+#[path = "Authority/AuthorityLocalTransport.rs"]
 mod authority_local_transport;
-#[path = "AuthorityMembership.rs"]
+#[path = "Authority/Governance/AuthorityMembership.rs"]
 mod authority_membership;
-#[path = "AuthorityObjects.rs"]
+#[path = "Authority/AuthorityObjects.rs"]
 mod authority_objects;
-#[path = "AuthorityOperationalConsent.rs"]
+#[path = "Authority/Deployments/AuthorityOperationalConsent.rs"]
 mod authority_operational_consent;
-#[path = "AuthorityPolicies.rs"]
+#[path = "Authority/Governance/AuthorityPolicies.rs"]
 mod authority_policies;
-#[path = "AuthorityProof.rs"]
+#[path = "Authority/AuthorityProof.rs"]
 mod authority_proof;
-#[path = "AuthorityRead.rs"]
+#[path = "Authority/AuthorityRead.rs"]
 mod authority_read;
 #[cfg(test)]
-#[path = "AuthorityRecipient.rs"]
+#[path = "Authority/Recipients/AuthorityRecipient.rs"]
 mod authority_recipient;
-#[path = "AuthorityRecovery.rs"]
+#[path = "Authority/AuthorityRecovery.rs"]
 mod authority_recovery;
-#[path = "AuthorityRuntimeActivation.rs"]
+#[path = "Authority/Deployments/AuthorityRuntimeActivation.rs"]
 mod authority_runtime_activation;
-#[path = "AuthorityTiers.rs"]
+#[path = "Authority/Governance/AuthorityTiers.rs"]
 mod authority_tiers;
 // Independent signed HyperNet command client and local device-key management.
-#[path = "AdapterFiles.rs"]
+#[path = "Storage/AdapterFiles.rs"]
 mod adapter_files;
-#[path = "Applications.rs"]
+#[path = "Applications/Applications.rs"]
 mod applications;
-#[path = "AuthorityMail.rs"]
+#[path = "Mail/AuthorityMail.rs"]
 mod authority_mail;
-#[path = "AuthorityPages.rs"]
+#[path = "Pages/AuthorityPages.rs"]
 mod authority_pages;
-#[path = "AuthorityRouteReader.rs"]
+#[path = "Routing/AuthorityRouteReader.rs"]
 mod authority_route_reader;
-#[path = "Borders.rs"]
+#[path = "Presentation/Borders.rs"]
 mod borders;
-#[path = "Files.rs"]
+#[path = "Storage/Files.rs"]
 mod files;
-#[path = "FormUi.rs"]
+#[path = "Presentation/FormUi.rs"]
 mod form_ui;
-#[path = "MailCrypto.rs"]
+#[path = "Mail/MailCrypto.rs"]
 mod mail_crypto;
-#[path = "MailProtocol.rs"]
+#[path = "Mail/MailProtocol.rs"]
 mod mail_protocol;
-#[path = "Markup.rs"]
+#[path = "HyperPage/Markup.rs"]
 mod markup;
-#[path = "Media.rs"]
+#[path = "Media/Media.rs"]
 mod media;
-#[path = "MediaImport.rs"]
+#[path = "Media/MediaImport.rs"]
 mod media_import;
-#[path = "MediaWorker.rs"]
+#[path = "Media/MediaWorker.rs"]
 mod media_worker;
-#[path = "Motion.rs"]
+#[path = "Presentation/Motion.rs"]
 mod motion;
-#[path = "NativeFederation.rs"]
+#[path = "Federation/NativeFederation.rs"]
 mod native_federation;
-#[path = "Networks.rs"]
+#[path = "Networks/Networks.rs"]
 mod networks;
-#[path = "PageLayout.rs"]
+#[path = "Presentation/PageLayout.rs"]
 mod page_layout;
-#[path = "PageView.rs"]
+#[path = "Presentation/PageView.rs"]
 mod page_view;
-#[path = "PrivateRouteClient.rs"]
+#[path = "Routing/PrivateRouteClient.rs"]
 mod private_route_client;
-#[path = "PrivateRouteClock.rs"]
+#[path = "Routing/PrivateRouteClock.rs"]
 mod private_route_clock;
-#[path = "PrivateRouteCommands.rs"]
+#[path = "Routing/PrivateRouteCommands.rs"]
 mod private_route_commands;
-#[path = "Protocol.rs"]
+#[path = "Protocol/Protocol.rs"]
 mod protocol;
-#[path = "Reader.rs"]
+#[path = "Terminal/Reader.rs"]
 mod reader;
-#[path = "RouteConnector.rs"]
+#[path = "Routing/RouteConnector.rs"]
 mod route_connector;
-#[path = "RouteProfile.rs"]
+#[path = "Routing/RouteProfile.rs"]
 mod route_profile;
-#[path = "RouteProtocol.rs"]
+#[path = "Routing/RouteProtocol.rs"]
 mod route_protocol;
-#[path = "RouteTls.rs"]
+#[path = "Routing/RouteTls.rs"]
 mod route_tls;
-#[path = "Search.rs"]
+#[path = "Search/Search.rs"]
 mod search;
-#[path = "SearchText.rs"]
+#[path = "Search/SearchText.rs"]
 mod search_text;
-#[path = "Services.rs"]
+#[path = "Services/Services.rs"]
 mod services;
-#[path = "SshProof.rs"]
+#[path = "Services/SshProof.rs"]
 mod ssh_proof;
-#[path = "TerminalGraphics.rs"]
+#[path = "Terminal/TerminalGraphics.rs"]
 mod terminal_graphics;
-#[path = "TerminalInput.rs"]
+#[path = "Terminal/TerminalInput.rs"]
 mod terminal_input;
-#[path = "TransferFiles.rs"]
+#[path = "Transfers/TransferFiles.rs"]
 mod transfer_files;
 pub(crate) use transfer_files as authority_files;
-#[path = "TransferProtocol.rs"]
+#[path = "Transfers/TransferProtocol.rs"]
 mod transfer_protocol;
-#[path = "TransferVault.rs"]
+#[path = "Transfers/TransferVault.rs"]
 mod transfer_vault;
-#[path = "Transfers.rs"]
+#[path = "Transfers/Transfers.rs"]
 mod transfers;
-#[path = "TrustBootstrap.rs"]
+#[path = "Protocol/TrustBootstrap.rs"]
 mod trust_bootstrap;
-#[path = "TrustWire.rs"]
+#[path = "Protocol/TrustWire.rs"]
 mod trust_wire;
 
 use anyhow::{Context, Result, bail};
@@ -325,5 +325,5 @@ fn load_identity(path: &Path) -> Result<Identity> {
 }
 
 #[cfg(test)]
-#[path = "AuthorityDeploymentTests.rs"]
+#[path = "Authority/Deployments/AuthorityDeploymentTests.rs"]
 mod authority_deployment_tests;

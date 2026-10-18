@@ -105,6 +105,18 @@ expiry. It rechecks current approved publication and host consent. The complete
 validated result is written to a new private file; a retry can confirm an already
 identical output without replacing unrelated content.
 
+Remote reads reuse a verified relay connection across the asset's 32 KiB ranges
+when its remaining admission covers the next bounded exchange. Otherwise they
+open a fresh connection before submitting the next range. This does not increase
+or reset an existing connection's byte or time limits. Every range still checks
+current policy and receives fresh host/quorum
+authorization. Reuse requires the same private client profile, route, protocol,
+network and host; failed verification, interrupted progress or route changes
+discard the connection. A connected signed completion can acknowledge its exact
+pending range without another stream-status request. Missing continuity still
+requires certified status, and unresolved requests remain retained for explicit
+recovery. No received range is automatically retried after transport failure.
+
 ```sh
 HyperNetSuite media export-svg --input Received/Diagram.Vector \
   --output Received/Diagram.svg
