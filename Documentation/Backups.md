@@ -1,5 +1,7 @@
 # Named content backups
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Cold backups preserve an exact approved Page and its associated canonical bitmap
 or vector assets. A sealed Page backup contains its original ciphertext, including
 its encrypted assets. The complete cold package receives a separate age X25519

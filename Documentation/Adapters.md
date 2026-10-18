@@ -1,5 +1,7 @@
 # Applications and review adapters
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Review adapters exchange explicitly selected inert data with a provider chosen
 by the operator. HyperNetSuite does not start a provider, follow Page links or
 give a provider credentials, a shell, plugins or tools. Provider output is an

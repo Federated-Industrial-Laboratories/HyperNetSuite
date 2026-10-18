@@ -1,5 +1,7 @@
 # Catalogue and search
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Search has two explicit scopes. `search network` sends literal terms to the
 selected network's consenting content services. `search local` searches only
 publications explicitly retained in an encrypted local corpus. Entering a local

@@ -1,4 +1,10 @@
-# Browser
+# Terminal browser
+
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
+This guide covers terminal navigation and plain output. Use
+[Graphical browser](GraphicalBrowser.md) for the native window and its controls.
+Both viewers share the same verified Page workflows.
 
 The browser uses an independently accepted bootstrap, a retained requester floor,
 an explicitly selected authority endpoint and a scoped Page capability.
@@ -19,8 +25,8 @@ SHA256, private requester directory, signing key, authority socket and trusted
 clock witness. See [Pages](Pages.md). The signing identity may be a member or an
 explicitly scoped application; registration alone does not confer Page access.
 
-NETWORK and AUTHOR are complete64-character lowercase hexadecimal identities;
-PAGE is a complete32-character identity. CURSOR is the exact64-character record
+NETWORK and AUTHOR are complete 64-character lowercase hexadecimal identities;
+PAGE is a complete 32-character identity. CURSOR is the exact 64-character record
 cursor returned by the catalogue, rather than a raw Page identity. It cannot be
 combined with a Page address. `--namespace` selects the native catalogue.
 
@@ -144,7 +150,7 @@ requires either `--form-socket` or `--form-service-directory` and optional
 `--form-core`. With `network connect`, retain the approved Media and Mail routes
 first; the wrapper supplies media routes and the selected form service's socket.
 Do not pass local transport overrides through that wrapper.
-`--form-retention-seconds` defaults to3600; the recipient's current policy must
+`--form-retention-seconds` defaults to 3600; the recipient's current policy must
 permit the requested duration. Choose a shorter duration when its policy requires
 it. This setting never extends mailbox or device expiry.
 

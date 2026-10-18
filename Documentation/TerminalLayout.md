@@ -1,5 +1,7 @@
 # Terminal layout and controls
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 The interactive reader lays out the validated component tree in integer terminal
 cells. It never interprets browser styles, scripts, expressions or publisher escape
 sequences. Ordinary links and Navigate buttons retain the existing verified

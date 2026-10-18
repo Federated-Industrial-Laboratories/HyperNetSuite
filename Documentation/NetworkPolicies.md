@@ -1,5 +1,7 @@
 # Network policy and recovery custody
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 `HyperNetSuite authority-inspection policy` changes the current network policy
 through the ordinary ordered authority stream. It preserves the network identity,
 requester floors, grants and publication history. Policy changes do not disclose

@@ -1,5 +1,7 @@
 # Application access
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 `HyperNetSuite applications` manages exact consent between an ordinary owner and
 a separate application identity. The owner needs DelegateGrant through its parent
 grant; InspectAudit is not required. The application receives only the accepted

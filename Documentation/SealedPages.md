@@ -1,5 +1,7 @@
 # Sealed Pages
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Sealed Pages encrypt the approved source and media to an exact admitted recipient
 roster. Storage hosts receive ciphertext, its size and signed placement metadata.
 The reviewer receives a separate encrypted author submission. The final reader

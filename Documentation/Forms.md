@@ -1,5 +1,7 @@
 # Forms
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 HyperNet forms declare fields and an explicit encrypted Mail destination. They
 contain no executable validation, hidden values, file inputs, local paths,
 automatic submissions or destination URLs. The `HyperNetFormMail/1` action uses
@@ -77,6 +79,15 @@ confirmed and required copies. An incomplete placement retains the same message
 in the outbox; use `forms send` with that message ID and another permitted store
 to complete the required copies. Pages cannot choose credentials, local files,
 service sockets or the user's confirmation.
+
+## Graphical editing
+
+Open a Page with the [native browser](GraphicalBrowser.md). Select fields and
+enter values using their labelled controls. Activate Submit to open the separate
+review window. Inspect the recipient, every value, storage and expiry, then type
+`SEND` and activate Send. Cancel or close the review to decline transmission.
+Confirmed sends retain the same encrypted recovery state as the CLI and terminal
+workflow. Closing a browser cannot recall a submission already sent.
 
 ## Terminal editing
 

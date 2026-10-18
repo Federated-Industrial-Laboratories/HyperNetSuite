@@ -1,5 +1,7 @@
 # Private client routes
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 An ordinary member needs Suite, private local state and a healthy local clock.
 Joining does not install Core, start a host daemon, open a listening port, donate
 storage or grant voting, publishing or reviewing rights.

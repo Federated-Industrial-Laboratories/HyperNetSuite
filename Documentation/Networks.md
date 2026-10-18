@@ -1,5 +1,7 @@
 # Network preparation and membership
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 The installed `HyperNetSuite network` commands prepare independently authenticated
 trust and explicitly join through approved relay routes. Preparation and inspection
 remain offline. The [private route workflow](PrivateRoutes.md) describes invitation

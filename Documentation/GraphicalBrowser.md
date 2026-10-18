@@ -1,5 +1,7 @@
 # Graphical browser
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 The native Linux browser displays the same signed `HyperNetPage/2` documents as
 the terminal reader. Panels, weighted rows, scroll boxes, local controls, Forms
 and approved media keep their existing meanings. Graphical layout does not change

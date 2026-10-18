@@ -1,5 +1,7 @@
 # Supported platforms
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 The initial client package profile is native GNU/Linux on x86_64. AArch64 is an
 explicit pending qualification target. Cross compilation and emulation are not
 native runtime evidence. Direct Windows and macOS support is not currently
@@ -29,6 +31,21 @@ SSHSIG support and Linux `renameat2` with no-replace semantics. The ordinary cli
 binary does not need Python. Qualification uses a pseudoterminal for interactive
 reader checks and also exercises redirected plain output. UTF-8 terminals get
 Unicode text; ASCII output provides a safe fallback.
+
+## Native browser
+
+The default build includes the native Linux Page browser. It needs an X11 or
+Wayland display and working EGL or GLX libraries with a compatible graphics
+driver. Native rendering has been exercised with NVIDIA and Mesa software
+rendering on Linux x86_64; this is not qualification of every distribution or
+display configuration. See [Graphical browser](GraphicalBrowser.md#build-and-runtime)
+for dependencies and the terminal-only build.
+
+The native browser supports ordinary Page browsing, explicit media reveal and
+Forms. Other application and administration workflows use the CLI. A graphical
+build does not open a window unless `--gui` is selected.
+
+## Terminal graphics and services
 
 Tested graphics combinations are xterm 390 with Sixel and WezTerm
 20240203-110809-5046fc22 with iTerm2. Kitty remains experimental: versions 0.48.2

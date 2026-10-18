@@ -1,5 +1,7 @@
 # Federation
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Federation joins independently administered HyperNet networks through explicitly
 consenting role7 bridge services. Each side retains its own authority, membership,
 capabilities, hosting consent and review policy. A treaty does not grant foreign

@@ -10,10 +10,18 @@ Prefix=$(realpath -m -- "$1")
 cd -- "$(dirname -- "$0")/.."
 cargo build --locked --release
 Target=${CARGO_TARGET_DIR:-target}
-install -d -m 755 -- "$Prefix/Bin" "$Prefix/Documentation/HyperNetSuite"
+Documents="$Prefix/Documentation/HyperNetSuite"
+install -d -m 755 -- "$Prefix/Bin" "$Documents/Documentation"
 install -m 755 -- "$Target/release/HyperNetSuite" "$Prefix/Bin/HyperNetSuite"
-install -m 644 -- Licence.txt ReadMe.md Documentation/*.md Documentation/MediaSchema.json Documentation/ThirdPartyNotices.txt "$Prefix/Documentation/HyperNetSuite/"
+install -m 644 -- Licence.txt "$Documents/"
+install -m 644 -- Documentation/*.md Documentation/*.json Documentation/ThirdPartyNotices.txt "$Documents/Documentation/"
 install -d -m 755 -- "$Prefix/Examples"
 install -m 644 -- Examples/*.py Examples/*.png Examples/*.svg Examples/*.md Examples/*.txt "$Prefix/Examples/"
-sed -e 's#](Documentation/#](#g' -e 's#](Examples/#](../../Examples/#g' ReadMe.md > "$Prefix/Documentation/HyperNetSuite/ReadMe.md"
+sed 's#](Examples/#](../../Examples/#g' ReadMe.md > "$Documents/ReadMe.md"
+for Manual in Documentation/*.md; do
+    sed 's#](../Examples/#](../../../Examples/#g' "$Manual" > "$Documents/Documentation/${Manual##*/}"
+done
+sed -e 's#](../Documentation/#](../Documentation/HyperNetSuite/Documentation/#g' \
+    -e 's#](../ReadMe.md)#](../Documentation/HyperNetSuite/ReadMe.md)#g' \
+    Examples/ReadMe.md > "$Prefix/Examples/ReadMe.md"
 printf 'Installed HyperNetSuite in %s/Bin\n' "$Prefix"

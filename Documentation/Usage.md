@@ -1,19 +1,34 @@
 # Command-line use
 
+[Documentation](ReadMe.md) | [Project README](../ReadMe.md)
+
 Install the independently signed client as described in [Installation](Installation.md).
 Keep identity files, private authority floors, Mail vaults and downloads outside
 the software prefix, on persistent private storage. Package removal does not
 revoke authority or erase those files. [Upgrade and recovery](UpgradeRecovery.md)
 describes executable replacement without rolling back retained protocol state.
 
-## Build and create an identity
+## Choose an interface
 
-Build from source with Rust 1.91 or newer. No Core checkout is required:
+Install using [Installation](Installation.md). No Core checkout is required.
+Use `HyperNetSuite --help` and each subcommand's `--help` for exact arguments.
+
+| Workflow | Interface |
+| --- | --- |
+| Local Page preview or verified Page reading | Native GUI with `--gui`, terminal viewer with `--tui`, or plain output. |
+| Network catalogue browsing | `browse --gui` for the native browser; `browse` for the terminal browser. |
+| Publishing, Mail, transfers, services and administration | Explicit CLI command groups. |
+
+The native browser includes Page Forms and explicit media reveal. It is not a
+Mail inbox, file manager or administration console. See
+[Graphical browser](GraphicalBrowser.md) and [terminal browser](Browser.md).
+
+## Create a standalone signing identity
+
+Some author and operator workflows require a separate signing key. In a private
+persistent workspace outside the software prefix:
 
 ```sh
-cargo build --locked --release
-bash Tools/Check.sh
-bash Tools/Install.sh /Chosen/Prefix
 mkdir -m 700 Device
 HyperNetSuite keygen --output Device/Identity.json
 ```
@@ -22,29 +37,30 @@ The identity command prints the public key and creates a new owner-only key file
 It refuses replacement and symbolic links. Transfer the public key through an
 authenticated channel; retain the secret in separately protected storage.
 Possession of a secret permits only its currently valid explicit capabilities.
-
-The test gate uses persistent private storage. Set `HYPERNET_TEST_DIRECTORY`
-to choose another directory. Interrupted test state must not be reused as live
-network state. Qualification requires `--work-directory` to select an existing
-private persistent directory.
+`network prepare` generates its own separate device and relay keys; the standalone
+key above is not a prerequisite for local preview or offline profile preparation.
 
 ## Authenticate network trust
 
-Obtain the complete bootstrap through an authenticated channel and verify its
-whole-file SHA256 fingerprint independently. A hash supplied beside an untrusted
-file does not establish its identity.
+Inspect the complete bootstrap, then independently authenticate the reported
+`trust.fingerprint` through a trusted channel before preparing a profile. This is
+the protocol fingerprint, not the whole-file value from `sha256sum`. A fingerprint
+supplied beside an untrusted file does not establish its identity. Use an existing
+private `Device` directory for the output.
 
 ```sh
 HyperNetSuite network inspect-bootstrap --bootstrap /Private/Bootstrap.cbor
 HyperNetSuite network prepare --bootstrap /Private/Bootstrap.cbor \
-  --fingerprint INDEPENDENTLY_VERIFIED_SHA256 --output Device/Profile.json
+  --fingerprint INDEPENDENTLY_VERIFIED_PROTOCOL_FINGERPRINT --output Device/Profile.json
 HyperNetSuite network inspect --profile Device/Profile.json
 ```
 
 Preparation is offline. It does not redeem an invitation, start a service or
 open a reader connection. Online joining requires the approved privacy connector;
 the client refuses a route that cannot meet its declared privacy requirement.
-See [Networks](Networks.md) for policy inspection and custody acceptance.
+See [Networks](Networks.md) for policy inspection and custody acceptance, and
+[private routes](PrivateRoutes.md) for the distinct whole-file pins used by
+`--bootstrap-digest`, `--invitation-digest` and retained-route fingerprints.
 
 ## Local operator workflows
 
@@ -83,18 +99,24 @@ Expiry options ending in `-ms` use absolute Unix milliseconds. Mail and Forms
 
 A hosting owner separately accepts a canonical resource manifest. Neither a
 network grant nor a remotely changed record can widen local consent. Core's
-installed runtime manages the matching confined deployment. Stop a local service
-for immediate local withdrawal, then publish the current restrictive authority
-change. Hosting, application and administrator credentials are separate roles.
+installed runtime manages the matching confined deployment. Stopping a service
+retains consent and permits a later authorised restart. To withdraw consent, use
+Core's `HyperNet runtime services withdraw --directory /Private/Service`, which
+records a permanent local veto before cleanup; then publish the current
+restrictive authority change. See the Core [service lifecycle](https://github.com/Federated-Industrial-Laboratories/HyperNet/blob/master/Documentation/ServiceRuntime.md#stop-withdraw-and-retain).
+Hosting, application and administrator credentials are separate roles.
 
 ## Content and applications
 
-[Pages](Pages.md), [Browser](Browser.md) and [Media](Media.md) describe author,
+[Pages](Pages.md), [Graphical browser](GraphicalBrowser.md),
+[Browser](Browser.md) and [Media](Media.md) describe author,
 reviewer and reader workflows. Local preview needs no network profile:
 
 ```sh
-HyperNetSuite pages preview /Private/Draft.Page --tui
+HyperNetSuite pages preview /Private/Draft.Page --gui
 ```
+
+Use `--tui` instead of `--gui` for terminal viewing, or omit both for plain output.
 
 [Sealed Pages](SealedPages.md) describes the separate `pages sealed` commands for
 encrypted author submissions, explicit manual approval, durable ciphertext and
