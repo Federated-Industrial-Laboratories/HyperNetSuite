@@ -615,12 +615,12 @@ impl<'a> Prepared<'a> {
         } else {
             Vec::new()
         };
-        let permit = store.accept(verified, session, clock()?, 0)?;
+        let permit = store.accept_with_clock(verified, session, clock, 0)?;
         remaining(self.deadline)?;
-        let outcome = permit.perform(
+        let outcome = permit.perform_with_clock(
             store,
             session,
-            clock()?,
+            clock,
             1,
             |r| {
                 ensure!(

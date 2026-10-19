@@ -219,7 +219,7 @@ impl Stored {
 
 pub struct Store {
     directory: File,
-    _lock: File,
+    _lock: files::ProfileLock,
     descriptor: TrustDescriptor,
     initial_descriptor: TrustDescriptor,
     stored: Stored,
