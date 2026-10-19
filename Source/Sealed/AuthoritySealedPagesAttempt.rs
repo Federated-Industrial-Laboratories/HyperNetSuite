@@ -23,7 +23,7 @@ struct Data {
 pub(super) struct Attempt {
     data: Data,
     _directory: File,
-    _lock: File,
+    _lock: files::VaultLock,
 }
 impl Attempt {
     #[allow(clippy::too_many_arguments)]

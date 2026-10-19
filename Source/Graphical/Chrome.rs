@@ -29,7 +29,7 @@ pub(super) fn text_size(ui: &mut egui::Ui, scale: f32) {
     ui.set_style(style);
 }
 
-fn preferences(ui: &mut egui::Ui, preferences: &mut settings::Preferences) -> bool {
+pub(super) fn preferences(ui: &mut egui::Ui, preferences: &mut settings::Preferences) -> bool {
     let stacked = ui.available_width() < 400.0 * preferences.text_scale;
     let mut changed = false;
     egui::Grid::new("Preferences")

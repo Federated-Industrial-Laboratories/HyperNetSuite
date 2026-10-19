@@ -313,7 +313,11 @@ fn receive(
     message: Option<Digest>,
     after: Option<Digest>,
 ) -> Result<()> {
-    let (mut c, mut v) = device(o)?;
+    let (mut c, mut v) = if kind == Effect::Fetch {
+        device_for_fetch(o, message.context("mail fetch message absent")?)?
+    } else {
+        device(o)?
+    };
     crate::print_value(&receive_value(
         &mut c, &mut v, &o.mailbox, t, kind, message, after,
     )?)
@@ -327,6 +331,9 @@ pub(super) fn receive_value(
     message: Option<Digest>,
     after: Option<Digest>,
 ) -> Result<serde_json::Value> {
+    if kind == Effect::Fetch {
+        v.require_fetch(&hex::encode(message.context("mail fetch message absent")?))?;
+    }
     let address = id(&v.mailbox(label)?.address)?;
     c.resume_metadata(|cmd| {
         matches!(cmd,Action::Get{address:a,..}if *a==address)
@@ -388,7 +395,8 @@ pub(super) fn receive_value(
     } else {
         None
     };
-    let result=c.effect(t,command,&[],|_,bytes,receipt|{
+    let exchange = |v: &mut Vault| {
+        c.effect(t,command,&[],|_,bytes,receipt|{
         let response=wire::decode(bytes)?;let f=response.array(9)?;
         match kind {
             Effect::Fetch=>{let cipher:protocol::Ciphertext=serde_json::from_slice(f[8].bytes()?)?;let letter=v.archive(label,&cipher,package.as_deref().unwrap(),claim.as_ref().unwrap().created_ms/1000,receipt)?;Ok(serde_json::to_value(letter)?)},
@@ -396,6 +404,16 @@ pub(super) fn receive_value(
             Effect::Delete=>Ok(json!({"status":"StoredMailDeleted","message":message.map(hex::encode),"localArchiveRetained":true})),
             _=>anyhow::bail!("invalid mailbox read effect"),
         }
-    })?;
-    Ok(result)
+    })
+    };
+    if kind == Effect::Fetch {
+        v.fetch(
+            label,
+            &hex::encode(message.context("mail fetch message absent")?),
+            package.as_deref().context("mail fetch package absent")?,
+            exchange,
+        )
+    } else {
+        exchange(v)
+    }
 }

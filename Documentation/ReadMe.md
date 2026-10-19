@@ -2,8 +2,8 @@
 
 [Project README](../ReadMe.md) | [Installation](Installation.md) | [Security](Security.md)
 
-HyperNetSuite supplies native graphical and terminal Page viewers plus command-line
-workflows for publishing, Mail, files, services and administration. HyperNet runs
+HyperNetSuite supplies native Page, Mail and Transfers applications, terminal
+Page viewers and command-line publishing, service and administration workflows. HyperNet runs
 the separate infrastructure. These manuals distinguish local preview, ordinary
 client access through accepted relay routes and local operator control.
 
@@ -33,8 +33,10 @@ does not grant the capabilities required by each application.
 | Import, review and explicitly reveal images | [Media](Media.md), [terminal graphics and decoding limits](MediaViewer.md) |
 | Find native, imported or retained content | [Search](Search.md) |
 | Publish encrypted content to selected devices | [Sealed Pages](SealedPages.md), [recipient identities](Recipients.md) |
-| Set up an encrypted mailbox and exchange messages | [Private Mail](PrivateMail.md) |
+| Read and send encrypted messages in a native window | [Native Mail](NativeMail.md) |
+| Set up an encrypted mailbox and manage device keys | [Private Mail](PrivateMail.md) |
 | Review and send a Form, or accept typed submissions | [Forms](Forms.md) |
+| Review offers and transfer files in a native window | [Native Transfers](NativeTransfers.md) |
 | Accept files or invoke an approved SSH service | [Transfers and services](TransfersAndServices.md) |
 | Share Pages between separately governed networks | [Federation](Federation.md) |
 

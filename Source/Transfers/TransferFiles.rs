@@ -123,7 +123,20 @@ pub fn create_directory(path: &Path) -> Result<File> {
     p.sync_all()?;
     private_directory(path)
 }
-pub fn lock(parent: &File) -> Result<File> {
+pub struct VaultLock {
+    file: File,
+    owner: libc::pid_t,
+}
+impl Drop for VaultLock {
+    fn drop(&mut self) {
+        // A forked child can retain this open file description until exec. Only the
+        // acquiring process ends the lock; closing its own descriptor is insufficient.
+        if self.owner == unsafe { libc::getpid() } {
+            unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+}
+pub fn lock(parent: &File) -> Result<VaultLock> {
     let f = open_at(
         parent,
         OsStr::new("Vault.lock"),
@@ -142,7 +155,10 @@ pub fn lock(parent: &File) -> Result<File> {
         unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
         "another transfer command owns this vault"
     );
-    Ok(f)
+    Ok(VaultLock {
+        file: f,
+        owner: unsafe { libc::getpid() },
+    })
 }
 pub fn atomic_at(parent: &File, destination: &OsStr, bytes: &[u8], replace: bool) -> Result<()> {
     let temporary = format!("Pending{}.bin", crate::random_hex::<16>());
@@ -278,6 +294,74 @@ impl Destination {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+    #[test]
+    fn vault_lock_owner_drop_releases_inherited_descriptor_without_child_unlock() {
+        let root =
+            std::env::temp_dir().join(format!("HyperNetTransferLock{}", crate::random_hex::<16>()));
+        let directory = create_directory(&root).unwrap();
+        let held = lock(&directory).unwrap();
+        assert!(lock(&directory).is_err());
+        assert_ne!(
+            unsafe { libc::fcntl(held.file.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        let mut sockets = [-1; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                    0,
+                    sockets.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            // After fork, use only descriptor syscalls and this guard's nonallocating drop.
+            unsafe { libc::close(sockets[0]) };
+            let inherited = unsafe { libc::fcntl(held.file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+            drop(held);
+            let ready = u8::from(inherited >= 0);
+            let mut finish = 0u8;
+            let sent = unsafe { libc::write(sockets[1], std::ptr::from_ref(&ready).cast(), 1) };
+            let received =
+                unsafe { libc::read(sockets[1], std::ptr::from_mut(&mut finish).cast(), 1) };
+            unsafe {
+                libc::close(inherited);
+                libc::close(sockets[1]);
+                libc::_exit(i32::from(ready != 1 || sent != 1 || received != 1));
+            }
+        }
+        unsafe { libc::close(sockets[1]) };
+        let mut ready = 0u8;
+        let received = unsafe { libc::read(sockets[0], std::ptr::from_mut(&mut ready).cast(), 1) };
+        let child_preserved_lock = lock(&directory).is_err();
+        drop(held);
+        let replacement = lock(&directory);
+        let sent = unsafe {
+            libc::send(
+                sockets[0],
+                std::ptr::from_ref(&ready).cast(),
+                1,
+                libc::MSG_NOSIGNAL,
+            )
+        };
+        unsafe { libc::close(sockets[0]) };
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(child, &mut status, 0) };
+        assert_eq!((received, ready, sent, waited), (1, 1, 1, child));
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+        assert!(child_preserved_lock, "child drop released the owner's lock");
+        assert!(
+            replacement.is_ok(),
+            "inherited descriptor retained the owner's lock"
+        );
+        drop(replacement);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn publication_rejects_symlinks_traversal_and_destination_races() {
         let root = std::env::temp_dir().join(format!(

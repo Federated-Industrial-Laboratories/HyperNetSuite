@@ -13,6 +13,9 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+#[cfg(feature = "gui")]
+#[path = "NetworkApplication.rs"]
+pub(crate) mod application;
 #[path = "NetworkDiagnostics.rs"]
 mod diagnostics;
 #[path = "../Routing/PrivateRouteOnboarding.rs"]

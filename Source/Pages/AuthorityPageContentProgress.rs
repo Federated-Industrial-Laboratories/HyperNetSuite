@@ -16,7 +16,7 @@ fn validate(placement: &content::Placement, bytes: &[u8]) -> Result<()> {
 const FILE: &str = "ContentProgress.cbor";
 pub(crate) struct Progress {
     directory: File,
-    _lock: File,
+    _lock: files::VaultLock,
     context: (Digest, Digest, Digest),
     pub placement_ref: VersionRef,
     pub host: VersionRef,

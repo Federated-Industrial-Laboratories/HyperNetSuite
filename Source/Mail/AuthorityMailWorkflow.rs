@@ -110,12 +110,30 @@ pub(super) fn revise(
 mod connection;
 pub(super) use connection::Client;
 pub(super) fn device(online: &DeviceOnline) -> Result<(Client, Vault)> {
-    let (_, v) = open(&online.location, &online.vault, false)?;
+    device_checked(online, None)
+}
+pub(super) fn device_for_fetch(online: &DeviceOnline, message: Digest) -> Result<(Client, Vault)> {
+    device_checked(online, Some(message))
+}
+fn device_checked(online: &DeviceOnline, message: Option<Digest>) -> Result<(Client, Vault)> {
+    let (_, mut v) = open(&online.location, &online.vault, false)?;
+    if let Some(message) = message {
+        v.require_fetch(&hex::encode(message))?;
+    }
     let c = Client::new(
         &online.location,
         &online.socket,
         signer(&v.mailbox(&online.mailbox)?.request)?,
     )?;
+    let pending = match c.pending()?.map(|operation| operation.command) {
+        Some(domain::Command::Mail(Action::Execute {
+            effect: Effect::Fetch,
+            message: Some(message),
+            ..
+        })) => Some(hex::encode(message)),
+        _ => None,
+    };
+    v.sync_pending_fetch(&online.mailbox, pending.as_deref())?;
     Ok((c, v))
 }
 pub(super) fn sync(c: &mut Client, v: &mut Vault, label: &str) -> Result<mail::Mailbox> {
@@ -255,6 +273,14 @@ pub(super) fn claim(
             &recipient,
             &cache.state.record(137, target)?.reference,
         )?;
+        if let Some(consent) = &job.send_consent {
+            consent.mailboxes(
+                &sender,
+                &cache.state.record(137, source)?.reference,
+                &recipient,
+                &cache.state.record(137, target)?.reference,
+            )?;
+        }
         let packages = if job.packages.is_empty() {
             let mut after = None;
             let mut chosen = BTreeMap::new();
@@ -327,6 +353,9 @@ pub(super) fn claim(
     let cache = c.cache()?;
     let claim = mail::Claim::parse(&cache.state.record(139, message)?.payload)?;
     forms::guard_claim(v.data.outgoing.get(&name).unwrap(), &claim)?;
+    if let Some(consent) = &v.data.outgoing.get(&name).unwrap().send_consent {
+        consent.claim(&claim)?;
+    }
     if v.data.outgoing.get(&name).unwrap().claim.is_some() {
         return Ok(claim);
     }
@@ -402,6 +431,9 @@ pub(super) fn send_value(
             .get(&name)
             .context("outbox message absent")?,
     )?;
+    if let Some(consent) = &v.data.outgoing.get(&name).unwrap().send_consent {
+        consent.validate(v.data.outgoing.get(&name).unwrap(), &t.service)?;
+    }
     let source = id(&v.mailbox(label)?.address)?;
     let target = id(&v
         .data

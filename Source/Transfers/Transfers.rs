@@ -32,6 +32,9 @@ use std::{
 #[path = "AuthorityTransferVault.rs"]
 mod vault;
 use vault::Vault;
+#[cfg(feature = "gui")]
+#[path = "TransferApplication.rs"]
+pub(crate) mod application;
 #[derive(Args)]
 pub struct Arguments {
     #[command(subcommand)]
@@ -78,6 +81,9 @@ impl Mode {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Open the native Transfers application for one retained network profile.
+    #[cfg(feature = "gui")]
+    Gui(application::Arguments),
     /// Create a private encrypted vault and independent age recipient key.
     Init {
         #[command(flatten)]
@@ -308,6 +314,7 @@ struct Client {
     clock: authority_clock::Source,
     authority: PathBuf,
     directory: PathBuf,
+    transfer: crate::private_route_client::ContentPool,
 }
 impl Client {
     fn open(online: Online) -> Result<Self> {
@@ -334,6 +341,7 @@ impl Client {
             clock,
             authority: online.socket,
             directory: online.location.directory,
+            transfer: Default::default(),
         })
     }
     fn vault(&self, location: &VaultLocation) -> Result<Vault> {
@@ -399,40 +407,128 @@ impl Client {
         payload: &[u8],
         apply: impl FnOnce(&transfer::Request, &[u8]) -> Result<()>,
     ) -> Result<V> {
-        transfer_client::ensure(
-            &self.bootstrap,
-            &mut self.store,
-            &self.authority,
-            &self.key,
-            &mut self.session,
-            || self.clock.health(),
-        )?;
-        let reconcile = self.pending()?;
-        let request = transfer_client::prepare(
-            &self.bootstrap,
-            &self.key,
-            &mut self.store,
-            command,
-            self.clock.health()?,
-        )?;
-        let packet = transfer_client::packet(&request, payload, reconcile)?;
-        let bytes = transport.exchange(&self.directory, &packet)?;
-        transfer_client::complete(
-            &self.bootstrap,
-            &bytes,
-            &self.authority,
-            &self.key,
-            &mut self.store,
-            &mut self.session,
-            || self.clock.health(),
-            |r, b| {
-                apply(r, b)?;
-                wire::decode(b)
-            },
-        )
+        let mut pool = std::mem::take(&mut self.transfer);
+        let result = (|| {
+            transfer_client::ensure(
+                &self.bootstrap,
+                &mut self.store,
+                &self.authority,
+                &self.key,
+                &mut self.session,
+                || self.clock.health(),
+            )?;
+            let reconcile = self.pending()?;
+            let request = transfer_client::prepare(
+                &self.bootstrap,
+                &self.key,
+                &mut self.store,
+                command,
+                self.clock.health()?,
+            )?;
+            let agreement = self.agreement(request.intent().resource)?;
+            let host = agreement
+                .acceptance
+                .context("transfer is not accepted")?
+                .service
+                .id;
+            let packet = transfer_client::packet(&request, payload, reconcile)?;
+            let exchange = transport.exchange_pooled(&self.directory, &packet, host, &mut pool)?;
+            exchange.complete(&mut pool, |bytes| {
+                transfer_client::complete(
+                    &self.bootstrap,
+                    bytes,
+                    &self.authority,
+                    &self.key,
+                    &mut self.store,
+                    &mut self.session,
+                    || self.clock.health(),
+                    |r, b| {
+                        apply(r, b)?;
+                        wire::decode(b)
+                    },
+                )
+            })
+        })();
+        if result.is_ok() {
+            self.transfer = pool;
+        }
+        result
+    }
+}
+pub(crate) struct TransferExchange {
+    bytes: Vec<u8>,
+    route: Option<crate::private_route_client::Prepared>,
+}
+impl TransferExchange {
+    pub(crate) fn complete<T>(
+        self,
+        pool: &mut crate::private_route_client::ContentPool,
+        verify: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<T> {
+        // A response may retain its connection only after exact proof and durable progress succeed.
+        let result = verify(&self.bytes)?;
+        if let Some(route) = self.route {
+            pool.retain(route, 10_000);
+        }
+        Ok(result)
     }
 }
 impl Transport {
+    #[cfg(test)]
+    pub(crate) fn socket(path: PathBuf) -> Self {
+        Self {
+            service_socket: Some(path),
+            service_directory: None,
+            core: PathBuf::new(),
+        }
+    }
+    pub(crate) fn exchange_pooled(
+        &self,
+        directory: &Path,
+        packet: &[u8],
+        host: Digest,
+        pool: &mut crate::private_route_client::ContentPool,
+    ) -> Result<TransferExchange> {
+        use std::os::unix::fs::FileTypeExt;
+        let result = (|| {
+            let value = wire::decode(packet)?;
+            let request = transfer::Request::parse(value.array(6)?[3].bytes()?)?;
+            if let Some(path) = &self.service_socket
+                && !std::fs::symlink_metadata(path)?.file_type().is_socket()
+            {
+                let reservation = crate::route_connector::exchange_reservation(
+                    packet.len(),
+                    transfer::RECEIPT_LIMIT,
+                )?;
+                let route = pool.prepare(path, 10_000, 5, reservation, |endpoint| {
+                    ensure!(
+                        endpoint.route.network == request.intent().network
+                            && endpoint.route.incarnation == request.intent().incarnation
+                            && crate::networks::route_subject(&endpoint.profile, &endpoint.route)? == host,
+                        "transfer route differs from the requested network, incarnation or accepted store"
+                    );
+                    Ok(())
+                })?;
+                let deadline = crate::authority_challenge::boot_time_ms()?
+                    .checked_add(10_000)
+                    .context("transfer deadline overflow")?;
+                let bytes = route.exchange(packet, deadline, transfer::RECEIPT_LIMIT)?;
+                return Ok(TransferExchange {
+                    bytes,
+                    route: Some(route),
+                });
+            }
+            pool.clear();
+            Ok(TransferExchange {
+                bytes: self.exchange(directory, packet)?,
+                route: None,
+            })
+        })();
+        if result.is_err() {
+            pool.clear();
+        }
+        result
+    }
     fn exchange(&self, directory: &Path, packet: &[u8]) -> Result<Vec<u8>> {
         if let Some(socket) = &self.service_socket {
             let control = crate::authority_local_transport::LocalControl::open(socket)?;
@@ -567,6 +663,16 @@ fn pending_effect(c: &Client, id: Digest) -> Result<Option<Action>> {
     Ok(Some(r.command().clone()))
 }
 fn send(c: &mut Client, v: &Vault, t: &Transport, id: Digest, maximum: u64) -> Result<()> {
+    output_effect(&send_progress(c, v, t, id, maximum, |_, _| Ok(()))?)
+}
+fn send_progress(
+    c: &mut Client,
+    v: &Vault,
+    t: &Transport,
+    id: Digest,
+    maximum: u64,
+    mut progress: impl FnMut(u64, u64) -> Result<()>,
+) -> Result<V> {
     let (offer, cipher) = v.outgoing(id)?;
     let accepted = c.refresh(id)?;
     ensure!(
@@ -604,6 +710,7 @@ fn send(c: &mut Client, v: &Vault, t: &Transport, id: Digest, maximum: u64) -> R
     let mut offset = f[8].uint()?;
     let mut count = 0;
     while offset < offer.payload_bytes && (maximum == 0 || count < maximum) {
+        progress(offset, offer.payload_bytes)?;
         let end = (offset + transfer::CHUNK).min(offer.payload_bytes);
         let data = &cipher[offset as usize..end as usize];
         state = c.effect(
@@ -621,10 +728,17 @@ fn send(c: &mut Client, v: &Vault, t: &Transport, id: Digest, maximum: u64) -> R
         offset = end;
         count += 1;
     }
+    progress(offset, offer.payload_bytes)?;
     if offset == offer.payload_bytes && !state.array(12)?[9].boolean()? {
         state = fresh_effect(c, t, id, Effect::Commit)?;
     }
-    output_effect(&state)
+    Ok(state)
+}
+struct ReceiveResult {
+    complete: bool,
+    bytes: u64,
+    file_name: Option<String>,
+    file_bytes: Option<u64>,
 }
 fn receive(
     c: &mut Client,
@@ -635,6 +749,28 @@ fn receive(
     output: &Path,
     maximum: u64,
 ) -> Result<()> {
+    let result = receive_progress(c, v, t, id, destination, output, maximum, |_, _| Ok(()))?;
+    if result.complete {
+        crate::print_value(
+            &json!({"status":"TransferReceived", "transfer":hex::encode(id), "fileName":result.file_name, "fileBytes":result.file_bytes, "output":output}),
+        )
+    } else {
+        crate::print_value(
+            &json!({"status":"TransferReceiveRetained", "transfer":hex::encode(id), "ciphertextBytes":result.bytes, "complete":false}),
+        )
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn receive_progress(
+    c: &mut Client,
+    v: &mut Vault,
+    t: &Transport,
+    id: Digest,
+    destination: &str,
+    output: &Path,
+    maximum: u64,
+    mut progress: impl FnMut(u64, u64) -> Result<()>,
+) -> Result<ReceiveResult> {
     let agreement = c.refresh(id)?;
     let offer = &agreement.offer;
     ensure!(
@@ -673,6 +809,7 @@ fn receive(
     let mut offset = v.received(offer)?.len() as u64;
     let mut count = 0;
     while offset < offer.payload_bytes && (maximum == 0 || count < maximum) {
+        progress(offset, offer.payload_bytes)?;
         let bytes = transfer::CHUNK.min(offer.payload_bytes - offset);
         c.effect(
             t,
@@ -686,17 +823,25 @@ fn receive(
         offset += bytes;
         count += 1;
     }
+    progress(offset, offer.payload_bytes)?;
     if offset < offer.payload_bytes {
-        return crate::print_value(
-            &json!({"status":"TransferReceiveRetained","transfer":hex::encode(id),"ciphertextBytes":offset,"complete":false}),
-        );
+        return Ok(ReceiveResult {
+            complete: false,
+            bytes: offset,
+            file_name: None,
+            file_bytes: None,
+        });
     }
     let (header, plain) = v.open_file(offer)?;
     files::write_new(output, &plain)?;
-    crate::print_value(
-        &json!({"status":"TransferReceived","transfer":hex::encode(id),"fileName":header.file_name,"fileBytes":header.file_bytes,"output":output}),
-    )
+    Ok(ReceiveResult {
+        complete: true,
+        bytes: offset,
+        file_name: Some(header.file_name),
+        file_bytes: Some(header.file_bytes),
+    })
 }
+
 fn publish(c: &mut Client, cap: Capability, v: &Vault, id: Digest) -> Result<()> {
     let (offer, _) = v.outgoing(id)?;
     let grant = c.capability(Some(cap))?;
@@ -715,6 +860,8 @@ fn publish(c: &mut Client, cap: Capability, v: &Vault, id: Digest) -> Result<()>
 }
 pub fn run(_configuration: Option<&Path>, arguments: Arguments) -> Result<()> {
     match arguments.command {
+        #[cfg(feature = "gui")]
+        Command::Gui(arguments) => crate::graphical::transfers::run(arguments),
         Command::Init {
             location,
             key,

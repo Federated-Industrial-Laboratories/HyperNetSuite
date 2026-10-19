@@ -73,7 +73,9 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.1 | MIT |
 | calloop | 0.13.0 | MIT |
+| calloop | 0.14.5 | MIT |
 | calloop-wayland-source | 0.3.0 | MIT |
+| calloop-wayland-source | 0.4.1 | MIT |
 | cc | 1.6.0 | MIT OR Apache-2.0 |
 | cexpr | 0.6.0 | Apache-2.0/MIT |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
@@ -483,6 +485,8 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | slotmap | 1.1.1 | Zlib |
 | smallvec | 1.16.2 | MIT OR Apache-2.0 |
 | smithay-client-toolkit | 0.19.2 | MIT |
+| smithay-client-toolkit | 0.20.0 | MIT |
+| smithay-clipboard | 0.7.3 | MIT |
 | smol_str | 0.2.2 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
@@ -559,6 +563,8 @@ Cargo.lock records exact Rust source versions and checksums. This inventory incl
 | wayland-csd-frame | 0.3.0 | MIT |
 | wayland-cursor | 0.31.14 | MIT |
 | wayland-protocols | 0.32.13 | MIT |
+| wayland-protocols-experimental | 20250721.0.1 | MIT |
+| wayland-protocols-misc | 0.3.12 | MIT |
 | wayland-protocols-plasma | 0.3.12 | MIT |
 | wayland-protocols-wlr | 0.3.12 | MIT |
 | wayland-scanner | 0.31.11 | MIT |

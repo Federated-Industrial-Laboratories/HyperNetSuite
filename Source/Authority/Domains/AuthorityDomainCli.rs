@@ -28,6 +28,15 @@ pub struct Capability {
     #[arg(long)]
     grant_record: Option<PathBuf>,
 }
+#[cfg(feature = "gui")]
+impl Capability {
+    pub(crate) fn supplied(grant: String, grant_record: Option<PathBuf>) -> Self {
+        Self {
+            grant,
+            grant_record,
+        }
+    }
+}
 #[derive(Subcommand)]
 pub enum Command {
     /// Sign the exact SSH endpoint and fixed command as its deployment operator.

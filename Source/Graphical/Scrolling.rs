@@ -2,13 +2,13 @@
 // Focused scroll regions preserve child controls and share keyboard navigation.
 use eframe::egui::{self, Rect, Response, Sense, Stroke, StrokeKind, Ui};
 
-pub(super) fn reveal_focus(response: &Response) {
+pub(crate) fn reveal_focus(response: &Response) {
     if response.gained_focus() {
         response.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
     }
 }
 
-pub(super) fn focus(ui: &Ui, rect: Rect, id: egui::Id, label: &str) -> Response {
+pub(crate) fn focus(ui: &Ui, rect: Rect, id: egui::Id, label: &str) -> Response {
     let response = ui
         .interact(rect, id, Sense::click())
         .on_hover_text("Click or Tab to focus; Up/Down, PageUp/PageDown, Home/End to scroll");
@@ -19,7 +19,7 @@ pub(super) fn focus(ui: &Ui, rect: Rect, id: egui::Id, label: &str) -> Response 
     }
     response
 }
-pub(super) fn keys<R>(
+pub(crate) fn keys<R>(
     ui: &Ui,
     response: &Response,
     output: &egui::scroll_area::ScrollAreaOutput<R>,

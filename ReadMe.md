@@ -8,7 +8,9 @@ independently installed from HyperNet infrastructure. Local Page preview works
 without a network, account or hosting service.
 
 The native Linux browser supports Page navigation, explicit media reveal and
-reviewed Forms. Mail, transfers and administration use the command line.
+reviewed Forms. Separate native Mail and Transfers windows provide encrypted
+messages, reviewed file offers and resumable downloads. Publishing and
+administration also remain available through the command line.
 Terminal browsing and plain output remain available without a graphical desktop.
 
 **In development.** The current package version is 0.7.5, with the evolving
@@ -41,7 +43,7 @@ authority and the capability for that operation. Read the
 | Use | Requirements |
 | --- | --- |
 | Installed client | Native x86_64 GNU/Linux and the host libraries recorded by its package manifest. |
-| Native browser | A graphical build, X11 or Wayland session, and usable EGL/GLX libraries and graphics driver. |
+| Native applications | A graphical build, X11 or Wayland session, and usable EGL/GLX libraries and graphics driver. |
 | Source build | Rust 1.95 or newer, Cargo, a C toolchain/linker and native graphical development dependencies. |
 | Terminal viewer | An interactive terminal; text works without a terminal graphics protocol. |
 | Signed package tools | Python 3.11 or newer and OpenSSH `ssh-keygen` with Ed25519 SSHSIG support. |
@@ -88,6 +90,8 @@ default in the native browser and can be enabled in Settings.
 [Examples](Examples/ReadMe.md) also provides five fictional business Pages with
 explicitly imported media. [Graphical browser](Documentation/GraphicalBrowser.md)
 and [terminal controls](Documentation/TerminalLayout.md) explain the viewers.
+[Native Mail](Documentation/NativeMail.md) and
+[Native Transfers](Documentation/NativeTransfers.md) cover their separate windows.
 
 ## Connect to a network
 

@@ -37,7 +37,7 @@ pub struct Vault {
     data: Data,
     key: age::x25519::Identity,
     directory: File,
-    _lock: File,
+    _lock: files::VaultLock,
 }
 fn identity(path: &Path) -> Result<age::x25519::Identity> {
     let bytes = zeroize::Zeroizing::new(files::read(path, 4096, true)?);

@@ -131,7 +131,7 @@ fn content_packet(host: [u8; 32], offset: u64, count: u64, protocol: u64) -> Vec
         generation: 1,
         digest: [81; 32],
     };
-    let command = if protocol == 3 {
+    let command: domains::Command = if protocol == 3 {
         page::Command::MediaAuthorise {
             asset: version(144, [83; 32]),
             host: version(143, host),
@@ -140,6 +140,16 @@ fn content_packet(host: [u8; 32], offset: u64, count: u64, protocol: u64) -> Vec
             bytes: count,
             digest: None,
         }
+        .into()
+    } else if protocol == 5 {
+        domains::transfer::Command::Execute {
+            id: [83; 32],
+            effect: domains::transfer::Effect::Fetch,
+            offset,
+            bytes: count,
+            digest: None,
+        }
+        .into()
     } else {
         page::Command::Content(content::Command::Authorise {
             placement: version(159, [83; 32]),
@@ -149,10 +159,11 @@ fn content_packet(host: [u8; 32], offset: u64, count: u64, protocol: u64) -> Vec
             bytes: count,
             digest: None,
         })
+        .into()
     };
     let operation = domains::Operation {
-        grant: Some(version(102, [82; 32])),
-        command: command.into(),
+        grant: (protocol != 5).then(|| version(102, [82; 32])),
+        command,
         snapshot: domains::snapshot(&deployment::snapshot(&[])).unwrap(),
     };
     let signed = deployment::signed(
@@ -163,8 +174,13 @@ fn content_packet(host: [u8; 32], offset: u64, count: u64, protocol: u64) -> Vec
         wire::decode(&operation.parameters().unwrap()).unwrap(),
         vec![],
     );
-    let request = page::MediaRequest::parse(&signed).unwrap();
-    crate::authority_inspection::page_media_client::packet(&request, &[], false).unwrap()
+    if protocol == 5 {
+        let request = domains::transfer::Request::parse(&signed).unwrap();
+        crate::authority_inspection::transfer_client::packet(&request, &[], false).unwrap()
+    } else {
+        let request = page::MediaRequest::parse(&signed).unwrap();
+        crate::authority_inspection::page_media_client::packet(&request, &[], false).unwrap()
+    }
 }
 fn publish_content_route(root: &Path, endpoint: &Endpoint, host: [u8; 32]) {
     let directory = files::private_directory(root).unwrap();
@@ -202,6 +218,33 @@ fn media_transport_reuses_five_chunks_and_discards_failed_or_changed_routes() {
 #[test]
 fn media_transport_rotates_before_next_range_exhausts_a_small_admission() {
     transport_reuse(3, true);
+}
+
+#[test]
+fn transfer_transport_reuses_only_completed_chunks_and_discards_failures() {
+    transport_reuse(5, false);
+}
+
+#[test]
+fn transfer_transport_rotates_before_next_chunk_exhausts_admission() {
+    transport_reuse(5, true);
+}
+
+enum Exchange {
+    Content(crate::authority_pages::media::ContentExchange),
+    Transfer(crate::transfers::TransferExchange),
+}
+impl Exchange {
+    fn complete<T>(
+        self,
+        pool: &mut ContentPool,
+        verify: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<T> {
+        match self {
+            Self::Content(value) => value.complete(pool, verify),
+            Self::Transfer(value) => value.complete(pool, verify),
+        }
+    }
 }
 
 fn transport_reuse(protocol: u64, constrained: bool) {
@@ -332,11 +375,20 @@ fn transport_reuse(protocol: u64, constrained: bool) {
             );
         });
         let mut pool = ContentPool::default();
+        let transfer = crate::transfers::Transport::socket(root.join("ContentRoute.json"));
         let exchange = |packet: &[u8], pool: &mut ContentPool| {
-            if protocol == 3 {
-                transport.exchange_media_read(packet, &root, pool)
+            if protocol == 5 {
+                transfer
+                    .exchange_pooled(&root, packet, host, pool)
+                    .map(Exchange::Transfer)
+            } else if protocol == 3 {
+                transport
+                    .exchange_media_read(packet, &root, pool)
+                    .map(Exchange::Content)
             } else {
-                transport.exchange_content(packet, &root, pool)
+                transport
+                    .exchange_content(packet, &root, pool)
+                    .map(Exchange::Content)
             }
         };
         let success = |pool: &mut ContentPool, index: usize| {
@@ -374,7 +426,13 @@ fn transport_reuse(protocol: u64, constrained: bool) {
         assert!(
             exchange(&packets[5], &mut pool)
                 .unwrap()
-                .complete(&mut pool, page::MediaReceipt::parse)
+                .complete(&mut pool, |bytes| {
+                    if protocol == 5 {
+                        domains::transfer::Receipt::parse(bytes).map(|_| ())
+                    } else {
+                        page::MediaReceipt::parse(bytes).map(|_| ())
+                    }
+                })
                 .is_err()
         );
         assert!(pool.is_empty());
@@ -418,6 +476,11 @@ fn transport_reuse(protocol: u64, constrained: bool) {
         assert!(exchange(&packets[10], &mut pool).is_err());
         assert!(pool.is_empty());
         endpoint.route.protocol = protocol;
+        if protocol == 5 {
+            publish_content_route(&root, &endpoint, [77; 32]);
+            assert!(exchange(&packets[10], &mut pool).is_err());
+            assert!(pool.is_empty());
+        }
         publish_content_route(&root, &endpoint, host);
         success(&mut pool, 10);
         assert!(exchange(&packets[11], &mut pool).is_err());

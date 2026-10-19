@@ -5,7 +5,7 @@ use std::{ffi::OsStr, fs::File};
 const FILE: &str = "MediaProgress.cbor";
 pub(crate) struct Progress {
     directory: File,
-    _lock: File,
+    _lock: files::VaultLock,
     context: (Digest, Digest, Digest),
     pub asset_ref: VersionRef,
     pub host: VersionRef,

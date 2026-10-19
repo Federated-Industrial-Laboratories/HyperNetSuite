@@ -320,13 +320,18 @@ fn mail_claims_consume_packages_once_and_bind_only_one_ciphertext() {
         .iter()
         .map(|v| v.bytes().unwrap().to_vec())
         .collect::<Vec<_>>();
-    assert!(
-        !Governance::record_versions(f.state.network, f.state.incarnation, &records)
-            .unwrap()
-            .iter()
-            .any(|r| r.kind == 114)
+    let expected_recovery = Governance::parse(f.state.network, f.state.incarnation, &f.records)
+        .unwrap()
+        .versions()
+        .into_iter()
+        .find(|reference| reference.kind == 114)
+        .unwrap();
+    let returned =
+        Governance::record_versions(f.state.network, f.state.incarnation, &records).unwrap();
+    assert_eq!(
+        returned.iter().find(|reference| reference.kind == 114),
+        Some(&expected_recovery)
     );
-    assert!(Governance::parse(f.state.network, f.state.incarnation, &records).is_err());
     for (value, allowed) in [
         (&decision.value, true),
         (&deployment::without_live_consent(&decision.value), false),
