@@ -20,7 +20,7 @@ shared-library names and minimum GLIBC version; consult that inventory before
 choosing a host. Python is not required to run the client itself.
 
 For a source build, install Rust 1.95 or newer, Cargo, a C toolchain and linker,
-and `pkg-config`. The default build includes the native browser and its X11/XCB,
+and `pkg-config`. The default build includes the native applications and their X11/XCB,
 Wayland and xkbcommon development dependencies. A graphical session also needs
 usable EGL or GLX libraries and an OpenGL 2.1 / OpenGL ES 2.0 compatible driver.
 Mesa software rendering is supported. See the native dependency details in
@@ -56,7 +56,7 @@ Never mix source installation with a signed package's managed inventory; see
 
 ### Terminal-only build
 
-To omit the native browser and its graphical dependencies:
+To omit the native applications and their graphical dependencies:
 
 ```sh
 cargo build --locked --release --no-default-features
@@ -68,7 +68,7 @@ If `CARGO_TARGET_DIR` is set, use its `release/HyperNetSuite` instead.
 `Tools/Install.sh` always builds the default graphical feature set; it does not
 install the terminal-only build. A terminal-only executable refuses `--gui`
 before starting a browser connection. CLI, terminal and plain output remain
-available.
+available. The `mail gui` and `transfers gui` subcommands require a graphical build.
 
 ## Try a local Page
 

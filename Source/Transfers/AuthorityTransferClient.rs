@@ -156,8 +156,19 @@ pub fn complete<T>(
         "transfer receipt differs from exact pending participant request"
     );
     let request = Request::parse(pending.signed())?;
-    let current = store.descriptor().clone();
-    stream_client::status_local(&current, authority, signer, store, session, &mut clock)?;
+    let direct = report.result().disposition() == Disposition::Permit
+        && matches!(
+            request.command(),
+            Command::Execute {
+                effect: transfer::Effect::Fetch,
+                ..
+            }
+        )
+        && store.transfer_completion_connected(&report)?;
+    if !direct {
+        let current = store.descriptor().clone();
+        stream_client::status_local(&current, authority, signer, store, session, &mut clock)?;
+    }
     if report.result().disposition() != Disposition::Permit {
         anyhow::bail!(
             "transfer effect refused with code {}; current stream status is retained",

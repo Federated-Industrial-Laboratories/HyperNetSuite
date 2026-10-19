@@ -61,7 +61,7 @@ pub(super) fn inventory(directory: &Path) -> Result<Vec<SavedRoute>> {
     }
     Ok(routes)
 }
-fn routes(directory: &Path) -> Result<Vec<SavedRoute>> {
+pub(super) fn routes(directory: &Path) -> Result<Vec<SavedRoute>> {
     let routes = inventory(directory)?;
     for route in &routes {
         let endpoint = Endpoint::load(&route_path(directory, &route.service))?;
@@ -86,7 +86,7 @@ pub(super) fn route_subject(
         .context("search route has no explicitly retained subject binding")?
         .checked_subject(route)
 }
-fn route_path(directory: &Path, service: &str) -> PathBuf {
+pub(super) fn route_path(directory: &Path, service: &str) -> PathBuf {
     directory.join("Routes").join(format!("{service}.json"))
 }
 fn value(arguments: &[OsString], name: &str) -> Result<Option<String>> {

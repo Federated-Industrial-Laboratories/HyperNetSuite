@@ -158,6 +158,7 @@ impl Prepared {
                 review: self.review.clone(),
                 payload_digest: protocol::digest(body.as_bytes()),
             }),
+            send_consent: None,
         })
     }
 }

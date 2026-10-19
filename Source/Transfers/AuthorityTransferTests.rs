@@ -280,11 +280,17 @@ fn offer_accept_selected_recipient_effect_and_cancel_preserve_exact_generations(
         .iter()
         .map(|v| v.bytes().unwrap().to_vec())
         .collect::<Vec<_>>();
-    assert!(
-        !Governance::record_versions(f.state.network, f.state.incarnation, &records)
-            .unwrap()
-            .iter()
-            .any(|r| r.kind == 114)
+    let expected_recovery = Governance::parse(f.state.network, f.state.incarnation, &f.records)
+        .unwrap()
+        .versions()
+        .into_iter()
+        .find(|reference| reference.kind == 114)
+        .unwrap();
+    let returned =
+        Governance::record_versions(f.state.network, f.state.incarnation, &records).unwrap();
+    assert_eq!(
+        returned.iter().find(|reference| reference.kind == 114),
+        Some(&expected_recovery)
     );
     for (value, allowed) in [
         (&d.value, true),

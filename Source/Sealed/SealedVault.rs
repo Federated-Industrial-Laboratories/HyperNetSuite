@@ -81,7 +81,7 @@ pub struct DevicePublic {
 pub struct Vault {
     data: Data,
     directory: File,
-    _lock: File,
+    _lock: files::VaultLock,
     key: age::x25519::Identity,
     poisoned: bool,
 }

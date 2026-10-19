@@ -40,7 +40,7 @@ impl Drop for Data {
 pub(super) struct Pending {
     pub data: Data,
     directory: File,
-    _lock: File,
+    _lock: files::VaultLock,
     key: age::x25519::Identity,
 }
 impl Pending {

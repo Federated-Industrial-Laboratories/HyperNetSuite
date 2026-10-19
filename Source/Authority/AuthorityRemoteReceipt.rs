@@ -8,13 +8,28 @@ impl Store {
         report: &crate::authority_domains::page::MediaReport,
     ) -> Result<bool> {
         media_operation(report.request())?;
-        let known = self.remote_known(report.result(), "AuthorityDomain")?;
+        self.remote_completion_connected(report.result(), "AuthorityDomain")
+    }
+
+    pub(crate) fn transfer_completion_connected(
+        &self,
+        report: &crate::authority_domains::transfer::Report,
+    ) -> Result<bool> {
+        self.remote_completion_connected(report.result(), "AuthorityDomain")
+    }
+
+    pub(super) fn remote_completion_connected(
+        &self,
+        result: &VerifiedResult,
+        action: &str,
+    ) -> Result<bool> {
+        let known = self.remote_known(result, action)?;
         if self.resume_fence()?.is_some() {
             return Ok(false);
         }
         Ok(known
-            || (report.result().point().prefix().scope() == self.descriptor.scope()
-                && report.result().extends(self.prefix()).is_ok()))
+            || (result.point().prefix().scope() == self.descriptor.scope()
+                && result.extends(self.prefix()).is_ok()))
     }
 
     /// Learn a verified original completion; progress and final acknowledgement remain outstanding.

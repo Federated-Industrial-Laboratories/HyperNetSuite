@@ -17,6 +17,13 @@ separate from publisher content. Media remains hidden until explicit Reveal and
 passes the existing confined decoding path before display. Local preview cannot
 navigate the network or send Forms. See [Graphical browser](GraphicalBrowser.md).
 
+[Native Mail](NativeMail.md) binds confirmation to the exact letter, verified
+recipient revision and selected store. [Native Transfers](NativeTransfers.md)
+reviews immutable offers and exact acceptance, storage and output choices.
+Both applications use retained relay routes and serialize requester operations.
+Closing a window preserves uncertain requests for explicit recovery. Received
+messages and files cannot execute code or choose local output paths.
+
 Application grants and mail-device credentials retain their separate scopes.
 Adapter exports require explicit disclosure consent. A policy digest, expiry or
 revocation cannot recall plaintext that has already been exported. External

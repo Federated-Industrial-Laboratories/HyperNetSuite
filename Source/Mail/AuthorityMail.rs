@@ -37,6 +37,11 @@ pub use forms::{Arguments as FormsArguments, run as run_forms};
 #[path = "AuthorityMailVault.rs"]
 mod vault;
 use vault::{Mailbox, Outgoing, Vault};
+#[cfg(feature = "gui")]
+#[path = "MailApplication.rs"]
+pub(crate) mod application;
+#[path = "MailApplicationConsent.rs"]
+mod application_consent;
 #[derive(Args)]
 pub struct Arguments {
     #[command(subcommand)]
@@ -95,6 +100,9 @@ impl Transport {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Open the native Mail application with an existing encrypted vault.
+    #[cfg(feature = "gui")]
+    Gui(application::Arguments),
     Init {
         #[command(flatten)]
         location: Location,
@@ -387,6 +395,8 @@ pub fn run(configuration: Option<&Path>, arguments: Arguments) -> Result<()> {
         "mail uses an independently pinned bootstrap and explicit private sockets; --config is not accepted"
     );
     match arguments.command {
+        #[cfg(feature = "gui")]
+        Command::Gui(arguments) => application::run(arguments),
         command @ (Command::Profile { .. }
         | Command::Register { .. }
         | Command::Withdraw { .. }

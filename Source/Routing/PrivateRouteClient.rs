@@ -73,7 +73,7 @@ impl AuthorityPool {
         self.route = None;
     }
 }
-/// One Content or Media connection belongs to its caller and never supplies cached permission.
+/// One finite application connection belongs to its caller and never supplies cached permission.
 #[derive(Default)]
 pub(crate) struct ContentPool {
     route: Option<Prepared>,
@@ -99,8 +99,8 @@ impl ContentPool {
         check_cancelled()?;
         let endpoint = Endpoint::load(path)?;
         ensure!(
-            matches!(protocol, 2 | 3) && endpoint.route.protocol == protocol,
-            "content or media exchange requires its exact selected protocol"
+            matches!(protocol, 2 | 3 | 5) && endpoint.route.protocol == protocol,
+            "application exchange requires its exact selected protocol"
         );
         check(&endpoint)?;
         if let Some(route) = retained

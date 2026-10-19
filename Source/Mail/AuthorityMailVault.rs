@@ -8,7 +8,12 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, ffi::OsStr, fs::File, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
+    fs::File,
+    path::Path,
+};
 use zeroize::Zeroize;
 const LIMIT: usize = 32 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
@@ -52,6 +57,8 @@ pub struct Outgoing {
     pub ciphertext: Option<wire::Ciphertext>,
     pub receipts: BTreeMap<String, String>,
     pub form_consent: Option<super::forms::Consent>,
+    #[serde(default)]
+    pub send_consent: Option<super::application_consent::SendConsent>,
 }
 impl Drop for Outgoing {
     fn drop(&mut self) {
@@ -79,6 +86,10 @@ pub struct Data {
     pub contacts: BTreeMap<String, Contact>,
     pub outgoing: BTreeMap<String, Outgoing>,
     pub archive: BTreeMap<String, Archived>,
+    #[serde(default)]
+    deleted_archive: BTreeSet<String>,
+    #[serde(default)]
+    pending_fetches: BTreeMap<String, String>,
     pub form_drafts: BTreeMap<String, super::forms::Prepared>,
     pub accepted_forms: BTreeMap<String, super::forms::Accepted>,
     pub form_ledger: BTreeMap<String, super::forms::LedgerEntry>,
@@ -86,7 +97,7 @@ pub struct Data {
 pub struct Vault {
     pub data: Data,
     directory: File,
-    _lock: File,
+    _lock: files::VaultLock,
     key: age::x25519::Identity,
 }
 impl Vault {
@@ -114,6 +125,8 @@ impl Vault {
                 contacts: BTreeMap::new(),
                 outgoing: BTreeMap::new(),
                 archive: BTreeMap::new(),
+                deleted_archive: BTreeSet::new(),
+                pending_fetches: BTreeMap::new(),
                 form_drafts: BTreeMap::new(),
                 accepted_forms: BTreeMap::new(),
                 form_ledger: BTreeMap::new(),
@@ -237,6 +250,83 @@ impl Vault {
         self.save()?;
         Ok(m)
     }
+    pub fn require_fetch(&self, message: &str) -> Result<()> {
+        ensure!(
+            !self.data.deleted_archive.contains(message),
+            "this device's readable copy was permanently deleted"
+        );
+        Ok(())
+    }
+    pub fn sync_pending_fetch(&mut self, label: &str, message: Option<&str>) -> Result<()> {
+        let requester = self.mailbox(label)?.request.public_key.clone();
+        if self
+            .data
+            .pending_fetches
+            .get(&requester)
+            .map(String::as_str)
+            == message
+        {
+            return Ok(());
+        }
+        if let Some(message) = message {
+            self.data.pending_fetches.insert(requester, message.into());
+        } else {
+            self.data.pending_fetches.remove(&requester);
+        }
+        self.save()
+    }
+    pub fn fetch<T>(
+        &mut self,
+        label: &str,
+        message: &str,
+        package_reference: &str,
+        exchange: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        self.require_fetch(message)?;
+        let mailbox = self.mailbox(label)?;
+        if let Some(archived) = self.data.archive.get(message) {
+            ensure!(
+                archived.letter.route.recipient_address == mailbox.address,
+                "letter belongs to another mailbox"
+            );
+        } else {
+            ensure!(
+                mailbox
+                    .packages
+                    .iter()
+                    .any(|p| p.reference == package_reference),
+                "one-use private package unavailable; this device cannot read the letter"
+            );
+        }
+        ensure!(
+            self.data
+                .pending_fetches
+                .get(&mailbox.request.public_key)
+                .is_none_or(|pending| pending == message),
+            "another mail fetch is pending; recover its exact operation first"
+        );
+        // Keep the archive while an unacknowledged Fetch may need its idempotent callback.
+        self.sync_pending_fetch(label, Some(message))?;
+        let result = exchange(self)?;
+        self.sync_pending_fetch(label, None)?;
+        Ok(result)
+    }
+    pub fn delete_archive(&mut self, message: &str) -> Result<()> {
+        ensure!(
+            !self
+                .data
+                .pending_fetches
+                .values()
+                .any(|pending| pending == message),
+            "finish the pending fetch before deleting this readable copy"
+        );
+        ensure!(
+            self.data.archive.remove(message).is_some(),
+            "archived message absent"
+        );
+        self.data.deleted_archive.insert(message.into());
+        self.save()
+    }
     pub fn archive(
         &mut self,
         label: &str,
@@ -246,6 +336,7 @@ impl Vault {
         receipt: &[u8],
     ) -> Result<&Letter> {
         let message = cipher.route.message_id.clone();
+        self.require_fetch(&message)?;
         let cipher_digest = wire::digest(&serde_json::to_vec(cipher)?);
         let mailbox = self.mailbox(label)?;
         ensure!(

@@ -14,16 +14,20 @@ use std::{
 
 #[path = "Chrome.rs"]
 mod chrome;
+#[path = "Common.rs"]
+pub(crate) mod common;
 #[path = "PageRenderer.rs"]
 mod renderer;
 #[path = "Scrolling.rs"]
-mod scrolling;
+pub(crate) mod scrolling;
 #[path = "Session.rs"]
 mod session;
 #[path = "Settings.rs"]
-mod settings;
+pub(crate) mod settings;
 #[path = "Theme.rs"]
 mod theme;
+#[path = "Transfers.rs"]
+pub(crate) mod transfers;
 pub use session::Session;
 use session::{Message, Page};
 

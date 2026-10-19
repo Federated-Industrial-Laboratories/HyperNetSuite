@@ -34,7 +34,7 @@ Unicode text; ASCII output provides a safe fallback.
 
 ## Native browser
 
-The default build includes the native Linux Page browser. It needs an X11 or
+The default build includes the native Linux Page browser, Mail and Transfers. It needs an X11 or
 Wayland display and working EGL or GLX libraries with a compatible graphics
 driver. Native rendering has been exercised with NVIDIA and Mesa software
 rendering on Linux x86_64; this is not qualification of every distribution or
@@ -42,8 +42,8 @@ display configuration. See [Graphical browser](GraphicalBrowser.md#build-and-run
 for dependencies and the terminal-only build.
 
 The native browser supports ordinary Page browsing, explicit media reveal and
-Forms. Other application and administration workflows use the CLI. A graphical
-build does not open a window unless `--gui` is selected.
+Forms. Mail and Transfers have separate native commands; administration uses
+the CLI. A window opens only for an explicit graphical command.
 
 ## Terminal graphics and services
 

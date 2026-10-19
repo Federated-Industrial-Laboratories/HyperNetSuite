@@ -19,7 +19,7 @@ name = "TerminalSafety"
 path = "Tests/TerminalSafety.rs"
 
 [dependencies]
-eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"], optional = true }
+eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "wayland", "x11"], optional = true }
 pulldown-cmark = { version = "=0.13.4", default-features = false, optional = true }
 anyhow = "1"
 base64 = "0.22"

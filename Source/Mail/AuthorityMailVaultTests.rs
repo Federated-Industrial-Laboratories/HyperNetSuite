@@ -45,7 +45,7 @@ fn mailbox(network: Digest, service: Digest, expires: u64) -> Mailbox {
     b
 }
 #[test]
-fn mail_vault_mls_archive_is_durable_and_consumes_the_exact_private_package_once() {
+fn mail_vault_mls_archive_preserves_fetch_recovery_and_permanent_deletion() {
     let root = std::env::temp_dir().join(format!("HyperNetMailVault{}", crate::random_hex::<16>()));
     std::fs::create_dir(&root).unwrap();
     let _cleanup = Directory(root.clone());
@@ -161,6 +161,62 @@ fn mail_vault_mls_archive_is_durable_and_consumes_the_exact_private_package_once
             b"verified receipt"
         )
         .is_err()
+    );
+    let message = &cipher.route.message_id;
+    let interrupted: Result<()> = v.fetch("Recipient", message, &reference, |v| {
+        v.archive("Recipient", &cipher, &reference, now, b"verified receipt")?;
+        anyhow::bail!("interrupted before participant receipt accounting")
+    });
+    assert!(interrupted.is_err_and(|e| e.to_string().contains("receipt accounting")));
+    assert!(v.delete_archive(message).is_err());
+    assert!(v.data.archive.contains_key(message));
+    drop(v);
+
+    let mut v = Vault::open(&path, &key, n, i, pin).unwrap();
+    assert!(v.delete_archive(message).is_err());
+    v.fetch("Recipient", message, &reference, |v| {
+        assert_eq!(
+            v.archive("Recipient", &cipher, &reference, now, b"verified receipt")?
+                .body,
+            letter.body
+        );
+        Ok(())
+    })
+    .unwrap();
+    v.delete_archive(message).unwrap();
+    assert!(!v.data.archive.contains_key(message));
+    assert!(v.mailbox("Recipient").unwrap().packages.is_empty());
+    drop(v);
+
+    let mut v = Vault::open(&path, &key, n, i, pin).unwrap();
+    assert!(v.require_fetch(message).is_err());
+    let mut prepared_or_sent = false;
+    assert!(
+        v.fetch("Recipient", message, &reference, |_| {
+            prepared_or_sent = true;
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(
+        !prepared_or_sent,
+        "an unreadable fetch must not prepare or send an effect"
+    );
+    assert!(
+        v.fetch("Recipient", &hex::encode([45; 32]), &reference, |_| {
+            prepared_or_sent = true;
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(
+        !prepared_or_sent,
+        "a missing private package must be rejected before the effect"
+    );
+    assert!(v.data.pending_fetches.is_empty());
+    assert!(
+        v.archive("Recipient", &cipher, &reference, now, b"verified receipt")
+            .is_err()
     );
     drop(v);
     assert!(Vault::open(&path, &key, n, [99; 32], pin).is_err());

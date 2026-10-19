@@ -17,11 +17,14 @@ Use `HyperNetSuite --help` and each subcommand's `--help` for exact arguments.
 | --- | --- |
 | Local Page preview or verified Page reading | Native GUI with `--gui`, terminal viewer with `--tui`, or plain output. |
 | Network catalogue browsing | `browse --gui` for the native browser; `browse` for the terminal browser. |
-| Publishing, Mail, transfers, services and administration | Explicit CLI command groups. |
+| Encrypted messages | `mail gui` for native Mail; `mail` commands for CLI access. |
+| File offers and downloads | `transfers gui` for native Transfers; `transfers` commands for CLI access. |
+| Publishing, services and administration | Explicit CLI command groups. |
 
-The native browser includes Page Forms and explicit media reveal. It is not a
-Mail inbox, file manager or administration console. See
-[Graphical browser](GraphicalBrowser.md) and [terminal browser](Browser.md).
+The native browser includes Page Forms and explicit media reveal. Mail and
+Transfers use separate windows and explicitly selected network profiles. See
+[Graphical browser](GraphicalBrowser.md), [Native Mail](NativeMail.md),
+[Native Transfers](NativeTransfers.md) and [terminal browser](Browser.md).
 
 ## Create a standalone signing identity
 

@@ -276,6 +276,7 @@ pub(super) fn run(command: Command) -> Result<()> {
                     ciphertext: None,
                     receipts: BTreeMap::new(),
                     form_consent: None,
+                    send_consent: None,
                 },
             );
             v.save()?;
@@ -323,11 +324,7 @@ pub(super) fn run(command: Command) -> Result<()> {
         } => {
             id(&message)?;
             let (_, mut v) = open(&location, &vault, false)?;
-            ensure!(
-                v.data.archive.remove(&message).is_some(),
-                "archived message absent"
-            );
-            v.save()?;
+            v.delete_archive(&message)?;
             crate::print_value(&json!({"status":"LocalMailDeleted","message":message}))
         }
         _ => anyhow::bail!("not a local mail operation"),

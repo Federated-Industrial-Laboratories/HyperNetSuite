@@ -35,6 +35,23 @@ pub struct Location {
     host_kernel_boot: Option<String>,
 }
 impl Location {
+    #[cfg(feature = "gui")]
+    pub(crate) fn retained(
+        bootstrap: PathBuf,
+        bootstrap_digest: String,
+        directory: PathBuf,
+        clock_witness: PathBuf,
+    ) -> Self {
+        Self {
+            bootstrap,
+            bootstrap_digest,
+            directory,
+            clock_witness,
+            clock_monitor_key: None,
+            host_kernel_boot: None,
+        }
+    }
+
     pub(crate) fn with_directory(&self, directory: PathBuf) -> Self {
         Self {
             directory,

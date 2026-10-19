@@ -1042,3 +1042,89 @@ fn epoch_adoption_preserves_pending_request_and_recovers_witness_interruption() 
     stored.as_object_mut().unwrap().remove("sealed");
     assert!(serde_json::from_value::<Stored>(stored).is_err());
 }
+
+#[test]
+fn remote_completion_requires_exact_connected_unfenced_request() {
+    for case in [
+        "Connected",
+        "Disconnected",
+        "WrongRequest",
+        "Fenced",
+        "Known",
+    ] {
+        let (_directory, sample, mut session, mut store) = setup();
+        let (pending, operation) = prepare(&mut store, sample);
+        let mut signed = pending.signed().to_vec();
+        if case == "WrongRequest" {
+            let (payload, _) = wire::envelope(&signed, 1).unwrap();
+            let mut fields = wire::decode(&payload).unwrap().array(17).unwrap().to_vec();
+            fields[10] = b(&[77; 32]);
+            signed =
+                wire::sign_envelope(&encoded(fields), &SigningKey::from_bytes(&[1; 32])).unwrap();
+        }
+        let mut proof_session = Session::new().unwrap();
+        let result = certified(
+            &store,
+            &mut proof_session,
+            sample,
+            &signed,
+            &operation,
+            None,
+        );
+        if case == "Disconnected" {
+            let metadata = metadata(&store, V::Null);
+            status(&mut store, &mut session, sample, &metadata);
+        } else if case == "Known" {
+            let accepted = certified(
+                &store,
+                &mut session,
+                sample,
+                pending.signed(),
+                &operation,
+                None,
+            );
+            let _permit = store.accept(accepted, &mut session, sample, 0).unwrap();
+        } else if case == "Fenced" {
+            let old = store.stream_metadata().unwrap().unwrap();
+            let prior = old.state().unwrap();
+            let scope = store.prefix().scope();
+            let signed = wire::sign_envelope(
+                &encoded(vec![
+                    V::Uint(57),
+                    V::Uint(1),
+                    b(&scope.network),
+                    b(&scope.incarnation),
+                    b(&store.requester()),
+                    b(&wire::digest(old.canonical())),
+                    V::Uint(scope.epoch),
+                    V::Uint(store.prefix().height()),
+                    V::Uint(prior.generation),
+                    b(&prior.generation_id),
+                    b(&wire::digest(old.canonical())),
+                ]),
+                &SigningKey::from_bytes(&[1; 32]),
+            )
+            .unwrap();
+            store.prepare_fence(&signed, old.canonical()).unwrap();
+        }
+        let probe = store.remote_completion_connected(&result, "ReadPage");
+        if case == "WrongRequest" {
+            assert!(probe.is_err());
+        } else {
+            assert_eq!(
+                probe.unwrap(),
+                matches!(case, "Connected" | "Known"),
+                "{case}"
+            );
+        }
+        assert!(
+            store.resume_ordinary().unwrap().is_some(),
+            "probe acknowledged data in {case}"
+        );
+        assert!(
+            store
+                .remote_completion_connected(&result, "AuthorityDomain")
+                .is_err()
+        );
+    }
+}
