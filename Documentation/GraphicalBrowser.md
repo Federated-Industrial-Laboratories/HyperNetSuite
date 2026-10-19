@@ -56,6 +56,14 @@ remain display-only and never launch an external application.
 | F1 | Open Help |
 | Tab / Shift+Tab | Move keyboard focus |
 | Enter / Space | Activate the focused control |
+| Up / Down | Scroll the focused Page or scroll box by one line |
+| PageUp / PageDown | Scroll the focused Page or scroll box by one view |
+| Home / End | Move the focused Page or scroll box to its start or end |
+
+Click Page content or a scroll box, or use Tab, to focus its scrolling area.
+A bright outline marks the focused area. Scrolling keys apply to that area;
+text fields and other focused controls retain their own keyboard behavior.
+Tab also scrolls newly focused Page controls into view.
 
 Settings and searchable Help open in separate windows. Page information presents
 the trusted publication metadata. Publisher content remains inside the page area
@@ -72,6 +80,8 @@ Submission opens a separate review window. Read the recipient, field values,
 storage and expiry, then type `SEND` and activate Send. Cancel or close the review
 to decline transmission. See [Forms](Forms.md) for destination acceptance and
 recovery of an uncertain send.
+The review content has its own focus outline and the same scrolling keys.
+Focus it with Tab or a click to read through a long review before typing `SEND`.
 
 ## Formatting and media
 
@@ -98,7 +108,9 @@ colours. Animation is off by default. Turning it off also prevents Page controls
 from starting motion. Turning it on allows local bounded effects on retained
 content; it does not reveal images or start network requests. The choice applies
 across navigation and application restarts. Text size and monochrome are also
-retained. These preferences do not change signed documents or authority policy.
+retained. Text size applies to Page content, browser controls, Settings, Help,
+Page information and submission review. These preferences do not change signed
+documents or authority policy.
 
 Preferences are stored in `$XDG_CONFIG_HOME/HyperNetSuite/Settings.json`, or
 `$HOME/.config/HyperNetSuite/Settings.json` when `XDG_CONFIG_HOME` is unset or empty.

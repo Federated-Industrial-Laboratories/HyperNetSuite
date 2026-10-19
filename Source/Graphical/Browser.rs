@@ -16,6 +16,8 @@ use std::{
 mod chrome;
 #[path = "PageRenderer.rs"]
 mod renderer;
+#[path = "Scrolling.rs"]
+mod scrolling;
 #[path = "Session.rs"]
 mod session;
 #[path = "Settings.rs"]
@@ -92,6 +94,7 @@ struct Confirmation {
     reply: SyncSender<bool>,
     acknowledgement: String,
     end_seen: bool,
+    scroll_offset: Option<f32>,
 }
 
 struct Browser {
@@ -191,6 +194,7 @@ impl Browser {
                         reply,
                         acknowledgement: String::new(),
                         end_seen: false,
+                        scroll_offset: None,
                     });
                     self.busy = false;
                 }
@@ -315,6 +319,7 @@ impl eframe::App for Browser {
         let ctx = ui.ctx().clone();
         self.messages(&ctx);
         self.keyboard(&ctx);
+        chrome::text_size(ui, self.preferences.text_scale);
         self.toolbar(ui);
         self.status_bar(ui);
         self.sidebar(ui);
@@ -334,11 +339,6 @@ impl eframe::App for Browser {
                     let enabled = !self.busy && !self.finished && self.confirmation.is_none();
                     let action = ui
                         .add_enabled_ui(enabled, |ui| {
-                            let mut style = (**ui.style()).clone();
-                            for font in style.text_styles.values_mut() {
-                                font.size *= self.preferences.text_scale;
-                            }
-                            ui.set_style(style);
                             self.renderer.show(
                                 ui,
                                 &page.document,

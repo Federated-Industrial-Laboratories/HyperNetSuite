@@ -4,6 +4,7 @@
 mod fields;
 #[path = "Markdown.rs"]
 mod markdown;
+use super::scrolling;
 use crate::{
     markup::{
         self, BorderStyle, Colour, Document, Fit, Kind, Node, PageAction, Preset, ScrollDirection,
@@ -32,6 +33,7 @@ pub struct PageRenderer {
     motion: BTreeMap<usize, bool>,
     scrolls: BTreeMap<usize, (f32, f32)>,
     scroll_request: BTreeMap<usize, ScrollDirection>,
+    keyboard_scrolls: egui::IdMap<f32>,
     focus_request: Option<usize>,
     message: Option<String>,
     generation: u64,
@@ -71,10 +73,17 @@ impl PageRenderer {
             effect_keys,
             visible_effects: BTreeSet::new(),
             action: None,
+            scroll_clicked: false,
         };
         let generation = frame.renderer.generation;
         ui.push_id(("HyperPage", generation), |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+            let focus = scrolling::focus(
+                ui,
+                ui.available_rect_before_wrap(),
+                ui.scope_id().with("PageFocus"),
+                "Page",
+            );
             let mut page_scroll = egui::ScrollArea::vertical()
                 .id_salt("Page")
                 .auto_shrink([false, false]);
@@ -82,6 +91,9 @@ impl PageRenderer {
                 page_scroll =
                     page_scroll.vertical_scroll_offset(frame.view.offset as f32 * line_height(ui));
                 frame.renderer.scroll_initialized = true;
+            }
+            if let Some(offset) = frame.renderer.keyboard_scrolls.remove(&focus.id) {
+                page_scroll = page_scroll.vertical_scroll_offset(offset);
             }
             let output = page_scroll.show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -98,6 +110,15 @@ impl PageRenderer {
                     ui.colored_label(Color32::from_rgb(234, 139, 119), message);
                 }
             });
+            if let Some(offset) = scrolling::keys(
+                ui,
+                &focus,
+                &output,
+                line_height(ui),
+                &mut frame.scroll_clicked,
+            ) {
+                frame.renderer.keyboard_scrolls.insert(focus.id, offset);
+            }
             frame.view.offset = (output.state.clamped_offset().y / line_height(ui)) as usize;
         });
         if !frame.visible_effects.is_empty()
@@ -120,6 +141,7 @@ struct Render<'a> {
     effect_keys: BTreeSet<usize>,
     visible_effects: BTreeSet<usize>,
     action: Option<Action>,
+    scroll_clicked: bool,
 }
 fn inherited(parent: Style, own: Style) -> Style {
     Style {
@@ -261,6 +283,7 @@ impl Render<'_> {
             });
         let result = ui.push_id(node.key, |ui| self.content(ui, node, style, effect));
         let response = result.inner.unwrap_or(result.response);
+        scrolling::reveal_focus(&response);
         let media_visible = match &node.kind {
             Kind::Image { asset, .. } => self
                 .document
@@ -406,6 +429,15 @@ impl Render<'_> {
                 ui.label(text_style.rich(label).strong());
                 let row_height = line_height(ui);
                 let height = f32::from(*rows) * row_height;
+                let response = scrolling::focus(
+                    ui,
+                    Rect::from_min_size(
+                        ui.next_widget_position(),
+                        Vec2::new(ui.available_width(), height),
+                    ),
+                    ui.scope_id().with("ScrollFocus"),
+                    label,
+                );
                 let mut scroll = egui::ScrollArea::vertical()
                     .id_salt("Box")
                     .max_height(height)
@@ -435,6 +467,9 @@ impl Render<'_> {
                         ScrollDirection::End => maximum,
                     };
                     scroll = scroll.vertical_scroll_offset(next);
+                }
+                if let Some(offset) = self.renderer.keyboard_scrolls.remove(&response.id) {
+                    scroll = scroll.vertical_scroll_offset(offset);
                 }
                 let output = scroll.show(ui, |ui| self.nodes(ui, &node.children, style));
                 let border = style.border.unwrap_or_default();
@@ -473,33 +508,10 @@ impl Render<'_> {
                     node.key,
                     (output.state.clamped_offset().y / row_height) as usize,
                 );
-                let response = ui
-                    .interact(
-                        output.inner_rect,
-                        ui.scope_id().with("ScrollFocus"),
-                        Sense::focusable_noninteractive(),
-                    )
-                    .on_hover_text("Scroll with the wheel; focus for arrow keys, Home and End");
-                response
-                    .widget_info(|| egui::WidgetInfo::labeled(egui::Role::ScrollView, true, label));
-                if response.has_focus() {
-                    let direction = ui.input(|input| {
-                        if input.key_pressed(egui::Key::ArrowUp) {
-                            Some(ScrollDirection::Up)
-                        } else if input.key_pressed(egui::Key::ArrowDown) {
-                            Some(ScrollDirection::Down)
-                        } else if input.key_pressed(egui::Key::Home) {
-                            Some(ScrollDirection::Start)
-                        } else if input.key_pressed(egui::Key::End) {
-                            Some(ScrollDirection::End)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(direction) = direction {
-                        self.renderer.scroll_request.insert(node.key, direction);
-                        ui.ctx().request_repaint();
-                    }
+                if let Some(offset) =
+                    scrolling::keys(ui, &response, &output, row_height, &mut self.scroll_clicked)
+                {
+                    self.renderer.keyboard_scrolls.insert(response.id, offset);
                 }
                 return Some(response);
             }
@@ -838,11 +850,12 @@ pub(super) fn image(
             .inner_margin(8)
             .show(ui, |ui| {
                 ui.label(alt);
-                ui.button("Reveal image")
-                    .on_hover_text(format!(
-                        "{} · {} × {} · {} bytes",
-                        asset.id, asset.width, asset.height, asset.bytes
-                    ))
+                let response = ui.button("Reveal image").on_hover_text(format!(
+                    "{} · {} × {} · {} bytes",
+                    asset.id, asset.width, asset.height, asset.bytes
+                ));
+                scrolling::reveal_focus(&response);
+                response
                     .clicked()
                     .then(|| Action::Reveal(target.to_owned()))
             })
@@ -853,6 +866,248 @@ pub(super) fn image(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_scrolling_follows_page_box_and_text_field_focus() {
+        fn frame(
+            ctx: &egui::Context,
+            renderer: &mut PageRenderer,
+            document: &Document,
+            view: &mut View,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    renderer.show(ui, document, view, &BTreeMap::new(), false);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        }
+        fn focus(id: egui::accesskit::NodeId) -> egui::Event {
+            egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Focus,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: id,
+                data: None,
+            })
+        }
+        fn key(key: egui::Key) -> egui::Event {
+            egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }
+        }
+        fn pointer(pos: Pos2, pressed: bool) -> Vec<egui::Event> {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        }
+        let source = format!(
+            "HyperNetPage/2\n# Scrolling\n@ScrollBox {{\"id\":\"Details\",\"label\":\"Details\",\"rows\":2}}\n{}@End\n@Form {{\"id\":\"Feedback\",\"label\":\"Feedback\",\"profile\":\"HyperNetFormMail/1\",\"recipient\":\"{}\",\"owner\":\"{}\"}}\n@Field {{\"id\":\"Message\",\"label\":\"Message\",\"kind\":\"Text\",\"maxBytes\":100}}\n@Submit {{\"label\":\"Review\"}}\n@End\n{}: [Last](https://example.org/)\n",
+            ": Box line\n\n".repeat(12),
+            "01".repeat(32),
+            "02".repeat(32),
+            ": Page line\n\n".repeat(40)
+        );
+        let document = markup::parse(&source).unwrap();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut renderer = PageRenderer::default();
+        let mut view = View::new();
+        let output = frame(&ctx, &mut renderer, &document, &mut view, vec![]);
+        let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+        let page = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == egui::Role::ScrollView && node.label() == Some("Page"))
+            .unwrap()
+            .0;
+        let nested = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == egui::Role::ScrollView && node.label() == Some("Details")
+            })
+            .unwrap()
+            .0;
+        let field = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == egui::Role::TextInput)
+            .unwrap()
+            .0;
+        let last = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == egui::Role::Link && node.label() == Some("Last"))
+            .unwrap()
+            .0;
+        let text_position = |text| {
+            let bounds = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == egui::Role::Label && node.value() == Some(text))
+                .filter_map(|(_, node)| node.bounds())
+                .min_by(|a, b| a.y0.total_cmp(&b.y0))
+                .unwrap();
+            Pos2::new(
+                (bounds.x0 + bounds.x1) as f32 * 0.5,
+                (bounds.y0 + bounds.y1) as f32 * 0.5,
+            )
+        };
+        let box_text = text_position("Box line");
+        let page_text = text_position("Page line");
+        output.drop_without_applying_deltas();
+
+        frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            pointer(box_text, true),
+        )
+        .drop_without_applying_deltas();
+        let output = frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            pointer(box_text, false),
+        );
+        assert_eq!(
+            ctx.memory(|memory| memory.focused())
+                .map(|id| id.accesskit_id()),
+            Some(nested),
+            "box text at {box_text:?}; Page focus id {page:?}"
+        );
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Rect(rect) if rect.stroke.width == 2.0 && rect.stroke.color == ctx.global_style().visuals.selection.stroke.color)));
+        output.drop_without_applying_deltas();
+        frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            vec![key(egui::Key::End)],
+        )
+        .drop_without_applying_deltas();
+        frame(&ctx, &mut renderer, &document, &mut view, vec![]).drop_without_applying_deltas();
+        assert_eq!(view.offset, 0);
+        assert!(view.scrolls.values().any(|offset| *offset > 0));
+        let box_offsets = view.scrolls.clone();
+
+        frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            pointer(page_text, true),
+        )
+        .drop_without_applying_deltas();
+        frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            pointer(page_text, false),
+        )
+        .drop_without_applying_deltas();
+        assert_eq!(
+            ctx.memory(|memory| memory.focused())
+                .map(|id| id.accesskit_id()),
+            Some(page)
+        );
+        frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            vec![key(egui::Key::PageDown)],
+        )
+        .drop_without_applying_deltas();
+        frame(&ctx, &mut renderer, &document, &mut view, vec![]).drop_without_applying_deltas();
+        assert!(view.offset > 0);
+        assert_eq!(view.scrolls, box_offsets);
+        frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            vec![key(egui::Key::Home)],
+        )
+        .drop_without_applying_deltas();
+        frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            vec![focus(field)],
+        )
+        .drop_without_applying_deltas();
+        let offset = view.offset;
+        frame(
+            &ctx,
+            &mut renderer,
+            &document,
+            &mut view,
+            vec![key(egui::Key::End)],
+        )
+        .drop_without_applying_deltas();
+        frame(&ctx, &mut renderer, &document, &mut view, vec![]).drop_without_applying_deltas();
+        assert_eq!(view.offset, offset);
+        assert_eq!(view.scrolls, box_offsets);
+        assert!(renderer.keyboard_scrolls.is_empty());
+        for _ in 0..2 {
+            frame(
+                &ctx,
+                &mut renderer,
+                &document,
+                &mut view,
+                vec![key(egui::Key::Tab)],
+            )
+            .drop_without_applying_deltas();
+        }
+        frame(&ctx, &mut renderer, &document, &mut view, vec![]).drop_without_applying_deltas();
+        assert!(view.offset > 0, "Tab focus did not request scrolling");
+        let output = frame(&ctx, &mut renderer, &document, &mut view, vec![]);
+        assert_eq!(
+            ctx.memory(|memory| memory.focused())
+                .map(|id| id.accesskit_id()),
+            Some(last)
+        );
+        let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+        let bounds = tree
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == last)
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        assert!(
+            bounds.y0 >= 0.0 && bounds.y1 <= 400.0,
+            "focused link remains outside view: {bounds:?}; Page offset {}",
+            view.offset
+        );
+        assert!(view.offset > 0);
+        output.drop_without_applying_deltas();
+    }
+
     #[test]
     fn paragraph_runs_render_multiline_markdown_without_changing_source() {
         let source = include_str!("../../Examples/GraphicalPage.txt");
@@ -917,6 +1172,7 @@ mod tests {
                     effect_keys: BTreeSet::new(),
                     visible_effects: BTreeSet::new(),
                     action: None,
+                    scroll_clicked: false,
                 };
                 frame.activate(
                     &PageAction::Motion {
