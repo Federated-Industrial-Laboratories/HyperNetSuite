@@ -484,7 +484,7 @@ fn signed_inspection_has_exact_target_revision_and_only_required_current_depende
     assert_eq!(intent.profile_generation, 0);
     assert_eq!(
         intent.expected.iter().map(|v| v.kind).collect::<Vec<_>>(),
-        vec![100, 101, 102]
+        vec![100, 101, 102, 114]
     );
     assert_eq!(challenge.recipient, intent.requester);
     assert_eq!(challenge.maximum_duration_ms, 5000);
@@ -515,7 +515,14 @@ fn valid_record_is_returned_only_after_certified_floor_persistence() {
     drop(f.store);
     let reopened = Store::open(&f.directory.0, descriptor).unwrap();
     assert_eq!(reopened.prefix(), result.prefix());
-    assert_eq!(reopened.generations().len(), 3);
+    assert_eq!(
+        reopened
+            .generations()
+            .iter()
+            .map(|v| v.kind)
+            .collect::<Vec<_>>(),
+        vec![100, 101, 102, 114]
+    );
 }
 #[test]
 fn complete_used_dependencies_and_exact_record_schema_are_required_even_with_a_quorum() {

@@ -170,7 +170,9 @@ bash Tools/Check.sh
 
 It checks formatting, Clippy and release tests. It uses a private persistent
 directory under the user's state home. Set `HYPERNET_TEST_DIRECTORY` to another
-private persistent directory when needed. Test state must not become live state.
+private persistent directory when needed. Use an absolute canonical path with
+ancestors protected from replacement by other users. The gate rejects paths
+too long for its Unix socket fixtures before building. Test state must not become live state.
 The gate is not an installation step.
 
 Maintainers can assemble an offline archive from a locked native release build:

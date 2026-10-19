@@ -836,12 +836,12 @@ impl<'a> GovernancePrepared<'a> {
         } else {
             Vec::new()
         };
-        let permit = store.accept(verified, session, clock()?, candidate.not_before)?;
+        let permit = store.accept_with_clock(verified, session, clock, candidate.not_before)?;
         remaining(self.deadline)?;
-        permit.perform(
+        permit.perform_with_clock(
             store,
             session,
-            clock()?,
+            clock,
             1,
             |r| {
                 ensure!(

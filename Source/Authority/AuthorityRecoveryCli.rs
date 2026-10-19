@@ -142,7 +142,7 @@ struct Ledger {
 }
 struct Store {
     directory: File,
-    _lock: File,
+    _lock: files::ProfileLock,
     state: Ledger,
 }
 #[cfg(test)]

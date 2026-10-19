@@ -680,14 +680,13 @@ impl Prepared<'_> {
             },
         )?;
         let prefix = verified.point().prefix().clone();
-        let permit = store.accept(verified, session, clock()?, decision.not_before_ms)?;
+        let permit = store.accept_with_clock(verified, session, clock, decision.not_before_ms)?;
         self.remaining()?;
         self.context.current(store)?;
-        let health = clock()?;
-        permit.perform(
+        permit.perform_with_clock(
             store,
             session,
-            health,
+            clock,
             1,
             |restrictions| {
                 ensure!(

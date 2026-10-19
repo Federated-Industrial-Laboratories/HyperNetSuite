@@ -240,12 +240,12 @@ pub fn propose_local(
             bail!("Reconfiguration refused with code {code}");
         }
         let prefix = verified.point().prefix().clone();
-        let permit = store.accept(verified, session, clock()?, 0)?;
+        let permit = store.accept_with_clock(verified, session, &mut clock, 0)?;
         remaining(deadline)?;
-        permit.perform(
+        permit.perform_with_clock(
             store,
             session,
-            clock()?,
+            &mut clock,
             1,
             |r| {
                 ensure!(

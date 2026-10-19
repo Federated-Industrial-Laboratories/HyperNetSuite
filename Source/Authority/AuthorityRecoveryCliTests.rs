@@ -47,13 +47,14 @@ fn floor(dir: &Directory, bootstrap: &[u8]) -> PathBuf {
     std::fs::create_dir(&path).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     let boot = crate::authority_challenge::boot_time_ms().unwrap();
-    let clock = crate::authority_challenge::ClockHealth::new(
-        time().unwrap() * 1000,
-        boot,
-        boot + 30000,
-        100,
-    )
-    .unwrap();
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .try_into()
+        .unwrap();
+    let clock =
+        crate::authority_challenge::ClockHealth::new(wall, boot, boot + 30000, 100).unwrap();
     crate::authority_floor::Store::initialise(
         &path,
         checked.descriptor().clone(),

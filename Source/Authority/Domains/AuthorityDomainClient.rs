@@ -757,12 +757,7 @@ impl<'a> Prepared<'a> {
         let expires_at_ms = verified.executed.expires_at_ms;
         remaining(self.deadline)?;
         let permit = store
-            .accept(
-                verified,
-                session,
-                clock().context("domain acceptance clock unavailable")?,
-                0,
-            )
+            .accept_with_clock(verified, session, clock, 0)
             .context("domain durable authority acceptance failed")?;
         let deadline = self.deadline;
         let receipt = wire::encode(&a(vec![
@@ -777,10 +772,10 @@ impl<'a> Prepared<'a> {
             b(&reply.node),
         ]))?;
         let result = permit
-            .perform(
+            .perform_with_clock(
                 store,
                 session,
-                clock().context("domain result publication clock unavailable")?,
+                clock,
                 1,
                 |r| {
                     ensure!(*r == Restrictions::default(), "domain restrictions changed");

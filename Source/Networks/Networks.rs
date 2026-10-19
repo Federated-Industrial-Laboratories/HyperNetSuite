@@ -172,7 +172,7 @@ fn identity() -> Identity {
 fn output(path: &Path, bytes: &[u8]) -> Result<()> {
     files::Destination::open(path)?.publish(bytes)
 }
-fn profile_lock(path: &Path) -> Result<std::fs::File> {
+fn profile_lock(path: &Path) -> Result<files::ProfileLock> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
