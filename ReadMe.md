@@ -1,36 +1,48 @@
-<h1 align="center">HyperNetSuite</h1>
+<p align="center">
+  <img src=".github/assets/header.svg" width="720" alt="HyperNetSuite. Native clients for HyperNet. Graphite wordmark and connected nodes on a silver engineering grid.">
+</p>
+
 <p align="center">Native graphical, terminal and command-line clients for HyperNet.</p>
-<p align="center"><a href="Documentation/ReadMe.md">Documentation</a> | <a href="Documentation/Installation.md">Installation</a> | <a href="Documentation/Security.md">Security</a> | <a href="https://github.com/Federated-Industrial-Laboratories/HyperNet">HyperNet infrastructure</a></p>
 
-Read and publish reviewed Pages, exchange encrypted Mail and files, and use
-explicitly approved services on a selected HyperNet network. HyperNetSuite is
-independently installed from HyperNet infrastructure. Local Page preview works
-without a network, account or hosting service.
+<p align="center">
+  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.8.0">Linux 0.8.0</a> |
+  <a href="Documentation/Installation.md">Install</a> |
+  <a href="Documentation/ReadMe.md">Documentation</a> |
+  <a href="Documentation/Security.md">Security</a> |
+  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNet">HyperNet infrastructure</a>
+</p>
 
-The native Linux browser supports Page navigation, explicit media reveal and
-reviewed Forms. Separate native Mail and Transfers windows provide encrypted
-messages, reviewed file offers and resumable downloads. Publishing and
-administration also remain available through the command line.
-Terminal browsing and plain output remain available without a graphical desktop.
+HyperNetSuite is the desktop and terminal companion to HyperNet. Browse and
+publish reviewed Pages, exchange encrypted mail and files, and use services your
+network has approved. You can install it without running a HyperNet host, and
+try local Page previews without a network or account.
 
-**In development.** The current package version is 0.7.5, with the evolving
-0.8.0 network contracts documented separately. This is not a qualified production
-Internet deployment. Native x86_64 GNU/Linux is the current platform;
-AArch64, Windows and macOS remain unqualified. See
-[supported platforms](Documentation/SupportedPlatforms.md).
+The Linux browser opens Pages in a native window, lets you choose when to reveal
+images, and shows a Form's contents before you send it. Separate Mail and
+Transfers windows handle messages, file offers and resumable downloads. The
+command line provides publishing and administration; terminal browsing and
+plain output work without a graphical desktop.
+
+> [!NOTE]
+> **Linux 0.8.0** is qualified on native Ubuntu x86_64 within the documented limits.
+> Other Linux distributions need compatible runtime libraries and graphics
+> support. AArch64, Windows and macOS remain unqualified; SELinux-enabled
+> deployment is also unqualified. This release has no independent security
+> certification. See the [release notes](Documentation/ReleaseNotes.md) and
+> [supported platforms](Documentation/SupportedPlatforms.md).
 
 ## Features
 
 | Capability | What you can do |
 | --- | --- |
-| Pages and browsing | Author inert HyperPages, review exact revisions and navigate verified publications in native or terminal views. |
-| Media and layout | Use panels, rows, scroll boxes and bounded local motion; reveal approved images explicitly. |
+| Pages and browsing | Write Pages without scripts, review exact revisions and browse verified publications in native or terminal views. |
+| Media and layout | Use panels, rows, scroll boxes and optional decorative motion; choose when to reveal approved images. |
 | Search | Query a selected network or search an explicitly retained encrypted local catalogue. |
-| Sealed Pages | Publish encrypted content for independently accepted recipient devices through the CLI. |
-| Private Mail and Forms | Exchange encrypted messages and review typed submissions before sending. |
-| Transfers and services | Accept exact file offers and approve separately consented OpenSSH sessions. |
-| Federation and archives | Share reviewed Pages between agreed networks and restore consented encrypted content archives. |
-| Administration | Inspect authority, manage scoped grants and accept explicit policy or recovery changes. |
+| Sealed Pages | Publish encrypted content for trusted recipient devices through the command line. |
+| Private Mail and Forms | Exchange encrypted messages and review Form submissions before sending. |
+| Transfers and services | Review file offers before accepting them and approve separately consented OpenSSH sessions. |
+| Federation and archives | Share reviewed Pages between agreed networks and restore authorised encrypted content archives. |
+| Administration | Inspect network authority, manage permissions and approve policy or recovery changes. |
 
 Page content cannot run scripts, choose local credentials or submit a Form
 automatically. Membership alone grants no hosting, review or confidential-content
@@ -54,7 +66,14 @@ Python is not needed to run the client binary. It is needed for package tools
 and the optional example generator. The [installation guide](Documentation/Installation.md)
 covers graphical dependencies, a terminal-only build and signed offline packages.
 
-## Install from source
+## Install
+
+Download the [Linux 0.8.0 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.8.0)
+and follow [signed offline installation](Documentation/Installation.md#signed-offline-package).
+Authenticate the publisher independently and follow the required update-trust
+procedure before installing a package.
+
+### Build from source
 
 From an authenticated checkout with the build prerequisites installed:
 
@@ -68,10 +87,6 @@ The installer builds the locked release and copies the executable, manuals and
 examples into the chosen prefix. It needs no elevation and starts no services.
 Keep private profiles, keys, vaults and downloads outside that prefix. Installed
 manuals start at `Documentation/HyperNetSuite/ReadMe.md` within the prefix.
-
-For an independently authenticated signed package, follow
-[offline installation](Documentation/Installation.md#signed-offline-package)
-and its required update-trust procedure. No public release download is assumed.
 
 ## Try a local Page
 
@@ -111,7 +126,8 @@ the client never silently selects a direct connection.
 
 ## Documentation
 
-The [documentation index](Documentation/ReadMe.md) separates reader and author
+The [release notes](Documentation/ReleaseNotes.md) describe the 0.8.0 scope and
+known limits. The [documentation index](Documentation/ReadMe.md) separates reader and author
 guides, operator workflows and protocol references. Start with
 [installation](Documentation/Installation.md), [client use](Documentation/Usage.md)
 and the viewer of your choice.

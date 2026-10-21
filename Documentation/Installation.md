@@ -2,6 +2,8 @@
 
 [Documentation](ReadMe.md) | [Project README](../ReadMe.md)
 
+For public packages, start with the [Linux 0.8.0 download and installation steps](ReleaseNotes.md).
+
 HyperNetSuite has an independent source tree, binary and package. It does not
 require a HyperNet checkout. Installation never starts a service or creates an
 identity. Keep profiles, keys, vaults, downloads and backups outside the software

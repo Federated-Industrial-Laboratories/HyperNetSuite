@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True
 import PackageTrust
 
 PRODUCT = 'HyperNetSuite'
-VERSION = '0.7.5'
+VERSION = '0.8.0'
 NAMESPACE = 'HyperNetSuiteBundle1'
 PRINCIPAL = 'HyperNetSuitePublisher'
 MAX_ARCHIVE = 512 * 1024 * 1024
@@ -105,7 +105,7 @@ def architecture():
 
 
 def allowed_path(name):
-    if name in ('Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite'):
+    if name in ('.github/assets/header.svg', 'Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite'):
         return True
     return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Examples/[A-Z][A-Za-z0-9]*\.(py|png|svg|md|txt)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics|NetworkProvisioning)\.py)', name))
 
@@ -420,9 +420,10 @@ def create(args):
         metadata = binary_metadata(snapshot)
         snapshot.chmod(0o700)
         runtime_version = run([str(snapshot), '--version']).decode('ascii').strip()
-        require(runtime_version == 'HyperNetSuite 0.7.5', 'Binary does not match the current package contract')
+        require(runtime_version == f'{PRODUCT} {VERSION}', 'Binary does not match the current package contract')
         runtime_version = runtime_version.split()[1]
         files = {'Bin/HyperNetSuite': snapshot, 'Licence.txt': repository / 'Licence.txt', 'ReadMe.md': repository / 'ReadMe.md'}
+        files['.github/assets/header.svg'] = repository / '.github/assets/header.svg'
         for folder in ('Tools', 'Documentation', 'Tests', 'Examples'):
             for path in sorted((repository / folder).iterdir()):
                 name = str(path.relative_to(repository))

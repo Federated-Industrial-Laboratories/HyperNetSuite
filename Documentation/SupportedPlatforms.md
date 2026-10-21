@@ -2,7 +2,7 @@
 
 [Documentation](ReadMe.md) | [Project README](../ReadMe.md)
 
-The initial client package profile is native GNU/Linux on x86_64. AArch64 is an
+Release 0.8.0 is qualified on native Ubuntu 24.04 x86_64 with GNU libc 2.39. AArch64 is an
 explicit pending qualification target. Cross compilation and emulation are not
 native runtime evidence. Direct Windows and macOS support is not currently
 qualified. The protocols and separate client interface remain open to other
@@ -60,6 +60,6 @@ transfers and service functionality have separate prerequisites documented in
 their respective manuals. Native client qualification does not establish node
 confinement, authority quorum health, Internet reachability or SSH availability.
 
-No public release or production Internet qualification is asserted. A deployment
+This Linux release does not establish production Internet qualification. A deployment
 still needs an operator-managed update policy, key custody, backups and an
 independent security assessment appropriate to its exposure.
