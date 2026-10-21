@@ -11,10 +11,11 @@ cd -- "$(dirname -- "$0")/.."
 cargo build --locked --release
 Target=${CARGO_TARGET_DIR:-target}
 Documents="$Prefix/Documentation/HyperNetSuite"
-install -d -m 755 -- "$Prefix/Bin" "$Documents/Documentation"
+install -d -m 755 -- "$Prefix/Bin" "$Documents/Documentation" "$Documents/.github/assets"
 install -m 755 -- "$Target/release/HyperNetSuite" "$Prefix/Bin/HyperNetSuite"
 install -m 644 -- Licence.txt "$Documents/"
-install -m 644 -- Documentation/*.md Documentation/*.json Documentation/ThirdPartyNotices.txt "$Documents/Documentation/"
+install -m 644 -- Documentation/*.md Documentation/*.json Documentation/*.txt "$Documents/Documentation/"
+install -m 644 -- .github/assets/header.svg "$Documents/.github/assets/"
 install -d -m 755 -- "$Prefix/Examples"
 install -m 644 -- Examples/*.py Examples/*.png Examples/*.svg Examples/*.md Examples/*.txt "$Prefix/Examples/"
 sed 's#](Examples/#](../../Examples/#g' ReadMe.md > "$Documents/ReadMe.md"

@@ -39,7 +39,7 @@ class BundleTests(unittest.TestCase):
         cls.policy = cls.root / 'Target.json'
         cls.call('Authorise', '--archive', str(cls.archive), '--signature', str(cls.archive) + '.sig',
                  '--public-key', str(cls.key) + '.pub', '--signing-key', str(cls.key),
-                 '--output', str(cls.policy), '--version-floor', '0.7.5',
+                 '--output', str(cls.policy), '--version-floor', '0.8.0',
                  '--state-contract', 'HyperNet080Client1', '--root-generation', '1',
                  '--sequence', '1', '--not-before', str(int(time.time()) - 1),
                  '--expires', str(int(time.time()) + 3600))
@@ -71,7 +71,7 @@ class BundleTests(unittest.TestCase):
         trust = self.prefix().with_name(self.prefix().name + 'Trust')
         self.call('TrustInit', '--trust-directory', str(trust), '--public-key', str(self.key) + '.pub',
                   '--root-pin', PackageTrust.pin(Bundle.public_key(str(self.key) + '.pub')),
-                  '--root-generation', '1', '--version-floor', '0.7.5', '--state-contract', 'HyperNet080Client1')
+                  '--root-generation', '1', '--version-floor', '0.8.0', '--state-contract', 'HyperNet080Client1')
         self.call('Install', '--archive', str(self.archive), '--signature', str(self.archive) + '.sig',
                   '--public-key', str(self.key) + '.pub', '--prefix', str(self.prefix()),
                   '--trust-directory', str(trust), '--policy', str(self.policy),
@@ -184,7 +184,7 @@ class BundleTests(unittest.TestCase):
         trust = self.prefix().with_name(self.prefix().name + 'Trust')
         self.call('TrustInit', '--trust-directory', str(trust), '--public-key', str(self.key) + '.pub',
                   '--root-pin', PackageTrust.pin(Bundle.public_key(str(self.key) + '.pub')),
-                  '--root-generation', '1', '--version-floor', '0.7.5', '--state-contract', 'HyperNet080Client1')
+                  '--root-generation', '1', '--version-floor', '0.8.0', '--state-contract', 'HyperNet080Client1')
         args = argparse.Namespace(archive=self.archive, signature=str(self.archive) + '.sig',
             public_key=str(self.key) + '.pub', prefix=self.prefix(), trust_directory=trust,
             policy=self.policy, policy_signature=str(self.policy) + '.sig', ssh_keygen='/usr/bin/ssh-keygen')
@@ -193,7 +193,11 @@ class BundleTests(unittest.TestCase):
                 Bundle.install(args)
         self.assertFalse(self.prefix().exists())
         self.assertEqual(json.loads((trust / 'Trust.json').read_bytes())['sequence'], 1)
-        Bundle.install(args)
+        previous_umask = os.umask(0o022)
+        try:
+            Bundle.install(args)
+        finally:
+            os.umask(previous_umask)
         self.lifecycle('VerifyInstalled')
         self.lifecycle('Remove')
 
@@ -235,16 +239,16 @@ class OfflineUpdates(unittest.TestCase):
         self.contract = PackageTrust.CONTRACTS[Bundle.PRODUCT]
         self.init = argparse.Namespace(command='TrustInit', trust_directory=self.trust,
             public_key=str(self.key) + '.pub', root_pin=PackageTrust.pin(Bundle.public_key(str(self.key) + '.pub')),
-            root_generation=1, version_floor='0.7.5', state_contract=self.contract)
+            root_generation=1, version_floor='0.8.0', state_contract=self.contract)
         PackageTrust.trust_command(Bundle, self.init)
         self.archive = self.root / 'Archive.tar'
         self.archive.write_bytes(b'Exact synthetic archive identity')
-        self.manifest = {'version': '0.7.5', 'architecture': Bundle.architecture(),
+        self.manifest = {'version': '0.8.0', 'architecture': Bundle.architecture(),
                          'files': [{'path': 'Tools/PackageTrust.py'}]}
         self.original = Bundle.encode(self.manifest)
         self.now = int(time.time())
         self.target = {'format': 1, 'product': Bundle.PRODUCT, 'architecture': Bundle.architecture(),
-            'version': '0.7.5', 'versionFloor': '0.7.5', 'stateContract': self.contract,
+            'version': '0.8.0', 'versionFloor': '0.8.0', 'stateContract': self.contract,
             'rootGeneration': 1, 'rootPin': self.init.root_pin, 'sequence': 1,
             'notBefore': self.now - 1, 'expires': self.now + 60,
             'archiveSha256': Bundle.digest_file(self.archive), 'archiveBytes': self.archive.stat().st_size,
@@ -292,7 +296,7 @@ class OfflineUpdates(unittest.TestCase):
                         {'stateContract': 'Other'}, {'product': 'Other'},
                         {'architecture': 'Other'}, {'sequence': True},
                         {'sequence': 1 << 63}, {'archiveBytes': True},
-                        {'versionFloor': '0.7.6'}, {'archiveSha256': '0' * 64}):
+                        {'versionFloor': '0.8.1'}, {'archiveSha256': '0' * 64}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.accept(self.policy(changes))
         self.assertEqual(self.state()['sequence'], 0)
