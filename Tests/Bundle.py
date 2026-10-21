@@ -193,7 +193,11 @@ class BundleTests(unittest.TestCase):
                 Bundle.install(args)
         self.assertFalse(self.prefix().exists())
         self.assertEqual(json.loads((trust / 'Trust.json').read_bytes())['sequence'], 1)
-        Bundle.install(args)
+        previous_umask = os.umask(0o022)
+        try:
+            Bundle.install(args)
+        finally:
+            os.umask(previous_umask)
         self.lifecycle('VerifyInstalled')
         self.lifecycle('Remove')
 
