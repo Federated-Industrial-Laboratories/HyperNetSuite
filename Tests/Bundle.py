@@ -19,6 +19,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / 'Tools/Bundle.py'
 BINARY = None
+SDK_WHEEL = None
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / 'Tools'))
 import Bundle
@@ -35,7 +36,7 @@ class BundleTests(unittest.TestCase):
         for key in (cls.key, cls.other):
             subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
         cls.archive = cls.root / 'Suite.tar'
-        cls.call('Create', '--binary', str(BINARY), '--output', str(cls.archive), '--signing-key', str(cls.key))
+        cls.call('Create', '--binary', str(BINARY), '--streams-sdk-wheel', str(SDK_WHEEL), '--output', str(cls.archive), '--signing-key', str(cls.key))
         cls.policy = cls.root / 'Target.json'
         cls.call('Authorise', '--archive', str(cls.archive), '--signature', str(cls.archive) + '.sig',
                  '--public-key', str(cls.key) + '.pub', '--signing-key', str(cls.key),
@@ -352,7 +353,9 @@ class OfflineUpdates(unittest.TestCase):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True)
+    parser.add_argument('--streams-sdk-wheel', required=True)
     parser.add_argument('tests', nargs='*', help='Optional unittest case names')
     args = parser.parse_args()
     BINARY = Path(args.binary).resolve(strict=True)
+    SDK_WHEEL = Path(args.streams_sdk_wheel).resolve(strict=True)
     unittest.main(argv=[sys.argv[0], *args.tests], verbosity=2)

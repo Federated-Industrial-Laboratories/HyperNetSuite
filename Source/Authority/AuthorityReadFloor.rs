@@ -2,6 +2,25 @@
 // Fresh reads advance witnessed authority without changing the ordinary effect tracker.
 use super::*;
 use crate::authority_read::VerifiedRead;
+
+/// Only a fully verified permitted read can produce this recoverable diagnostic.
+#[derive(Debug)]
+pub(crate) struct ReadExpired;
+impl std::fmt::Display for ReadExpired {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str("fresh read proof expired")
+    }
+}
+impl std::error::Error for ReadExpired {}
+fn read_expiry(error: anyhow::Error) -> anyhow::Error {
+    if error.is::<crate::authority_challenge::ChallengeExpired>()
+        || error.is::<crate::authority_challenge::ValidityExpired>()
+    {
+        error.context(ReadExpired)
+    } else {
+        error
+    }
+}
 impl Store {
     pub fn attach_read_history(
         &self,
@@ -130,6 +149,7 @@ impl Store {
         );
         let now = session
             .check_read(&result, not_before, clock()?)
+            .map_err(read_expiry)
             .context("fresh read initial validation failed")?;
         ensure!(
             now.wall_ms >= self.stored.wall_floor_ms,
@@ -140,11 +160,13 @@ impl Store {
         // with current health; its original authority deadline remains unchanged.
         let consumed = session
             .consume_read(&result, not_before, clock()?)
+            .map_err(read_expiry)
             .context("fresh read validation after persistence failed")?;
         let output = publish(&result.result, self)?;
         self.unchanged()?;
         session
             .finish_consumption(consumed, clock()?)
+            .map_err(read_expiry)
             .context("fresh read final validation failed")?;
         Ok(output)
     }

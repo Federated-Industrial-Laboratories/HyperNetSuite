@@ -466,3 +466,211 @@ fn fresh_read_resamples_signed_health_after_persistence_without_extending_author
         assert!(f.store.resume_ordinary().unwrap().is_none());
     }
 }
+
+#[test]
+fn preparation_reacquires_only_the_expired_policy_read_after_persisting_its_floor() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let mut f = Fixture::new();
+    let socket = f.directory.0.join("ExpiredPolicy.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let floor_path = f.directory.0.join("AuthorityFloor.json");
+    let initial: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&floor_path).unwrap()).unwrap();
+    let sequence = initial["sequence"].as_u64().unwrap();
+    let metadata = f
+        .store
+        .stream_metadata()
+        .unwrap()
+        .unwrap()
+        .canonical()
+        .to_vec();
+    let (p, r) = policy::current(&f.bootstrap, &f.store).unwrap();
+    let scope = f.store.descriptor().scope();
+    let refs = [100, 114]
+        .into_iter()
+        .zip([&p, &r])
+        .map(|(kind, bytes)| {
+            crate::authority_policies::record_reference(
+                bytes,
+                scope.network,
+                scope.incarnation,
+                kind,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let value = a(vec![
+        V::Uint(201),
+        V::Uint(1),
+        V::Text("AuthorityPolicyContext".into()),
+        a(refs.iter().map(version_value).collect()),
+        a(vec![b(&p), b(&r)]),
+    ]);
+    let node = f.status_node.clone();
+    let state = *f.store.prefix().policy_state();
+    let at = f.current.observe().unwrap();
+    let later = ClockHealth::new(
+        at.wall_ms + 2900,
+        at.boot_ms + 2900,
+        at.boot_ms + 30000,
+        100,
+    )
+    .unwrap()
+    .frozen();
+    let count = Arc::new(AtomicUsize::new(0));
+    let requests = count.clone();
+    let server_floor = floor_path.clone();
+    let server = std::thread::spawn(move || {
+        let mut first = None;
+        for attempt in 0..2 {
+            let (stream, bytes) = receive_control(&listener);
+            let (request, challenge) = submitted(&bytes);
+            assert!(matches!(
+                read::Request::from_signed(&request).unwrap().query,
+                Query::PolicyContext
+            ));
+            if attempt == 0 {
+                first = Some((request.clone(), challenge.clone()));
+            } else {
+                let (old_request, old_challenge) = first.as_ref().unwrap();
+                assert_ne!(&request, old_request);
+                assert_ne!(&challenge, old_challenge);
+                let retained: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&server_floor).unwrap()).unwrap();
+                assert!(retained["sequence"].as_u64().unwrap() > sequence);
+                assert!(
+                    retained["tracker"]["ordinary"].is_null()
+                        || retained["tracker"]["ordinary"]["complete"].as_bool() == Some(true)
+                );
+            }
+            requests.fetch_add(1, Ordering::SeqCst);
+            send_control(
+                stream,
+                &response(
+                    &request,
+                    &challenge,
+                    &node,
+                    state,
+                    value.clone(),
+                    at.wall_ms + if attempt == 0 { 0 } else { 2900 },
+                    u64::MAX,
+                    0,
+                ),
+            );
+        }
+    });
+    let mut first = true;
+    let mut expired_observation = false;
+    let mut budget = RetryBudget::new(
+        crate::authority_challenge::boot_time_ms().unwrap() + 30000,
+        || false,
+    );
+    policy::refresh_before_request_with_budget(
+        &f.bootstrap,
+        &socket,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        || {
+            if first {
+                first = false;
+                return Ok(f.issued);
+            }
+            let retained: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&floor_path)?).unwrap();
+            if retained["sequence"].as_u64().unwrap() > sequence && !expired_observation {
+                expired_observation = true;
+                return Err(crate::authority_clock::ObservationExpired.into());
+            }
+            Ok(if retained["sequence"].as_u64().unwrap() > sequence {
+                later
+            } else {
+                f.current
+            })
+        },
+        &mut budget,
+    )
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    assert!(expired_observation);
+    assert!(budget.reissued);
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert_eq!(
+        f.store.stream_metadata().unwrap().unwrap().canonical(),
+        metadata
+    );
+    let retained: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&floor_path).unwrap()).unwrap();
+    assert_eq!(retained["sequence"].as_u64().unwrap(), sequence + 2);
+}
+
+#[test]
+fn preparation_read_reissue_is_single_bounded_and_never_accepts_other_failures() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let deadline = crate::authority_challenge::boot_time_ms().unwrap() + 30000;
+    let mut budget = RetryBudget::new(deadline, || false);
+    let mut calls = 0;
+    let result: Result<()> = budget.run(|_| {
+        calls += 1;
+        Err(crate::authority_floor::ReadExpired.into())
+    });
+    assert!(
+        result
+            .unwrap_err()
+            .is::<crate::authority_floor::ReadExpired>()
+    );
+    assert_eq!(calls, 2);
+    let result: Result<()> = budget.run(|_| {
+        calls += 1;
+        Err(crate::authority_floor::ReadExpired.into())
+    });
+    assert!(result.is_err());
+    assert_eq!(calls, 3);
+    for message in [
+        "clock moved backwards",
+        "challenge context invalid",
+        "authority refused",
+    ] {
+        let mut budget = RetryBudget::new(deadline, || false);
+        let mut calls = 0;
+        let result: Result<()> = budget.run(|_| {
+            calls += 1;
+            anyhow::bail!(message)
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+        assert!(!budget.reissued);
+    }
+    let mut budget = RetryBudget::new(
+        crate::authority_challenge::boot_time_ms().unwrap() + 1000,
+        || false,
+    );
+    let mut calls = 0;
+    let result: Result<()> = budget.run(|_| {
+        calls += 1;
+        Err(crate::authority_floor::ReadExpired.into())
+    });
+    assert!(result.is_err());
+    assert_eq!(calls, 1);
+    assert!(!budget.reissued);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let observed = cancelled.clone();
+    let mut budget = RetryBudget::new(deadline, move || observed.load(Ordering::SeqCst));
+    let mut calls = 0;
+    let result: Result<()> = budget.run(|_| {
+        calls += 1;
+        cancelled.store(true, Ordering::SeqCst);
+        Err(crate::authority_floor::ReadExpired.into())
+    });
+    assert!(result.is_err());
+    assert_eq!(calls, 1);
+    assert!(!budget.reissued);
+}

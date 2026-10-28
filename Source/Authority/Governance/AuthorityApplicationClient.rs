@@ -17,6 +17,10 @@ pub enum Request {
         parent: VersionRef,
         accepted: Vec<u8>,
     },
+    Renew {
+        previous: Vec<u8>,
+        accepted: Vec<u8>,
+    },
     Get([u8; 32]),
     List,
     Withdraw(VersionRef),
@@ -27,6 +31,7 @@ impl Request {
             Self::Context(_) => CONTEXT,
             Self::Delegate { .. } => "AuthorityDelegateGrant",
             Self::Register { .. } => "AuthorityApplicationRegister",
+            Self::Renew { .. } => "AuthorityApplicationRenew",
             Self::Get(_) => "AuthorityApplicationGet",
             Self::List => "AuthorityApplicationList",
             Self::Withdraw(_) => "AuthorityApplicationWithdraw",
@@ -43,13 +48,27 @@ impl Request {
                     .application,
                 1,
             ),
+            Self::Renew { accepted, .. } => (
+                applications::Renewal::parse(accepted, scope.network, scope.incarnation, true)?
+                    .admission
+                    .id,
+                1,
+            ),
             Self::Get(key) => (*key, 0),
             Self::List => (requester, 0),
             Self::Withdraw(reference) => (reference.id, 1),
         })
     }
     fn parameters(&self, store: &Store, expected: &[VersionRef]) -> Result<Vec<u8>> {
-        let mut p = vec![V::Uint(200), V::Uint(1), V::Text(self.action().into())];
+        let mut p = vec![
+            V::Uint(200),
+            V::Uint(if matches!(self, Self::Renew { .. }) {
+                2
+            } else {
+                1
+            }),
+            V::Text(self.action().into()),
+        ];
         let snapshot = || {
             a(vec![
                 point(store.prefix()),
@@ -72,6 +91,7 @@ impl Request {
             Self::Register { parent, accepted } => {
                 p.extend([version_value(parent), b(accepted), snapshot()])
             }
+            Self::Renew { previous, accepted } => p.extend([b(previous), b(accepted), snapshot()]),
             Self::Get(application) => p.extend([
                 b(application),
                 a(store.generations().iter().map(version_value).collect()),
@@ -112,6 +132,9 @@ impl Request {
             }
             Self::Register { parent, accepted } => {
                 f.len() == 6 && f[3] == version_value(parent) && f[4] == b(accepted)
+            }
+            Self::Renew { previous, accepted } => {
+                f.len() == 6 && f[3] == b(previous) && f[4] == b(accepted)
             }
             Self::Get(key) => f.len() == 5 && f[3] == b(key),
             Self::List => f.len() == 5 && f[3] == b(&requester),
@@ -174,7 +197,7 @@ impl<'a> Prepared<'a> {
             crate::authority_inspection::policy::require_accepted(bootstrap, store)?;
         }
         store.require_requester(signer.verifying_key().to_bytes())?;
-        let source = if let Some(context) = context {
+        let mut source = if let Some(context) = context {
             context.current(store)?;
             merged(bootstrap, &context.entries)?
         } else if let Request::Withdraw(reference) = &request {
@@ -182,6 +205,29 @@ impl<'a> Prepared<'a> {
         } else {
             Vec::new()
         };
+        if let Request::Renew { previous, .. } = &request {
+            let prior = applications::record_reference(previous)?;
+            ensure!(
+                store.generations().contains(&prior)
+                    || store
+                        .resume_ordinary()?
+                        .is_some_and(|pending| Intent::from_signed(pending.signed()).is_ok_and(
+                            |intent| request
+                                .matches_pending(
+                                    &intent,
+                                    store.descriptor().scope(),
+                                    store.requester()
+                                )
+                                .is_ok()
+                        )),
+                "renewal predecessor is not authenticated by retained floor"
+            );
+            source.retain(|r| {
+                applications::record_reference(r).is_ok_and(|v| v.index() != prior.index())
+            });
+            source.push(previous.clone());
+            membership::sort_records(&mut source)?;
+        }
         if context.is_some() && !matches!(request, Request::Withdraw(_)) {
             crate::authority_inspection::policy::require_records_accepted(
                 bootstrap, store, &source,
@@ -200,7 +246,10 @@ impl<'a> Prepared<'a> {
             pending.signed().to_vec()
         } else {
             let (resource, revision) = request.resource(scope, store.requester())?;
-            if matches!(request, Request::Delegate { .. } | Request::Register { .. }) {
+            if matches!(
+                request,
+                Request::Delegate { .. } | Request::Register { .. } | Request::Renew { .. }
+            ) {
                 ensure!(
                     context.is_some_and(|c| c.entries.len() < 64),
                     "selected mutation cache cannot fit its created record"
@@ -240,7 +289,7 @@ impl<'a> Prepared<'a> {
                     );
                     decision.dependencies
                 }
-                Request::Register { .. } | Request::Withdraw(_) => {
+                Request::Register { .. } | Request::Renew { .. } | Request::Withdraw(_) => {
                     let decision = Operation::parse(&probe)?.prepare(
                         &source,
                         &Reservations(bootstrap.reservations().to_vec()),
@@ -417,6 +466,41 @@ impl<'a> Prepared<'a> {
                     entries,
                 });
                 refs
+            }
+            Request::Renew { .. } => {
+                let operation = Operation::parse(intent)?;
+                let created = operation.derive(intent)?.context("renewal has no record")?;
+                let reference = applications::record_reference(&created)?;
+                let creation_height = record(&value, 201, 6)?[5].uint()?;
+                ensure!(
+                    creation_height > operation.snapshot().unwrap().height
+                        && creation_height <= executed.height,
+                    "renewal creation height differs from causal floor"
+                );
+                let replay = executed.height > creation_height;
+                let mut entries = self.source.clone();
+                if replay {
+                    entries.retain(|r| {
+                        applications::record_reference(r)
+                            .is_ok_and(|v| v.index() != reference.index())
+                    });
+                    entries.push(created.clone());
+                    membership::sort_records(&mut entries)?;
+                }
+                let decision = operation.authorise(
+                    &entries,
+                    &reservations,
+                    intent,
+                    executed.evaluated_at_ms,
+                    replay,
+                )?;
+                ensure!(
+                    decision.code == 0
+                        && decision.value == a(f[..5].to_vec())
+                        && executed.expires_at_ms <= decision.expires_ms,
+                    "renewal result differs from exact consent"
+                );
+                parse_versions(&f[3])?
             }
             _ => {
                 let operation = Operation::parse(intent)?;
@@ -651,6 +735,23 @@ impl<'a> Prepared<'a> {
                         }
                         save_state(accepted_store, reference.id, &entries)?;
                     }
+                    Request::Renew { previous, .. } => {
+                        let prior = applications::Registration::parse(
+                            previous,
+                            self.descriptor.scope().network,
+                            self.descriptor.scope().incarnation,
+                        )?;
+                        let created = record(&candidate.value, 201, 6)?[4].bytes()?.to_vec();
+                        let grant = self
+                            .source
+                            .iter()
+                            .find(|r| wire::digest(r) == prior.grant.digest)
+                            .context("renewal cache lacks immutable grant")?
+                            .clone();
+                        let mut entries = vec![grant, created];
+                        membership::sort_records(&mut entries)?;
+                        save_state(accepted_store, prior.application, &entries)?;
+                    }
                     Request::List => save_list(accepted_store, &candidate.value)?,
                     _ => {}
                 }
@@ -768,4 +869,18 @@ pub(super) fn exchange(
         clock,
     )?;
     Ok((reply, AncestryEvidence::from_shared(evidence)))
+}
+
+pub fn renewal_target(store: &Store, application: [u8; 32]) -> Result<Vec<u8>> {
+    let entries = load_state(store, application)?;
+    ensure!(
+        !entries
+            .iter()
+            .any(|r| applications::record_reference(r).is_ok_and(|v| v.kind == 128)),
+        "withdrawn application cannot be renewed"
+    );
+    entries
+        .into_iter()
+        .find(|r| applications::record_reference(r).is_ok_and(|v| v.kind == 127))
+        .context("application admission is missing")
 }

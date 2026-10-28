@@ -46,7 +46,7 @@ pub enum Command {
         #[arg(long)]
         service: String,
     },
-    /// Issue a bounded voucher for a separate relay possession key under a current application capability.
+    /// Issue a finite voucher or renew its stable identifier after the old admission expires.
     Issue {
         #[command(flatten)]
         online: Online,
@@ -302,6 +302,31 @@ pub fn run(command: Command) -> Result<()> {
                         service: id(&destination)?,
                     },
                 )?;
+            }
+            if c.store.resume_ordinary()?.is_none() {
+                let cache = Cache::load(&c.bootstrap, &c.store)?;
+                let prior = cache.state.records.get(&(166, id(&identifier)?)).cloned();
+                let prior = if prior.is_some() {
+                    prior
+                } else {
+                    let template: crate::route_profile::Profile = serde_json::from_slice(
+                        &files::read_single(&route_template, 600000, false)?,
+                    )?;
+                    domain::Record::parse(&template.voucher, template.network, template.incarnation)
+                        .ok()
+                        .filter(|r| {
+                            r.reference.kind == 166
+                                && r.reference.id == id(&identifier).unwrap_or([0; 32])
+                        })
+                };
+                if let Some(previous) = prior {
+                    c.execute(
+                        Some(grant.clone()),
+                        routes::Command::RenewContext {
+                            voucher: previous.reference,
+                        },
+                    )?;
+                }
             }
             let result = c.execute(
                 Some(grant),

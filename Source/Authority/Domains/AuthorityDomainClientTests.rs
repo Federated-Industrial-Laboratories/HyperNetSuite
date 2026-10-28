@@ -593,3 +593,234 @@ fn cache_failure_reopens_and_retries_the_exact_original_domain_request() {
         cached.records
     );
 }
+
+#[test]
+fn expired_read_preserves_newer_stream_floor_and_reacquires_superseded_cache() {
+    use crate::authority_read::{self as read, Query};
+    use std::cell::Cell;
+
+    let mut f = Fixture::with_actions(vec![0, 30]);
+    let record = |generation: u64, slot: u64, nonce: u8| {
+        let mut proof = domains::streams::Proof {
+            service: VersionRef {
+                kind: 172,
+                id: [71; 32],
+                generation: 1,
+                digest: [72; 32],
+            },
+            principal: f.signer.verifying_key().to_bytes(),
+            grant: domain_request(&f).grant.unwrap(),
+            protocol: "cache-recovery".into(),
+            slot,
+            generation: generation - 1,
+            nonce: [nonce; 32],
+            challenge: [73; 32],
+            exporter: [74; 32],
+            limits: crate::route_profile::Limits {
+                bytes: 16384,
+                duration_ms: 5000,
+                idle_ms: 1000,
+            },
+            expires: f.current.observe().unwrap().wall_ms + 60000,
+            envelope: vec![],
+        };
+        proof.envelope =
+            wire::sign_envelope(&proof.payload([20; 32], [21; 32]).unwrap(), &f.signer).unwrap();
+        let id = proof.id().unwrap();
+        let session = domains::streams::Session {
+            proof,
+            closed: true,
+            retired: false,
+            creation: [75; 32],
+        };
+        let bytes = wire::encode(&a(vec![
+            V::Uint(173),
+            V::Uint(1),
+            b(&[20; 32]),
+            b(&[21; 32]),
+            V::Uint(generation),
+            b(&[76; 32]),
+            b(&id),
+            session.value(),
+        ]))
+        .unwrap();
+        domains::Record::parse(&bytes, [20; 32], [21; 32]).unwrap()
+    };
+    let old = record(62, 0, 77);
+    let current = record(64, 0, 78);
+    let invalid = [record(64, 0, 79), record(66, 0, 80), record(64, 1, 81)];
+    let cache = |record: &domains::Record| {
+        let mut state = State::empty([20; 32], [21; 32]);
+        state
+            .records
+            .insert(record.reference.index(), record.clone());
+        Cache {
+            state,
+            records: vec![],
+        }
+    };
+    let certified = |f: &mut Fixture, record: &domains::Record, short: bool| {
+        let operation = Request {
+            command: domains::streams::Command::Lookup {
+                service: [71; 32],
+                slot: 0,
+            }
+            .into(),
+            grant: domain_request(f).grant,
+        }
+        .operation(&f.store, &[])
+        .unwrap();
+        let request = read::Request::sign(
+            f.store.descriptor().scope(),
+            &f.signer,
+            f.signer.verifying_key().to_bytes(),
+            [82; 32],
+            f.store.prefix().height(),
+            Query::Domain(operation),
+        )
+        .unwrap();
+        let challenge = f
+            .session
+            .issue_read(&request, &f.signer, [82; 32], 5000, f.current)
+            .unwrap();
+        let at = f.current.observe().unwrap().wall_ms;
+        let packet = crate::authority_inspection::read_client::tests::response(
+            &request,
+            &challenge,
+            &f.status_node,
+            *f.store.prefix().policy_state(),
+            a(vec![
+                V::Uint(201),
+                V::Uint(1),
+                V::Text("AuthorityDomain".into()),
+                a(vec![version_value(&record.reference)]),
+                a(vec![
+                    V::Text("StreamLookup".into()),
+                    a(vec![b(&record.bytes)]),
+                    a(vec![]),
+                    V::Null,
+                ]),
+            ]),
+            at,
+            if short { at + 1400 } else { u64::MAX },
+            0,
+        );
+        let value = wire::decode(&packet).unwrap();
+        let fields = value.array(10).unwrap();
+        read::verify_response(
+            f.store.descriptor(),
+            &request,
+            &challenge,
+            read::Response {
+                node: fields[6].bytes().unwrap(),
+                certificate: fields[7].bytes().unwrap(),
+                result: fields[8].bytes().unwrap(),
+                ancestry: std::slice::from_ref(&f.status_node),
+            },
+            |_, result, _| {
+                // This regression exercises certified floor publication and derived-cache recovery.
+                // Typed stream authorization is covered by the domain verifier and native integration.
+                let value = wire::decode(&result.value)?;
+                let body = value.array(5)?[4].array(4)?;
+                let actual =
+                    domains::Record::parse(body[1].array(1)?[0].bytes()?, [20; 32], [21; 32])?;
+                ensure!(actual.bytes == record.bytes, "certified record differs");
+                minimum(
+                    std::slice::from_ref(&actual.reference),
+                    f.store.generations(),
+                )?;
+                Ok(vec![actual.reference])
+            },
+        )
+        .unwrap()
+    };
+    let verified = certified(&mut f, &old, false);
+    f.store
+        .accept_read(
+            verified,
+            &mut f.session,
+            &mut || Ok(f.current),
+            0,
+            |_, store| cache(&old).save(store),
+        )
+        .unwrap();
+    let retained = std::fs::read(f.directory.0.join(CACHE)).unwrap();
+    let verified = certified(&mut f, &current, true);
+    let calls = Cell::new(0);
+    let published = Cell::new(false);
+    let error = f
+        .store
+        .accept_read(
+            verified,
+            &mut f.session,
+            &mut || {
+                calls.set(calls.get() + 1);
+                Ok(if calls.get() == 1 {
+                    f.current
+                } else {
+                    elapsed_health(f.current, 2000)
+                })
+            },
+            0,
+            |_, store| {
+                published.set(true);
+                cache(&current).save(store)
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error.is::<crate::authority_floor::ReadExpired>(),
+        "{error:#}"
+    );
+    assert!(!published.get());
+    assert!(f.store.generations().contains(&current.reference));
+    assert!(!f.store.generations().contains(&old.reference));
+    assert_eq!(std::fs::read(f.directory.0.join(CACHE)).unwrap(), retained);
+    let floor = std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap();
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    let recovered = Cache::load(&f.bootstrap, &f.store).unwrap();
+    assert!(recovered.state.records.is_empty() && recovered.state.keys.is_empty());
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+        floor
+    );
+    assert_eq!(std::fs::read(f.directory.0.join(CACHE)).unwrap(), retained);
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    f.current = elapsed_health(f.current, 2000);
+    let verified = certified(&mut f, &current, false);
+    f.store
+        .accept_read(
+            verified,
+            &mut f.session,
+            &mut || Ok(f.current),
+            0,
+            |_, store| cache(&current).save(store),
+        )
+        .unwrap();
+    assert_eq!(
+        Cache::load(&f.bootstrap, &f.store)
+            .unwrap()
+            .state
+            .records
+            .values()
+            .next()
+            .unwrap()
+            .reference,
+        current.reference
+    );
+    for record in invalid {
+        let candidate = cache(&record);
+        let bytes = wire::encode_state(&a(vec![
+            V::Uint(200),
+            V::Uint(1),
+            V::Text("AuthorityDomainCache".into()),
+            candidate.state.value(),
+            a(vec![]),
+        ]))
+        .unwrap();
+        files::atomic_at(f.store.profile_directory(), OsStr::new(CACHE), &bytes, true).unwrap();
+        assert!(Cache::load(&f.bootstrap, &f.store).is_err());
+        assert!(f.store.generations().contains(&current.reference));
+    }
+}

@@ -78,6 +78,7 @@ fn content_profile(
         digest,
     };
     let voucher = domains::routes::Voucher {
+        baseline: None,
         relay: reference(165, relay.identity.service, [93; 32]),
         destination: reference(165, service.identity.service, [94; 32]),
         possession: possession.verifying_key().to_bytes(),

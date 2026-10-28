@@ -1,6 +1,63 @@
-# Linux 0.8.0
+# Linux release notes
 
 [Documentation](ReadMe.md) | [Project](../ReadMe.md)
+
+## 0.9.0 candidate
+
+Version 0.9.0 is the next Linux release candidate. These notes describe the
+candidate; they do not announce publication or replace the published 0.8.0
+artifacts and authentication instructions retained below.
+
+### Changes
+
+- The native [application companion](ApplicationStreams.md) exposes bounded
+  connect, accept, status and cancel operations over private local sockets.
+  Application data travels through the existing relay and nested TLS transport,
+  with exact service/protocol binding and separately verified peer context.
+- A packaged Python SDK and runnable examples support arbitrary application
+  protocols. The confined endpoint receives only the mapped ingress, while
+  application keys, requester floors and command sockets stay private.
+- The [authority connector](AuthorityConnector.md) provides installed Core
+  endpoints with generic remote authority access from a separate joined profile.
+- Explicit [same-rights renewal](ApplicationAccess.md#same-rights-renewal) retains
+  application identity and permissions through owner/application consent.
+  Existing monotonic floors and exact pending operations remain enforced.
+- Joining refreshes clock health after durable artifact writes. Fresh reads can
+  reacquire an expired proof within the original preparation budget. If a read
+  persists a newer floor before cache publication is interrupted, the client
+  discards superseded derived domain context and requires a new verified result.
+  Missing authentication, conflicting digests and future cache generations
+  remain errors; deadlines and authenticated floors are never reset.
+
+### Candidate platform and validation
+
+The candidate uses native Ubuntu 24.04 x86_64 and GNU libc 2.39. The normal build
+includes the native Browser, Mail and Transfers interfaces; native windows need
+X11 or Wayland and working EGL/GLX libraries. The CLI and terminal do not require
+a graphical session. Native ARM, macOS and Windows remain unqualified.
+
+Signed installation, private IPC and bounded native application workflows were
+exercised with separate application hosts and a remote relay. Application
+integration transferred and SHA256-verified 4,079,434,577 bytes in ten files with
+pause/resume and permission revocation. Transfer progress continued after a
+natural proof expiry during persistence and a transport closure, using current
+proofs and retained data. Actual remote inference, cancellation and active grant
+revocation were also exercised. These observations do not establish a general
+throughput guarantee, long-running soak, full screen-reader coverage, independent
+operator separation or security certification. Unchanged graphical and offline
+qualification retains its original executable identity.
+
+### Upgrade scope
+
+Protocol 7 requires matching Core and Suite support, with a compatible authority
+committee before new stream records are used. The retained `HyperNet080Client1`
+package contract does not make post-0.9 state readable by 0.8. Install side by side
+through the accepted publisher and a fresh signed target policy. Stop active
+client operations before selecting the new binary, and retain private profiles,
+keys, journals, package trust and current floors. Do not delete state to retry a
+join or recover a connection. See [upgrade and recovery](UpgradeRecovery.md).
+
+## Linux 0.8.0 (published)
 
 HyperNetSuite 0.8.0 is the first public Linux release. Download the native x86_64
 package from [GitHub Releases](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.8.0).
@@ -10,7 +67,7 @@ verified network workflows as its terminal and command-line clients. It includes
 reviewed Forms, sealed Pages, scoped search, publication and recovery tools.
 Mail enrolment and network administration use the CLI.
 
-## Platform and release scope
+### Platform and release scope
 
 The packaged profile is native Ubuntu 24.04 x86_64 with GNU libc 2.39 or newer.
 Other Linux distributions need the exact ELF loader and libraries recorded in
@@ -33,7 +90,7 @@ a prior 1 MiB relay download took 12.246 seconds. Native administration is not
 included; use the documented CLI. Read the security and platform guides before
 planning an exposed deployment.
 
-## Download and authenticate
+### Download and authenticate
 
 Download all five package inputs from the release: `HyperNetSuite-0.8.0-linux-x86_64.tar`,
 its `.sig`, `HyperNetSuite-0.8.0-linux-x86_64.target.json`, its `.sig`, and `Publisher.pub`.
@@ -76,7 +133,7 @@ ssh-keygen -Y verify -f ReleaseSigners -I ReleasePublisher \
   -n HyperNetSuiteRelease1 -s SHA256SUMS.sig < SHA256SUMS
 ```
 
-## Fresh installation
+### Fresh installation
 
 Use a new private installation prefix. Initialise trust once per product;
 Core and Suite use separate trust directories even with the same publisher.
@@ -107,7 +164,7 @@ The signed target has a finite validity interval recorded in its `notBefore` and
 expiry or reset retained trust. Installation starts no network services and
 creates no membership. Keep profiles, keys, consent and data outside the prefix.
 
-## Existing installations
+### Existing installations
 
 The published generation-1 target is for fresh release trust. It cannot migrate
 an existing installation from a different publisher: root rotation must increase

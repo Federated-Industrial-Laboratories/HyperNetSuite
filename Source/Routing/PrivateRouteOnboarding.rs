@@ -259,7 +259,7 @@ pub fn join(arguments: Join) -> Result<()> {
         "join paths must be absolute"
     );
     let clock = crate::authority_clock::Source::select(&arguments.clock_witness, None, None)?;
-    let health = clock.health()?;
+    clock.health()?;
     if let Some(joined) = &profile.joined {
         ensure!(
             joined.directory == arguments.directory
@@ -306,11 +306,12 @@ pub fn join(arguments: Join) -> Result<()> {
         files::create_directory(&directory)?;
     }
     let mut store = if initial {
+        // Durable join artifacts can outlive the initial clock observation.
         Store::initialise(
             &directory,
             bootstrap.descriptor().clone(),
             signer.verifying_key().to_bytes(),
-            health,
+            clock.health()?,
         )?
     } else {
         Store::open(&directory, bootstrap.descriptor().clone())?

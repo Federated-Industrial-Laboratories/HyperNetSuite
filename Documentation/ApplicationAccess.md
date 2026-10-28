@@ -142,8 +142,54 @@ An exact registration retry preserves a subsequently fenced application
 stream and any withdrawal. The acceptance's original expiry does not erase an
 already completed registration or make its receipt current authority.
 
-The authority has64 permanent requester slots across root subjects, members and
+The authority has256 permanent requester slots across root subjects, members and
 applications. Expiry and withdrawal do not reclaim slots. Owner listing returns
 complete bounded metadata without pagination; capacity failures never admit a
 partial application. Never copy another signer's floor or reset retained state
 to evade a capacity, continuity or uncertain-outcome refusal.
+
+## Same-rights renewal
+
+Renewal preserves the application key, owner, immutable grant, actions, scopes,
+limits, tier and exact parent. It replaces the admission's finite validity and
+increments its generation. The first explicit renewal migrates a version 1
+admission to version 2. Old registration bytes retain their original meaning.
+
+Fresh owner and application signatures approve each new validity interval of at
+most seven days. The owner must still have DelegateGrant through the same exact
+parent, and every current ancestor, tier, admission and revocation check applies.
+An expired application can renew while its parent remains valid. A version 2
+admission supplies its exact leaf grant's effective validity; it never extends
+another grant or changes the grant's rights. Withdrawal and revocation cannot
+be undone by renewal. A compromised application requires replacement, not renewal.
+
+The operation replaces one admission and its current consent evidence. It does
+not create another child grant or requester slot. Requester generations, sequence
+floors and unresolved requests remain intact. Retry the exact pending renewal
+before starting another owner operation. No unattended renewal permission is
+implied by a prior acceptance.
+
+Use the existing independent owner and application profiles:
+
+1. Run `applications get --application-key APPLICATION_PUBLIC_KEY` as the owner
+   to retain the current admission in the owner's authenticated cache.
+2. Run `applications renewal-offer` with the owner's common profile arguments
+   except `--socket`, plus `--application-key`, `--not-before-ms`, `--expires-ms`,
+   `--acceptance-ms` and `--output Renewal.cbor`.
+3. Run `applications accept-renewal` offline as the application with `--bootstrap`,
+   `--bootstrap-digest`, `--owner-key`, `--key`, `--offer Renewal.cbor` and
+   `--output AcceptedRenewal.cbor`. Independently authenticate the owner key.
+4. Run `applications renew` as the owner with its common online arguments,
+   `--parent`, `--tier` and `--accepted AcceptedRenewal.cbor`. This refreshes the
+   delegation closure and preserves exact retry state.
+5. Fetch the admission from the application's own profile to observe its new
+   generation. Continue to use the application's existing floor and private key.
+
+The published [renewal vector](ApplicationRenewalVector.json) binds the same
+predecessor, grant and parties in the independent Core and Suite validators.
+
+Authority history retains all committed prefixes in bounded disk segments.
+Clients retain the existing compact checkpoint and Merkle proofs; an older floor
+can catch up without discarding it. The replica's physical history quota remains
+finite and requires operator monitoring. Renewal does not remove the independent
+capacity bounds on legacy Mail objects or permanent identities.

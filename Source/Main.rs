@@ -63,6 +63,8 @@ mod authority_tiers;
 // Independent signed HyperNet command client and local device-key management.
 #[path = "Storage/AdapterFiles.rs"]
 mod adapter_files;
+#[path = "Applications/ApplicationStreams.rs"]
+mod application_streams;
 #[path = "Applications/Applications.rs"]
 mod applications;
 #[path = "Mail/AuthorityMail.rs"]
@@ -80,10 +82,14 @@ mod form_ui;
 #[cfg(feature = "gui")]
 #[path = "Graphical/Browser.rs"]
 mod graphical;
+#[path = "Networks/LocalStreamIpc.rs"]
+mod local_stream_ipc;
 #[path = "Mail/MailCrypto.rs"]
 mod mail_crypto;
 #[path = "Mail/MailProtocol.rs"]
 mod mail_protocol;
+#[path = "Networks/MappedIngress.rs"]
+mod mapped_ingress;
 #[path = "HyperPage/Markup.rs"]
 mod markup;
 #[path = "Media/Media.rs"]
@@ -192,6 +198,9 @@ enum Command {
     /// Manage separate least-privilege application credentials.
     #[command(subcommand)]
     Applications(applications::Command),
+    /// Manage named authenticated application services and the local companion.
+    #[command(subcommand)]
+    Streams(application_streams::Command),
     /// Exchange explicit inert review jobs and bounded recommendations.
     #[command(subcommand)]
     Adapters(authority_pages::adapters::Command),
@@ -299,6 +308,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Browse(arguments) => authority_pages::browse(arguments),
         Command::Search(command) => search::run(command),
         Command::Applications(command) => applications::run(command),
+        Command::Streams(command) => application_streams::run(command),
         Command::Adapters(command) => authority_pages::adapters::run(command),
         Command::Transfers(arguments) => transfers::run(None, arguments),
         Command::Services(command) => services::run(None, command),

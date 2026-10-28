@@ -51,6 +51,7 @@ pub enum Protocol {
     Mail,
     Transfer,
     BridgeReader,
+    Application,
 }
 impl Protocol {
     fn number(self) -> u64 {
@@ -62,6 +63,7 @@ impl Protocol {
             Self::Mail => 4,
             Self::Transfer => 5,
             Self::BridgeReader => 6,
+            Self::Application => 7,
         }
     }
 }

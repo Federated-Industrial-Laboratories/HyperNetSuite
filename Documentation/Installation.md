@@ -34,6 +34,13 @@ support. Source installation uses Bash, GNU coreutils and Cargo; an uncached
 build needs access to the locked crate sources. Installation does not install
 system prerequisites or register network membership.
 
+The source installer also requires Python, pip and setuptools to build the
+included application SDK wheel offline. A signed package already includes that
+wheel. Mapped application ingress and the native authority connector require
+rootless Podman with configured subordinate UID/GID ranges; outgoing SDK clients
+do not need that helper. See [application streams](ApplicationStreams.md) and
+[the authority connector](AuthorityConnector.md) for the private socket setup.
+
 ## Source installation
 
 From the authenticated source checkout, run as your normal account:
@@ -180,9 +187,12 @@ The gate is not an installation step.
 Maintainers can assemble an offline archive from a locked native release build:
 
 ```sh
+python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir dist SDK
 python3 Tools/Bundle.py Create --binary target/release/HyperNetSuite \
+  --streams-sdk-wheel dist/hypernet_streams-0.9.0-py3-none-any.whl \
   --output HyperNetSuite.tar --signing-key PublisherKey
-python3 Tests/Bundle.py --binary target/release/HyperNetSuite
+python3 Tests/Bundle.py --binary target/release/HyperNetSuite \
+  --streams-sdk-wheel dist/hypernet_streams-0.9.0-py3-none-any.whl
 ```
 
 Assembly additionally requires GNU `readelf`. It records the binary's actual ELF

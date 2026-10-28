@@ -65,6 +65,8 @@ and runtime installation are documented by
 | Back up content and reconcile a restore with current authority | [Content archives](Backups.md) |
 | Inspect or export a bounded local diagnostic summary | [Diagnostics](Diagnostics.md) |
 | Verify, replace or remove installed software | [Upgrade and recovery](UpgradeRecovery.md) |
+| Connect application services and manage local companions | [Application streams](ApplicationStreams.md) |
+| Connect an installed service to a remote authority | [Native authority connector](AuthorityConnector.md) |
 | Grant an application its own scoped authority | [Application access](ApplicationAccess.md) |
 | Disclose exact review data to an external processor | [Adapters](Adapters.md) |
 

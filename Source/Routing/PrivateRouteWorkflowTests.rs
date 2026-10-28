@@ -137,5 +137,37 @@ fn connected_route_command_accepts_the_bootstrap_file_digest() {
     assert_eq!(grant, joined.reader_grant);
     assert_eq!(online.socket, root.join("AuthorityRoute.json"));
     assert_eq!(online.location.directory, root.join("Requester"));
+    let mut argv = vec![
+        "streams".into(),
+        "agent".into(),
+        "--ipc-directory".into(),
+        root.join("Companion").into_os_string(),
+    ];
+    let available = leaf(&schema, &argv)
+        .unwrap()
+        .get_arguments()
+        .filter_map(|a| {
+            a.get_long()
+                .map(|name| (name.to_owned(), a.get_id().to_string()))
+        })
+        .collect();
+    online_defaults(&mut argv, &available, &checked, &joined).unwrap();
+    assert_eq!(
+        value(&argv, "socket").unwrap(),
+        Some(
+            root.join("AuthorityRoute.json")
+                .to_string_lossy()
+                .into_owned()
+        )
+    );
+    assert_eq!(
+        value(&argv, "key").unwrap(),
+        Some(root.join("Device.json").to_string_lossy().into_owned())
+    );
+    argv.insert(0, "HyperNetSuite".into());
+    assert!(matches!(
+        crate::Options::try_parse_from(argv).unwrap().command,
+        crate::Command::Streams(crate::application_streams::Command::Agent(_))
+    ));
     std::fs::remove_dir_all(root).unwrap();
 }
