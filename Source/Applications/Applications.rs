@@ -145,6 +145,45 @@ pub enum Command {
         #[arg(long)]
         prior_epochs: Option<PathBuf>,
     },
+    /// Offer a finite same-rights renewal from a previously fetched application admission.
+    RenewalOffer {
+        #[command(flatten)]
+        location: Location,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        application_key: String,
+        #[arg(long)]
+        not_before_ms: u64,
+        #[arg(long)]
+        expires_ms: u64,
+        #[arg(long, default_value_t = 3_600_000)]
+        acceptance_ms: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Independently approve a renewal of this application's unchanged rights.
+    AcceptRenewal {
+        #[command(flatten)]
+        trust: Offline,
+        #[arg(long)]
+        offer: PathBuf,
+        #[arg(long)]
+        owner_key: Option<String>,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Extend an existing admission using fresh owner and application consent.
+    Renew {
+        #[command(flatten)]
+        online: Online,
+        #[command(flatten)]
+        scope: Scope,
+        #[arg(long)]
+        accepted: PathBuf,
+    },
     /// Read lifecycle metadata as its recorded owner or application, without domain authority.
     Get {
         #[command(flatten)]
@@ -525,6 +564,96 @@ pub fn run(command: Command) -> Result<()> {
             )?;
             mutation_output("ApplicationRegistered", &result)
         }
+        Command::RenewalOffer {
+            location,
+            key,
+            application_key,
+            not_before_ms,
+            expires_ms,
+            acceptance_ms,
+            output,
+        } => {
+            let verified = bootstrap(&location)?;
+            let store = Store::open(&location.directory, verified.descriptor().clone())?;
+            let source = clock(&location, store.descriptor().voters())?;
+            let bytes = offers::invite_renewal(
+                &verified,
+                &store,
+                id(&application_key)?,
+                (not_before_ms, expires_ms),
+                acceptance_ms,
+                &signer(&key)?,
+                source.health()?,
+            )?;
+            files::write_new(&output, &bytes)?;
+            renewal_output(
+                "ApplicationRenewalOffered",
+                &offers::RenewalOffer::parse(&verified, &bytes, false)?,
+            )
+        }
+        Command::AcceptRenewal {
+            trust,
+            offer,
+            owner_key,
+            key,
+            output,
+        } => {
+            let verified = offline(&trust)?;
+            let bytes = files::read_single(&offer, offers::OFFER_LIMIT, true)?;
+            let offer = offers::RenewalOffer::parse(&verified, &bytes, false)?;
+            let bytes = offer.accept(
+                &verified,
+                &signer(&key)?,
+                owner_key.as_deref().map(id).transpose()?,
+            )?;
+            files::write_new(&output, &bytes)?;
+            renewal_output(
+                "ApplicationRenewalAccepted",
+                &offers::RenewalOffer::parse(&verified, &bytes, true)?,
+            )
+        }
+        Command::Renew {
+            online,
+            scope,
+            accepted,
+        } => {
+            let verified = bootstrap(&online.location)?;
+            let bytes = files::read_single(&accepted, offers::OFFER_LIMIT, true)?;
+            let offer = offers::RenewalOffer::parse(&verified, &bytes, true)?;
+            let signer = signer(&online.key)?;
+            ensure!(
+                signer.verifying_key().to_bytes() == offer.consent.owner,
+                "renewal signer differs from owner"
+            );
+            let mut store = Store::open(&online.location.directory, verified.descriptor().clone())?;
+            let source = clock(&online.location, store.descriptor().voters())?;
+            let mut session = Session::new()?;
+            let context = context(
+                &verified,
+                &online,
+                scope.selection(Some(offer.consent.grant.id))?,
+                Some("AuthorityApplicationRenew"),
+                &signer,
+                &mut store,
+                &mut session,
+                &source,
+            )?;
+            let result = client::local(
+                &verified,
+                Request::Renew {
+                    previous: offer.previous,
+                    accepted: offer.envelope,
+                },
+                Some(&context),
+                None,
+                &online.socket,
+                &signer,
+                &mut store,
+                &mut session,
+                || source.health(),
+            )?;
+            mutation_output("ApplicationRenewed", &result)
+        }
         Command::Get {
             online,
             application_key,
@@ -596,3 +725,12 @@ fn lifecycle(online: Online, application: Option<[u8; 32]>, withdraw: bool) -> R
 #[cfg(test)]
 #[path = "../Authority/Governance/AuthorityApplicationCliTests.rs"]
 mod tests;
+
+fn renewal_output(status: &str, offer: &offers::RenewalOffer) -> Result<()> {
+    crate::print_value(
+        &json!({"status":status,"application":hex::encode(offer.consent.admission.id),
+        "owner":hex::encode(offer.consent.owner),"previousGeneration":offer.consent.admission.generation,
+        "validity":offer.consent.validity,"acceptanceValidity":offer.consent.acceptance_validity,
+        "grant":hex::encode(offer.consent.grant.id),"rightsChanged":false}),
+    )
+}

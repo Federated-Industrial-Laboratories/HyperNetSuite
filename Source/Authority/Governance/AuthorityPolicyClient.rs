@@ -7,6 +7,7 @@ const ACCEPTED: &str = "AcceptedPolicy.cbor";
 const PENDING: &str = "PendingPolicy.cbor";
 #[path = "AuthorityPolicyDiscovery.rs"]
 mod discovery;
+pub(crate) use discovery::refresh_before_request_with_budget;
 pub use discovery::{discover, refresh_before_request};
 fn validate_pair(p: &[u8], r: &[u8], n: [u8; 32], i: [u8; 32]) -> Result<()> {
     policies::record_reference(p, n, i, 100)?;
@@ -193,6 +194,29 @@ impl Prepared {
 fn pair(policy: &[u8], recovery: &[u8]) -> Result<Vec<u8>> {
     wire::encode(&a(vec![b(policy), b(recovery)]))
 }
+fn retain_cached_pair(store: &Store, name: &str, policy: &[u8], recovery: &[u8]) -> Result<()> {
+    let scope = store.descriptor().scope();
+    validate_pair(policy, recovery, scope.network, scope.incarnation)?;
+    if let Some((prior_policy, prior_recovery)) = read_pair(store, name)? {
+        validate_pair(
+            &prior_policy,
+            &prior_recovery,
+            scope.network,
+            scope.incarnation,
+        )?;
+        // The protected existing inode already durably holds these exact bytes.
+        // Every new read still commits its witnessed authority floor separately.
+        if prior_policy == policy && prior_recovery == recovery {
+            return Ok(());
+        }
+    }
+    files::atomic_at(
+        store.profile_directory(),
+        OsStr::new(name),
+        &pair(policy, recovery)?,
+        true,
+    )
+}
 fn retain_pair(store: &Store, policy: &[u8], recovery: &[u8]) -> Result<()> {
     let scope = store.descriptor().scope();
     for (bytes, kind) in [(policy, 100), (recovery, 114)] {
@@ -202,12 +226,7 @@ fn retain_pair(store: &Store, policy: &[u8], recovery: &[u8]) -> Result<()> {
             "policy cache lacks exact certified generation"
         );
     }
-    files::atomic_at(
-        store.profile_directory(),
-        OsStr::new(CURRENT),
-        &pair(policy, recovery)?,
-        true,
-    )
+    retain_cached_pair(store, CURRENT, policy, recovery)
 }
 pub(super) fn retain_context(store: &Store, governance: &Governance) -> Result<()> {
     let n = store.descriptor().scope().network;

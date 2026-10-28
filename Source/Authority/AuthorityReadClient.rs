@@ -6,6 +6,69 @@ use crate::{
     authority_read::{self as read, Query},
 };
 
+/// One pre-handoff caller deadline and at most one replacement certified read.
+pub(crate) struct RetryBudget {
+    deadline: u64,
+    reissued: bool,
+    cancelled: Box<dyn Fn() -> bool + Send>,
+}
+impl RetryBudget {
+    pub(crate) fn new(deadline: u64, cancelled: impl Fn() -> bool + Send + 'static) -> Self {
+        Self {
+            deadline,
+            reissued: false,
+            cancelled: Box::new(cancelled),
+        }
+    }
+    pub(crate) fn check(&self) -> Result<()> {
+        ensure!(
+            !(self.cancelled)() && !crate::private_route_client::cancelled(),
+            "application preparation was cancelled"
+        );
+        remaining(self.deadline)?;
+        Ok(())
+    }
+    pub(crate) fn clock(
+        &self,
+        mut sample: impl FnMut() -> Result<ClockHealth>,
+    ) -> Result<ClockHealth> {
+        loop {
+            self.check()?;
+            match sample() {
+                Err(error) if error.is::<crate::authority_clock::ObservationExpired>() => {
+                    self.check()?;
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        remaining(self.deadline)?.min(25),
+                    ));
+                }
+                result => {
+                    self.check()?;
+                    return result;
+                }
+            }
+        }
+    }
+    pub(crate) fn run<T>(&mut self, mut read: impl FnMut(&Self) -> Result<T>) -> Result<T> {
+        self.check()?;
+        let value = match read(self) {
+            Ok(value) => value,
+            Err(error) => {
+                if self.reissued
+                    || !error.is::<crate::authority_floor::ReadExpired>()
+                    || self.check().is_err()
+                    || !remaining(self.deadline).is_ok_and(|left| left >= DURATION)
+                {
+                    return Err(error);
+                }
+                self.reissued = true;
+                read(self)?
+            }
+        };
+        self.check()?;
+        Ok(value)
+    }
+}
+
 pub(crate) struct Exchange {
     pub request: Vec<u8>,
     pub challenge: Vec<u8>,

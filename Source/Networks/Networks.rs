@@ -16,6 +16,8 @@ use zeroize::Zeroizing;
 #[cfg(feature = "gui")]
 #[path = "NetworkApplication.rs"]
 pub(crate) mod application;
+#[path = "NetworkAuthorityConnector.rs"]
+pub(crate) mod authority_connector;
 #[path = "NetworkDiagnostics.rs"]
 mod diagnostics;
 #[path = "../Routing/PrivateRouteOnboarding.rs"]
@@ -29,6 +31,15 @@ const PROFILE_LIMIT: usize = 600000;
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Forward only authority protocol packets through this joined profile's exact retained relay route.
+    AuthorityConnector(authority_connector::Arguments),
+    /// Read the bounded local status of one private authority connector.
+    AuthorityConnectorStatus {
+        #[arg(long)]
+        directory: PathBuf,
+    },
+    #[command(hide = true)]
+    IngressHelper(crate::mapped_ingress::Arguments),
     /// Preview or explicitly export bounded, redacted local diagnostics without a connection.
     Diagnose(diagnostics::Options),
     /// Observe local clock health without changing time or trusting a remote host boot.
@@ -444,6 +455,9 @@ pub fn run(command: Command) -> Result<()> {
         Command::Invitation(arguments) => onboarding::assemble(arguments),
         Command::Join(arguments) => onboarding::join(arguments),
         Command::Connect(arguments) => workflow::connect(arguments),
+        Command::AuthorityConnector(arguments) => authority_connector::run(arguments),
+        Command::AuthorityConnectorStatus { directory } => authority_connector::status(&directory),
+        Command::IngressHelper(arguments) => crate::mapped_ingress::run(arguments),
         Command::RetainRoute(arguments) => workflow::retain(arguments),
         Command::Status { profile } => workflow::status(&profile),
         Command::Remove {

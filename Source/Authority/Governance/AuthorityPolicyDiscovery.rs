@@ -27,7 +27,7 @@ pub(super) fn pair_from_value(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn discover(
+fn discover_once(
     bootstrap: &Verified,
     path: &Path,
     signer: &SigningKey,
@@ -88,12 +88,7 @@ pub fn discover(
         }
         let (p, r) = pair.context("certified policy pair absent")?;
         // Candidate bytes precede the floor so interruption cannot hide a learned contract.
-        files::atomic_at(
-            store.profile_directory(),
-            OsStr::new(PENDING),
-            &super::pair(&p, &r)?,
-            true,
-        )?;
+        retain_cached_pair(store, PENDING, &p, &r)?;
         store.accept_read(verified, session, &mut clock, 0, |_, store| {
             retain_pair(store, &p, &r)
         })?;
@@ -106,6 +101,36 @@ pub fn discover(
         exchange.control.retain(store);
     }
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn discover(
+    bootstrap: &Verified,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    clock: impl FnMut() -> Result<ClockHealth>,
+) -> Result<()> {
+    discover_once(bootstrap, path, signer, store, session, clock)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn refresh_before_request_with_budget(
+    bootstrap: &Verified,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    mut clock: impl FnMut() -> Result<ClockHealth>,
+    budget: &mut crate::authority_inspection::read_client::RetryBudget,
+) -> Result<()> {
+    budget.run(|budget| {
+        discover_once(bootstrap, path, signer, store, session, || {
+            budget.clock(&mut clock)
+        })
+    })?;
+    require_accepted(bootstrap, store)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -405,6 +405,7 @@ fn private_tls_operation_expiry_reaches_bounded_authority_recovery() {
         digest,
     };
     let voucher = domains::routes::Voucher {
+        baseline: None,
         relay: reference(165, relay.identity.service, [93; 32]),
         destination: reference(165, service.identity.service, [94; 32]),
         possession: possession.verifying_key().to_bytes(),
@@ -618,6 +619,7 @@ fn remote_history_preparation_exceeds_five_seconds_before_fresh_challenge_on_one
         digest,
     };
     let voucher = domains::routes::Voucher {
+        baseline: None,
         relay: reference(165, relay.identity.service, [93; 32]),
         destination: reference(165, service.identity.service, [94; 32]),
         possession: possession.verifying_key().to_bytes(),

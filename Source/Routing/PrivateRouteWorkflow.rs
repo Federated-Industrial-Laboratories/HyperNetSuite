@@ -57,7 +57,7 @@ pub(super) fn inventory(directory: &Path) -> Result<Vec<SavedRoute>> {
         trust::hex32(&route.service)?;
         trust::hex32(&route.subject)?;
         trust::hex32(&route.route_digest)?;
-        ensure!((1..=6).contains(&route.protocol), "invalid route protocol");
+        ensure!((1..=7).contains(&route.protocol), "invalid route protocol");
     }
     Ok(routes)
 }
@@ -213,6 +213,7 @@ pub fn connect(arguments: Connect) -> Result<()> {
                     | "services"
                     | "federation"
                     | "applications"
+                    | "streams"
                     | "authority-inspection"
                     | "search"
             )

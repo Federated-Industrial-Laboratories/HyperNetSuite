@@ -343,3 +343,154 @@ pub fn confirm(
     )?;
     Ok(verified.point().prefix().height())
 }
+
+/// Renewal artifacts retain the exact predecessor and require independent possession again.
+pub struct RenewalOffer {
+    pub previous: Vec<u8>,
+    pub envelope: Vec<u8>,
+    pub consent: crate::authority_applications::Renewal,
+}
+impl RenewalOffer {
+    pub fn parse(bootstrap: &Verified, bytes: &[u8], accepted: bool) -> Result<Self> {
+        ensure!(
+            bootstrap.fully_accepted() && bytes.len() <= OFFER_LIMIT,
+            "renewal offer exceeds bound or lacks accepted bootstrap"
+        );
+        let value = wire::decode(bytes)?;
+        let f = value.array(5)?;
+        ensure!(
+            f[0].uint()? == 200
+                && f[1].uint()? == 2
+                && f[2].text()? == "AuthorityApplicationRenewalOffer",
+            "renewal artifact context differs"
+        );
+        let scope = bootstrap.descriptor().scope();
+        let previous = f[3].bytes()?.to_vec();
+        let old = crate::authority_applications::Registration::parse(
+            &previous,
+            scope.network,
+            scope.incarnation,
+        )?;
+        let envelope = f[4].bytes()?.to_vec();
+        let consent = crate::authority_applications::Renewal::parse(
+            &envelope,
+            scope.network,
+            scope.incarnation,
+            accepted,
+        )?;
+        ensure!(
+            old.reference == consent.admission
+                && old.owner == consent.owner
+                && old.grant == consent.grant
+                && consent.validity.1 > old.validity.1,
+            "renewal differs from exact existing rights"
+        );
+        Ok(Self {
+            previous,
+            envelope,
+            consent,
+        })
+    }
+    pub fn authenticate_owner(&self, bootstrap: &Verified, pin: Option<[u8; 32]>) -> Result<()> {
+        ensure!(
+            pin.map_or(
+                bootstrap.reservations().contains(&(4, self.consent.owner)),
+                |v| v == self.consent.owner
+            ),
+            "renewal owner requires an independently authenticated key pin"
+        );
+        Ok(())
+    }
+    pub fn accept(
+        &self,
+        bootstrap: &Verified,
+        signer: &SigningKey,
+        pin: Option<[u8; 32]>,
+    ) -> Result<Vec<u8>> {
+        self.authenticate_owner(bootstrap, pin)?;
+        let key = signer.verifying_key().to_bytes();
+        ensure!(
+            key == self.consent.admission.id,
+            "renewal acceptance key differs from application"
+        );
+        let (payload, mut signatures) = wire::envelope(&self.envelope, 1)?;
+        signatures.push((
+            key,
+            signer
+                .sign(&wire::signature_message(&payload, &key))
+                .to_bytes(),
+        ));
+        signatures.sort_by_key(|(key, _)| *key);
+        let envelope = wire::encode(&a(vec![
+            V::Uint(0),
+            V::Uint(1),
+            b(&payload),
+            a(signatures
+                .iter()
+                .map(|(key, signature)| a(vec![b(key), b(signature)]))
+                .collect()),
+        ]))?;
+        let bytes = renewal_artifact(&self.previous, &envelope)?;
+        Self::parse(bootstrap, &bytes, true)?;
+        Ok(bytes)
+    }
+}
+fn renewal_artifact(previous: &[u8], envelope: &[u8]) -> Result<Vec<u8>> {
+    wire::encode(&a(vec![
+        V::Uint(200),
+        V::Uint(2),
+        V::Text("AuthorityApplicationRenewalOffer".into()),
+        b(previous),
+        b(envelope),
+    ]))
+}
+pub fn invite_renewal(
+    bootstrap: &Verified,
+    store: &Store,
+    application: [u8; 32],
+    validity: (u64, u64),
+    acceptance_ms: u64,
+    signer: &SigningKey,
+    health: ClockHealth,
+) -> Result<Vec<u8>> {
+    store.require_requester(signer.verifying_key().to_bytes())?;
+    ensure!(
+        (1..=86_400_000).contains(&acceptance_ms),
+        "acceptance interval exceeds 24 hours"
+    );
+    let previous = application_client::renewal_target(store, application)?;
+    let scope = bootstrap.descriptor().scope();
+    let old = crate::authority_applications::Registration::parse(
+        &previous,
+        scope.network,
+        scope.incarnation,
+    )?;
+    ensure!(
+        old.owner == signer.verifying_key().to_bytes(),
+        "renewal signer differs from owner"
+    );
+    let now = health.observe()?.wall_ms;
+    let start = now
+        .saturating_sub(crate::authority_governance::UNCERTAINTY_MS)
+        .max(validity.0);
+    let end = start
+        .checked_add(acceptance_ms)
+        .context("renewal acceptance interval overflow")?
+        .min(validity.1);
+    let payload = wire::encode(&a(vec![
+        V::Uint(200),
+        V::Uint(2),
+        V::Text("AuthorityApplicationRenewal".into()),
+        b(&scope.network),
+        b(&scope.incarnation),
+        version_value(&old.reference),
+        b(&old.owner),
+        version_value(&old.grant),
+        a(vec![V::Uint(validity.0), V::Uint(validity.1)]),
+        b(&random_id()?),
+        a(vec![V::Uint(start), V::Uint(end)]),
+    ]))?;
+    let bytes = renewal_artifact(&previous, &wire::sign_envelope(&payload, signer)?)?;
+    RenewalOffer::parse(bootstrap, &bytes, false)?;
+    Ok(bytes)
+}

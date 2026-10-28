@@ -6,7 +6,11 @@ use crate::authority_read::{self as read, Query};
 pub(super) fn handles(command: &Command) -> bool {
     matches!(
         command,
-        Command::Page(domains::page::Command::View { .. })
+        Command::Stream(
+            domains::streams::Command::Lookup { .. }
+                | domains::streams::Command::Inspect { .. }
+                | domains::streams::Command::Permit { .. }
+        ) | Command::Page(domains::page::Command::View { .. })
             | Command::Route(
                 domains::routes::Command::Lookup { .. }
                     | domains::routes::Command::VoucherContext { .. }
@@ -23,6 +27,7 @@ pub(super) fn local(
     store: &mut Store,
     session: &mut Session,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
+    budget: Option<&mut crate::authority_inspection::read_client::RetryBudget>,
 ) -> Result<ResultState> {
     ensure!(
         bootstrap.fully_accepted()
@@ -34,8 +39,49 @@ pub(super) fn local(
         "reconcile the exact pending operation before a fresh domain read"
     );
     // This content-free read enforces the accepted privacy contract before resource disclosure.
-    policy::refresh_before_request(bootstrap, path, signer, store, session, &mut *clock)?;
-    let prior = Cache::load(bootstrap, store)?;
+    if let Some(budget) = budget {
+        policy::refresh_before_request_with_budget(
+            bootstrap,
+            path,
+            signer,
+            store,
+            session,
+            &mut *clock,
+            budget,
+        )?;
+        let prior = Cache::load(bootstrap, store)?;
+        budget.run(|budget| {
+            local_once(
+                bootstrap,
+                &request,
+                &prior,
+                path,
+                signer,
+                store,
+                session,
+                &mut || budget.clock(&mut *clock),
+            )
+        })
+    } else {
+        policy::refresh_before_request(bootstrap, path, signer, store, session, &mut *clock)?;
+        let prior = Cache::load(bootstrap, store)?;
+        local_once(
+            bootstrap, &request, &prior, path, signer, store, session, clock,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn local_once(
+    bootstrap: &Verified,
+    request: &Request,
+    prior: &Cache,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    clock: &mut impl FnMut() -> Result<ClockHealth>,
+) -> Result<ResultState> {
     let expected = vec![policy::current_reference(bootstrap, store)?];
     let operation = request.operation(store, &expected)?;
     let descriptor = store.descriptor().clone();

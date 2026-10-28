@@ -141,16 +141,36 @@ impl Cache {
             .resume_ordinary()?
             .map(|p| Intent::from_signed(p.signed()))
             .transpose()?;
-        let mut refs = references(&result.records, scope.network, scope.incarnation)?;
-        refs.extend(result.state.records.values().map(|r| r.reference.clone()));
-        for r in refs {
+        let authenticated = |r: &VersionRef| {
+            store.generations().contains(r)
+                || pending
+                    .as_ref()
+                    .is_some_and(|p| p.action == "AuthorityDomain" && p.expected.contains(r))
+        };
+        for r in references(&result.records, scope.network, scope.incarnation)? {
             ensure!(
-                store.generations().contains(&r)
-                    || pending
-                        .as_ref()
-                        .is_some_and(|p| p.action == "AuthorityDomain" && p.expected.contains(&r)),
+                authenticated(&r),
                 "domain cache lacks retained quorum authentication"
             );
+        }
+        let mut superseded = false;
+        for r in result.state.records.values().map(|r| &r.reference) {
+            if !authenticated(r) {
+                ensure!(
+                    pending.is_none()
+                        && store.generations().iter().any(|current| {
+                            current.index() == r.index() && current.generation > r.generation
+                        }),
+                    "domain cache lacks retained quorum authentication"
+                );
+                superseded = true;
+            }
+        }
+        if superseded {
+            // A fresh read can persist its floor before cache publication is interrupted.
+            // Discard derived domain context and its keys; only a new verified result may
+            // repopulate it. Governance, monotonic floors and pending exact intents stay intact.
+            result.state = State::empty(scope.network, scope.incarnation);
         }
         Ok(result)
     }
@@ -279,6 +299,8 @@ pub(crate) fn restrictive(command: &Command) -> bool {
     matches!(
         command.name(),
         "PageWithdraw"
+            | "StreamClose"
+            | "StreamWithdraw"
             | "PageHostWithdraw"
             | "SealedPublicationWithdraw"
             | "SealedIdentityRevoke"
@@ -315,12 +337,14 @@ fn policy_exempt(request: &Request) -> bool {
     // remain usable to inspect or withdraw resources after discretionary rights end.
     matches!(
         &request.command,
-        Command::Backup(
-            domains::backup::Command::Destination { .. }
-                | domains::backup::Command::Destinations { .. }
-                | domains::backup::Command::Get { .. }
-                | domains::backup::Command::List { .. }
-        ) | Command::Page(domains::page::Command::HostGet { .. })
+        Command::Stream(domains::streams::Command::Lookup { .. })
+            | Command::Backup(
+                domains::backup::Command::Destination { .. }
+                    | domains::backup::Command::Destinations { .. }
+                    | domains::backup::Command::Get { .. }
+                    | domains::backup::Command::List { .. }
+            )
+            | Command::Page(domains::page::Command::HostGet { .. })
             | Command::Ssh(
                 domains::ssh::Command::Service { .. } | domains::ssh::Command::Grant { .. }
             )
@@ -804,6 +828,50 @@ impl<'a> Prepared<'a> {
         Ok(result)
     }
 }
+fn fresh_request(request: &Request) -> bool {
+    fresh::handles(&request.command)
+        && !(request.grant.is_none()
+            && matches!(
+                request.command,
+                Command::Stream(domains::streams::Command::Lookup { .. })
+            ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn local_with_read_budget(
+    bootstrap: &Verified,
+    request: Request,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    mut clock: impl FnMut() -> Result<ClockHealth>,
+    budget: &mut crate::authority_inspection::read_client::RetryBudget,
+) -> Result<ResultState> {
+    budget.check()?;
+    if fresh_request(&request) {
+        ensure!(
+            !request.command.serving(),
+            "serving effects require the selected recipient exchange"
+        );
+        fresh::local(
+            bootstrap,
+            request,
+            path,
+            signer,
+            store,
+            session,
+            &mut clock,
+            Some(budget),
+        )
+    } else {
+        // Ordinary operations retain their exact journal/recovery path and are never reissued here.
+        local(bootstrap, request, path, signer, store, session, || {
+            budget.clock(&mut clock)
+        })
+    }
+}
+
 pub fn local(
     bootstrap: &Verified,
     request: Request,
@@ -843,13 +911,15 @@ pub fn local_with_objects(
         !request.command.serving(),
         "serving effects require the selected recipient exchange"
     );
-    if fresh::handles(&request.command) {
+    if fresh_request(&request) {
         ensure!(
             inputs.objects().next().is_none(),
             "fresh read carries unexpected objects"
         );
         return Ok((
-            fresh::local(bootstrap, request, path, signer, store, session, &mut clock)?,
+            fresh::local(
+                bootstrap, request, path, signer, store, session, &mut clock, None,
+            )?,
             crate::authority_objects::Resolved::default(),
         ));
     }

@@ -70,6 +70,11 @@ def main():
     if version != 'HyperNetSuite ' + manifest['version']:
         raise ValueError('Installed binary and package versions differ')
     report['checks'].append('Exact binary version')
+    if tuple(map(int, manifest['version'].split('.'))) >= (0, 9, 0):
+        run([sys.executable, '-B', '-c', 'import sys; sys.path.insert(0, sys.argv[1]); from hypernet_streams import Agent, Stream, AgentError; print(Agent.__name__)', str(prefix / 'SDK')])
+        run([str(binary), 'streams', 'agent', '--help'])
+        run([str(binary), 'streams', 'endpoint-config', '--help'])
+        report['checks'].append('Application companion commands and Python SDK import')
     with tempfile.TemporaryDirectory(prefix='HyperNetSuiteQualification', dir=work) as directory:
         private = Path(directory)
         key = private / 'Identity.json'

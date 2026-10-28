@@ -60,6 +60,15 @@ builds and cannot move backwards. Earlier development packages do not become
 release packages when a version label changes. Use independently accepted release
 trust and the signed target for the new package; retain existing state and floors.
 
+Version 0.9 retains the existing package state-contract identifier. This does not
+make new application-stream records or segmented authority history readable by
+version 0.8. Installing 0.9 advances the retained version floor to at least 0.9.0.
+Do not open post-0.9 state with 0.8, replace segmented history with `History.bin`,
+or delete trust state, requester journals or generation floors to permit a downgrade.
+Recovery requires stopped workloads and a complete consistent backup, including
+history, journals and separately retained current floors, with a compatible
+installation. Restoring a backup does not authorise lowering any retained floor.
+
 After creating a signed archive, the publisher authorises its exact target:
 
 ```sh

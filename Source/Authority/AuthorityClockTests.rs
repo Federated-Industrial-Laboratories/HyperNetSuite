@@ -509,3 +509,136 @@ fn public_signed_export_uses_host_pin_and_rejects_replaced_file_shapes() {
     std::fs::write(&path, vec![0; 4097]).unwrap();
     assert!(source.health().is_err());
 }
+
+#[test]
+fn preparation_waits_for_new_authenticated_observation_without_reusing_expired_bytes() {
+    use crate::authority_inspection::read_client::RetryBudget;
+    for private in [false, true] {
+        let directory = Directory::new();
+        let path = directory.0.join("PreparationClock");
+        let now = moment().unwrap();
+        let expired = Observation {
+            wall_ms: now.wall_ms - 2000,
+            boot_ms: now.boot_ms - 2000,
+        };
+        let original = clock_bytes(private, expired);
+        transfer_files::write_new(&path, &original).unwrap();
+        let source = if private {
+            Source::select(&path, None, None).unwrap()
+        } else {
+            Source::select(
+                &path,
+                Some(&hex::encode(key().verifying_key().to_bytes())),
+                Some(BOOT),
+            )
+            .unwrap()
+        };
+        assert!(source.health().unwrap_err().is::<ObservationExpired>());
+        let (notify, started) = std::sync::mpsc::sync_channel(1);
+        let destination = path.clone();
+        let publisher = std::thread::spawn(move || {
+            started.recv().unwrap();
+            let fresh = moment().unwrap();
+            let parent = transfer_files::directory(destination.parent().unwrap()).unwrap();
+            transfer_files::atomic_at(
+                &parent,
+                destination.file_name().unwrap(),
+                &clock_bytes(private, fresh),
+                true,
+            )
+            .unwrap();
+            fresh
+        });
+        let budget = RetryBudget::new(now.boot_ms + 2000, || false);
+        let mut calls = 0;
+        let accepted = budget
+            .clock(|| {
+                calls += 1;
+                let result = source.health();
+                if calls == 1 {
+                    assert!(result.as_ref().unwrap_err().is::<ObservationExpired>());
+                    notify.send(()).unwrap();
+                }
+                result
+            })
+            .unwrap();
+        let published = publisher.join().unwrap();
+        assert!(calls >= 2);
+        assert!(accepted.observe().unwrap().boot_ms >= published.boot_ms);
+        assert!(
+            validate_clock_bytes(private, &original, moment().unwrap())
+                .unwrap_err()
+                .is::<ObservationExpired>()
+        );
+    }
+}
+
+#[test]
+fn preparation_clock_wait_keeps_cancellation_deadline_and_invalid_evidence_terminal() {
+    use crate::authority_inspection::read_client::RetryBudget;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let directory = Directory::new();
+    let path = directory.0.join("PreparationInvalidClock");
+    transfer_files::write_new(&path, &encoded(fields(moment().unwrap()))).unwrap();
+    let public = hex::encode(key().verifying_key().to_bytes());
+    let source = Source::select(&path, Some(&public), Some(BOOT)).unwrap();
+    for invalid in ["signature", "boot", "future", "error", "lifetime"] {
+        let now = moment().unwrap();
+        let mut changed = fields(now);
+        match invalid {
+            "boot" => changed[2] = V::Text("22345678-1234-1234-1234-123456789abc".into()),
+            "future" => {
+                changed[4] = V::Uint(now.boot_ms + 5000);
+                changed[5] = V::Uint(now.boot_ms + 6000);
+            }
+            "error" => changed[6] = V::Uint(251),
+            "lifetime" => changed[5] = V::Uint(now.boot_ms + 2000),
+            _ => {}
+        }
+        let mut bytes = encoded(changed);
+        if invalid == "signature" {
+            *bytes.last_mut().unwrap() ^= 1;
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let budget = RetryBudget::new(now.boot_ms + 2000, || false);
+        let mut calls = 0;
+        let error = budget
+            .clock(|| {
+                calls += 1;
+                source.health()
+            })
+            .unwrap_err();
+        assert!(!error.is::<ObservationExpired>(), "{invalid}");
+        assert_eq!(calls, 1, "{invalid}");
+    }
+    let now = boot_time_ms().unwrap();
+    let budget = RetryBudget::new(now + 60, || false);
+    let mut calls = 0;
+    let error = budget
+        .clock(|| {
+            calls += 1;
+            Err(ObservationExpired.into())
+        })
+        .unwrap_err();
+    assert!(calls >= 1);
+    assert!(!error.is::<ObservationExpired>());
+    assert!(boot_time_ms().unwrap() >= now + 60);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let observed = cancelled.clone();
+    let budget = RetryBudget::new(boot_time_ms().unwrap() + 2000, move || {
+        observed.load(Ordering::SeqCst)
+    });
+    let mut calls = 0;
+    let error = budget
+        .clock(|| {
+            calls += 1;
+            cancelled.store(true, Ordering::SeqCst);
+            Err(ObservationExpired.into())
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("cancelled"));
+    assert_eq!(calls, 1);
+}

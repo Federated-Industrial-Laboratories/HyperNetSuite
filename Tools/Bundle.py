@@ -17,11 +17,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 sys.dont_write_bytecode = True
 import PackageTrust
 
 PRODUCT = 'HyperNetSuite'
-VERSION = '0.8.0'
+VERSION = '0.9.0'
 NAMESPACE = 'HyperNetSuiteBundle1'
 PRINCIPAL = 'HyperNetSuitePublisher'
 MAX_ARCHIVE = 512 * 1024 * 1024
@@ -105,9 +106,11 @@ def architecture():
 
 
 def allowed_path(name):
-    if name in ('.github/assets/header.svg', 'Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite'):
+    if re.fullmatch(r'SDK/hypernet_streams-[0-9]+\.[0-9]+\.[0-9]+-py3-none-any\.whl', name):
         return True
-    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Examples/[A-Z][A-Za-z0-9]*\.(py|png|svg|md|txt)|Tests/(ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics|NetworkProvisioning)\.py)', name))
+    if name in ('.github/assets/header.svg', 'Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite', 'SDK/README.md', 'SDK/Licence.txt', 'SDK/pyproject.toml', 'SDK/hypernet_streams/__init__.py', 'Examples/ApplicationStreams/stream_service.py'):
+        return True
+    return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Examples/[A-Z][A-Za-z0-9]*\.(py|png|svg|md|txt)|Tests/(ApplicationStreams|ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics|NetworkProvisioning)\.py)', name))
 
 
 def file_mode(name):
@@ -143,6 +146,8 @@ def validate_manifest(value):
     require(paths == sorted(set(paths)) and total <= MAX_ARCHIVE, 'Duplicate, unordered or oversized inventory')
     require({'Bin/HyperNetSuite', 'Licence.txt', 'ReadMe.md', 'Tools/Bundle.py', 'Tools/Qualify.py', 'Tests/ReaderTerminal.py', 'Tests/LayoutTerminal.py', 'Tests/MarkupRobustness.py', 'Tests/MediaImport.py', 'Tests/MediaTerminal.py', 'Documentation/MediaSchema.json', 'Documentation/ThirdPartyNotices.txt'}.issubset(paths), 'Required package files are missing')
     require({'Examples/Prepare.py', 'Examples/ReadMe.md', 'Examples/Cafe.png', 'Examples/Square.svg', 'Examples/Books.svg', 'Examples/Botanical.svg'}.issubset(paths), 'Required example files are missing')
+    if tuple(map(int, value['version'].split('.'))) >= (0, 9, 0):
+        require({'Documentation/ApplicationStreams.md', 'Documentation/AuthorityConnector.md', 'SDK/README.md', 'SDK/Licence.txt', 'SDK/pyproject.toml', 'SDK/hypernet_streams/__init__.py', 'Examples/ApplicationStreams/stream_service.py', f"SDK/hypernet_streams-{value['version']}-py3-none-any.whl"}.issubset(paths), 'Application stream SDK, connector documentation or example is missing')
     require(next(item['sha256'] for item in files if item['path'] == metadata['binary']) == metadata['binarySha256'], 'Binary identity differs from inventory')
     return value
 
@@ -278,6 +283,7 @@ def binary_metadata(binary):
             'prerequisites': ['Native Linux with the package architecture and declared GNU libc ABI',
                               'Python 3.11+ and OpenSSH ssh-keygen with Ed25519 SSHSIG for package operations',
                               'The ELF interpreter and declared shared libraries must be maintained by the host',
+                              'Rootless Podman with subordinate UID/GID ranges is required for mapped application or authority ingress',
                               'OpenSSH 10.6+ is separately required only for explicitly requested SSH services']}
 
 
@@ -409,6 +415,25 @@ def remove(args):
     return {'removed': str(prefix), 'profilesPreserved': True}
 
 
+def stream_wheel(path, repository):
+    expected = f'hypernet_streams-{VERSION}-py3-none-any.whl'
+    require(path.name == expected, 'SDK wheel version or Python tag differs')
+    require(path.stat().st_size <= 1024 * 1024, 'SDK wheel exceeds its bound')
+    prefix = f'hypernet_streams-{VERSION}.dist-info/'
+    allowed = {'hypernet_streams/__init__.py', *(prefix + name for name in ('METADATA', 'WHEEL', 'top_level.txt', 'RECORD', 'licenses/Licence.txt'))}
+    with zipfile.ZipFile(path) as wheel:
+        entries = wheel.infolist()
+        names = [entry.filename for entry in entries]
+        require(len(names) == len(set(names)) and set(names) == allowed, 'SDK wheel contains unexpected files')
+        require(all(entry.file_size <= 65536 for entry in entries), 'SDK wheel member exceeds its bound')
+        require(wheel.read('hypernet_streams/__init__.py') == (repository / 'SDK/hypernet_streams/__init__.py').read_bytes(), 'SDK wheel differs from included implementation')
+        require(wheel.read(prefix + 'licenses/Licence.txt') == (repository / 'Licence.txt').read_bytes(), 'SDK wheel omits or changes the Suite license notice')
+        metadata = wheel.read(prefix + 'METADATA').decode('utf-8')
+        require('Name: hypernet-streams\n' in metadata and f'Version: {VERSION}\n' in metadata and 'Requires-Dist:' not in metadata, 'SDK wheel metadata differs or adds a runtime dependency')
+        require('Tag: py3-none-any\n' in wheel.read(prefix + 'WHEEL').decode('ascii'), 'SDK wheel has another platform tag')
+    return path
+
+
 def create(args):
     repository = Path(__file__).resolve().parents[1]
     binary = Path(args.binary).absolute()
@@ -426,11 +451,14 @@ def create(args):
         runtime_version = runtime_version.split()[1]
         files = {'Bin/HyperNetSuite': snapshot, 'Licence.txt': repository / 'Licence.txt', 'ReadMe.md': repository / 'ReadMe.md'}
         files['.github/assets/header.svg'] = repository / '.github/assets/header.svg'
-        for folder in ('Tools', 'Documentation', 'Tests', 'Examples'):
-            for path in sorted((repository / folder).iterdir()):
+        for folder in ('Tools', 'Documentation', 'Tests', 'Examples', 'SDK'):
+            for path in sorted((repository / folder).rglob('*')):
                 name = str(path.relative_to(repository))
                 if allowed_path(name) and path.is_file():
                     files[name] = path
+        wheel = temporary / Path(args.streams_sdk_wheel).name
+        copy_private(Path(args.streams_sdk_wheel), wheel, 1024 * 1024)
+        files['SDK/' + wheel.name] = stream_wheel(wheel, repository)
         manifest = {'format': 1, 'product': PRODUCT, 'version': runtime_version, 'architecture': machine,
                     'metadata': metadata,
                     'files': [{'path': name, 'size': path.stat().st_size, 'mode': file_mode(name), 'sha256': digest_file(path)} for name, path in sorted(files.items())]}
@@ -468,6 +496,7 @@ def main():
     PackageTrust.arguments(commands)
     package = commands.add_parser('Create')
     package.add_argument('--binary', required=True, help='Locked release binary for the native architecture')
+    package.add_argument('--streams-sdk-wheel', required=True, help='Matching stdlib-only Python SDK wheel built from SDK/pyproject.toml')
     package.add_argument('--output', required=True)
     package.add_argument('--signing-key', required=True)
     for command in ('Verify', 'Install'):
@@ -506,6 +535,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, tarfile.TarError) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
         print('HyperNetSuite package: ' + str(error).encode('ascii', 'backslashreplace').decode(), file=sys.stderr)
         sys.exit(1)
