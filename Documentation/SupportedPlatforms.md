@@ -2,9 +2,9 @@
 
 [Documentation](ReadMe.md) | [Project README](../ReadMe.md)
 
-The 0.9.0 candidate uses native Ubuntu 24.04 x86_64 with GNU libc 2.39. The
+The 0.9.0 release uses native Ubuntu 24.04 x86_64 with GNU libc 2.39. The
 published 0.8.0 release retains its separate historical evidence. See the
-[release notes](ReleaseNotes.md) for the candidate changes and measured scope.
+[release notes](ReleaseNotes.md) for the release changes and measured scope.
 AArch64 is an explicit pending qualification target. Cross compilation and emulation are not
 native runtime evidence. Direct Windows and macOS support is not currently
 qualified. The protocols and separate client interface remain open to other

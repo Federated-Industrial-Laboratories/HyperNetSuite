@@ -5,7 +5,7 @@
 <p align="center">Native graphical, terminal and command-line clients for HyperNet.</p>
 
 <p align="center">
-  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.8.0">Linux 0.8.0</a> |
+  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.9.0">Linux 0.9.0</a> |
   <a href="Documentation/Installation.md">Install</a> |
   <a href="Documentation/ReadMe.md">Documentation</a> |
   <a href="Documentation/Security.md">Security</a> |
@@ -24,7 +24,7 @@ command line provides publishing and administration; terminal browsing and
 plain output work without a graphical desktop.
 
 > [!NOTE]
-> **Linux 0.8.0** is qualified on native Ubuntu x86_64 within the documented limits.
+> **Linux 0.9.0** is qualified on native Ubuntu x86_64 within the documented limits.
 > Other Linux distributions need compatible runtime libraries and graphics
 > support. AArch64, Windows and macOS remain unqualified; SELinux-enabled
 > deployment is also unqualified. This release has no independent security
@@ -42,6 +42,7 @@ plain output work without a graphical desktop.
 | Private Mail and Forms | Exchange encrypted messages and review Form submissions before sending. |
 | Transfers and services | Review file offers before accepting them and approve separately consented OpenSSH sessions. |
 | Federation and archives | Share reviewed Pages between agreed networks and restore authorised encrypted content archives. |
+| Application integration | Use the native companion and packaged Python SDK for consented, relay-only application streams. |
 | Administration | Inspect network authority, manage permissions and approve policy or recovery changes. |
 
 Page content cannot run scripts, choose local credentials or submit a Form
@@ -68,7 +69,7 @@ covers graphical dependencies, a terminal-only build and signed offline packages
 
 ## Install
 
-Download the [Linux 0.8.0 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.8.0)
+Download the [Linux 0.9.0 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.9.0)
 and follow [signed offline installation](Documentation/Installation.md#signed-offline-package).
 Authenticate the publisher independently and follow the required update-trust
 procedure before installing a package.
@@ -126,7 +127,7 @@ the client never silently selects a direct connection.
 
 ## Documentation
 
-The [release notes](Documentation/ReleaseNotes.md) describe the 0.8.0 scope and
+The [release notes](Documentation/ReleaseNotes.md) describe the 0.9.0 scope and
 known limits. The [documentation index](Documentation/ReadMe.md) separates reader and author
 guides, operator workflows and protocol references. Start with
 [installation](Documentation/Installation.md), [client use](Documentation/Usage.md)
