@@ -294,14 +294,7 @@ fn current_view_at(
 ) -> Result<bool> {
     media_client::current_view_at(store, result, now)
 }
-#[cfg(test)]
-pub(crate) fn current_view_for_test(
-    store: &Store,
-    result: &ResultState,
-    now: crate::authority_challenge::Observation,
-) -> Result<bool> {
-    current_view_at(store, result, now)
-}
+
 // Refresh only visible results and one continuation item, never the full candidate corpus.
 fn refresh_selection(
     hits: &[local::Hit],
@@ -475,5 +468,8 @@ pub fn run(
 }
 
 #[cfg(test)]
-#[path = "SearchNetworkTests.rs"]
+#[path = "../../Tests/Unit/Search/SearchNetworkTests.rs"]
 mod tests;
+
+#[cfg(test)]
+include!("../../Tests/Support/Search/SearchNetwork.rs");

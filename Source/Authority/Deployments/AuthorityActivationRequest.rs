@@ -64,10 +64,7 @@ impl Request {
             a(self.records.iter().map(|v| b(v)).collect()),
         ]))
     }
-    #[cfg(test)]
-    pub fn signed(&self) -> &[u8] {
-        &self.signed
-    }
+
     pub fn intent(&self) -> &Intent {
         &self.intent
     }
@@ -178,3 +175,6 @@ impl Request {
         )
     }
 }
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Deployments/AuthorityActivationRequest.rs");

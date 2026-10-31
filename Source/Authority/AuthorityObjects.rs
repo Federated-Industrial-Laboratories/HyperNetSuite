@@ -143,83 +143,6 @@ pub fn validate_references(references: &[Reference]) -> Result<()> {
     Ok(())
 }
 
-/// Evaluation dependencies may only come from the signed operation and exact prior state.
-#[cfg(test)]
-pub fn validate_required(
-    required: &[Reference],
-    command: &[Reference],
-    retained: &[Reference],
-) -> Result<()> {
-    validate_references(required)?;
-    validate_references(command)?;
-    validate_references(retained)?;
-    ensure!(
-        required
-            .iter()
-            .all(|r| command.binary_search(r).is_ok() || retained.binary_search(r).is_ok()),
-        "evaluation requested an input outside its command and prior state"
-    );
-    Ok(())
-}
-
-/// The accepted terminal state independently determines this complete export index.
-#[derive(Clone, Debug)]
-#[cfg(test)]
-pub struct EpochIndex {
-    state: Digest,
-    references: Vec<Reference>,
-}
-#[cfg(test)]
-impl EpochIndex {
-    pub fn new(state: &[u8], references: &[Reference]) -> Result<Self> {
-        validate_references(references)?;
-        wire::decode_state(state)?;
-        let index = Self {
-            state: wire::digest(state),
-            references: references.to_vec(),
-        };
-        index.canonical()?;
-        Ok(index)
-    }
-    pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let value = wire::decode_state(bytes)?;
-        let fields = value.array(4)?;
-        ensure!(
-            fields[0].text()? == "HyperNetEpochObjects" && fields[1].uint()? == 1,
-            "invalid epoch object index"
-        );
-        let references = fields[3]
-            .list(4096)?
-            .iter()
-            .map(Reference::parse)
-            .collect::<Result<Vec<_>>>()?;
-        validate_references(&references)?;
-        Ok(Self {
-            state: fields[2].fixed()?,
-            references,
-        })
-    }
-    pub fn canonical(&self) -> Result<Vec<u8>> {
-        wire::encode_state(&V::Array(vec![
-            V::Text("HyperNetEpochObjects".into()),
-            V::Uint(1),
-            V::Bytes(self.state.to_vec()),
-            V::Array(self.references.iter().map(Reference::value).collect()),
-        ]))
-    }
-    pub fn verify(&self, terminal_state: &[u8], required: &[Reference]) -> Result<()> {
-        validate_references(required)?;
-        ensure!(
-            self.state == wire::digest(terminal_state) && self.references == required,
-            "epoch object index differs from the complete accepted terminal state"
-        );
-        Ok(())
-    }
-    pub fn references(&self) -> &[Reference] {
-        &self.references
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Object {
     reference: Reference,
@@ -287,10 +210,7 @@ impl Resolved {
     pub fn references(&self) -> Vec<Reference> {
         self.objects.keys().cloned().collect()
     }
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.objects.is_empty()
-    }
+
     pub fn value(&self) -> V {
         V::Array(
             self.objects
@@ -323,93 +243,8 @@ impl Resolved {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "../../Tests/Unit/Authority/AuthorityObjectsUnitTests.rs"]
+mod tests;
 
-    #[test]
-    fn staged_inputs_bind_raw_digest_length_and_class() {
-        let bytes = b"@HyperNetPage/2\nA page";
-        let source = Reference::for_bytes(Class::PageSource, bytes).unwrap();
-        assert_eq!(
-            source.content_sha256(),
-            <Digest>::from(Sha256::digest(bytes))
-        );
-        assert_ne!(source.content_sha256(), wire::digest(bytes));
-        assert!(source.verify(&bytes[..bytes.len() - 1]).is_err());
-        let mut changed = bytes.to_vec();
-        changed[0] ^= 1;
-        assert!(source.verify(&changed).is_err());
-        let bundle = Reference::for_bytes(Class::PageBundle, bytes).unwrap();
-        assert_ne!(source.identity(), bundle.identity());
-        let substitution = Object::verify(bundle, bytes.to_vec()).unwrap();
-        assert!(Resolved::exact(&[source], vec![substitution]).is_err());
-        assert!(Reference::for_bytes(Class::PageSource, &vec![0; PAGE_SOURCE_BYTES + 1]).is_err());
-        assert!(Reference::for_bytes(Class::PageBundle, &[]).is_err());
-    }
-
-    #[test]
-    fn evaluation_inputs_require_the_exact_declared_closure() {
-        let first = Object::verify(
-            Reference::for_bytes(Class::PageSource, b"first").unwrap(),
-            b"first".to_vec(),
-        )
-        .unwrap();
-        let second = Object::verify(
-            Reference::for_bytes(Class::PageSource, b"second").unwrap(),
-            b"second".to_vec(),
-        )
-        .unwrap();
-        assert!(validate_required(std::slice::from_ref(&first.reference), &[], &[]).is_err());
-        validate_required(
-            std::slice::from_ref(&first.reference),
-            std::slice::from_ref(&first.reference),
-            &[],
-        )
-        .unwrap();
-        validate_required(
-            std::slice::from_ref(&second.reference),
-            &[],
-            std::slice::from_ref(&second.reference),
-        )
-        .unwrap();
-        assert!(
-            Resolved::exact(std::slice::from_ref(&first.reference), vec![second.clone()]).is_err()
-        );
-        let exact =
-            Resolved::exact(std::slice::from_ref(&first.reference), vec![first.clone()]).unwrap();
-        assert!(exact.get(&second.reference).is_err());
-        let value = exact.value();
-        let decoded = Resolved::parse(std::slice::from_ref(&first.reference), &value).unwrap();
-        assert_eq!(decoded.get(&first.reference).unwrap(), b"first");
-        assert!(Resolved::parse(&[], &value).is_err());
-        let mut references = vec![first.reference.clone(), second.reference.clone()];
-        references.sort();
-        assert!(Resolved::exact(&references, vec![first.clone(), first]).is_err());
-    }
-
-    #[test]
-    fn epoch_index_requires_the_full_exact_terminal_closure() {
-        let state = wire::encode(&V::Array(vec![V::Uint(1)])).unwrap();
-        let reference = Reference::for_bytes(Class::PageSource, b"pending page").unwrap();
-        let index = EpochIndex::new(&state, std::slice::from_ref(&reference)).unwrap();
-        let parsed = EpochIndex::parse(&index.canonical().unwrap()).unwrap();
-        parsed
-            .verify(&state, std::slice::from_ref(&reference))
-            .unwrap();
-        assert!(parsed.verify(&state, &[]).is_err());
-        assert!(
-            parsed
-                .verify(
-                    &wire::encode(&V::Array(vec![V::Uint(2)])).unwrap(),
-                    &[reference]
-                )
-                .is_err()
-        );
-        assert!(
-            EpochIndex::new(&state, &[])
-                .unwrap()
-                .verify(&state, parsed.references())
-                .is_err()
-        );
-    }
-}
+#[cfg(test)]
+include!("../../Tests/Support/Authority/AuthorityObjects.rs");

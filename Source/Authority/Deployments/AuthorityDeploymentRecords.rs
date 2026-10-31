@@ -339,21 +339,7 @@ impl Index {
             .flat_map(Registration::streams)
             .collect()
     }
-    #[cfg(test)]
-    pub fn open_count(&self) -> usize {
-        self.deployments
-            .keys()
-            .filter(|d| !self.withdrawals.contains_key(*d))
-            .count()
-    }
-    #[cfg(test)]
-    pub fn extend_reservations(&self, base: &Reservations) -> Reservations {
-        let mut output = base.clone();
-        for key in &self.reserved {
-            if !output.contains(key) {
-                output.0.push((7, *key));
-            }
-        }
-        output
-    }
 }
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Deployments/AuthorityDeploymentRecords.rs");

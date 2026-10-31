@@ -7,6 +7,20 @@ identity files, mail vaults, recovery files and downloads outside an installed
 software prefix. Package removal never revokes network grants or deletes those
 external files.
 
+## Permission hotfix 0.9.1
+
+Upgrade Core and Suite together and apply the
+[permission-scope migration](PermissionScopes.md). Broad and mixed-purpose grants
+no longer authorise stream or sealed-page effects. Existing signed records remain
+readable; a package update does not silently rewrite grants, admissions, service
+registrations or sealed reviews. Before replacing any binary, stop new ordered
+mutations, resolve pending work and let every voter finish applying the old-version
+committed history. The stopped committee must have matching applied and committed
+heights, with each voter fully applied. Follow the exact checks in the migration
+guide and retain complete journals, state objects, history and independent floors.
+A lagging old-version suffix must not be re-executed under the patched rules.
+Do not mix old and patched authority semantics or downgrade to regain broad permission.
+
 ## Side-by-side upgrade
 
 1. Record the currently selected binary path and verify its signed inventory.
@@ -55,7 +69,7 @@ python3 Tools/Bundle.py TrustInit --trust-directory /Private/SuitePackageTrust \
 
 The state contract is fixed by this product; an arbitrary operator-supplied label
 cannot mark incompatible state as compatible. Core uses a different contract and
-trust directory. The current Linux release is version 0.9.0. Signed update sequences identify exact
+trust directory. The current Linux release is version 0.9.1. Signed update sequences identify exact
 builds and cannot move backwards. Earlier development packages do not become
 release packages when a version label changes. Use independently accepted release
 trust and the signed target for the new package; retain existing state and floors.

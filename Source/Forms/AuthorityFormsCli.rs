@@ -269,5 +269,5 @@ pub fn run(configuration: Option<&Path>, args: Arguments) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "AuthorityFormsCliTests.rs"]
+#[path = "../../Tests/Unit/Forms/AuthorityFormsCliTests.rs"]
 mod tests;

@@ -400,5 +400,5 @@ pub fn disk_header_bytes() -> u64 {
 }
 
 #[cfg(test)]
-#[path = "../../Transfers/AuthorityTransferTests.rs"]
+#[path = "../../../Tests/Unit/Transfers/AuthorityTransferTests.rs"]
 mod tests;

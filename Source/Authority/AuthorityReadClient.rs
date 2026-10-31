@@ -79,7 +79,7 @@ pub(crate) struct Exchange {
 }
 
 #[cfg(test)]
-#[path = "AuthorityReadClientTests.rs"]
+#[path = "../../Tests/Unit/Authority/AuthorityReadClientTests.rs"]
 pub(crate) mod tests;
 
 #[allow(clippy::too_many_arguments)]

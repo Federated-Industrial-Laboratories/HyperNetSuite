@@ -723,7 +723,7 @@ fn lifecycle(online: Online, application: Option<[u8; 32]>, withdraw: bool) -> R
 }
 
 #[cfg(test)]
-#[path = "../Authority/Governance/AuthorityApplicationCliTests.rs"]
+#[path = "../../Tests/Unit/Authority/Governance/AuthorityApplicationCliTests.rs"]
 mod tests;
 
 fn renewal_output(status: &str, offer: &offers::RenewalOffer) -> Result<()> {

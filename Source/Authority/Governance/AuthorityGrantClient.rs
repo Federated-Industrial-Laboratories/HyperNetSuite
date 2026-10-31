@@ -464,5 +464,5 @@ pub fn execute(
 }
 
 #[cfg(test)]
-#[path = "AuthorityGrantClientTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Governance/AuthorityGrantClientTests.rs"]
 mod tests;

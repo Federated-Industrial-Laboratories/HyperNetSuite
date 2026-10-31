@@ -161,18 +161,18 @@ impl Declaration {
 #[path = "AuthorityEpochProof.rs"]
 mod proof;
 pub use proof::{ValidatedActivation, ValidatedTerminal, verify_activation, verify_terminal};
-#[cfg(test)]
-pub(crate) use proof::{descriptor, genesis, ready_statement};
 
 #[path = "AuthorityEpochAssembly.rs"]
 mod assembly;
-#[cfg(test)]
-pub use assembly::terminal_checkpoint;
+
 pub use assembly::{assemble_checkpoint, assemble_handoff, assemble_ready};
 
 #[path = "AuthorityEpochArchive.rs"]
 pub mod archive;
 
 #[cfg(test)]
-#[path = "AuthorityEpochTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Epochs/AuthorityEpochTests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Epochs/AuthorityEpoch.rs");

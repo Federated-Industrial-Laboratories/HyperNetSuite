@@ -30,8 +30,7 @@ mod storage;
 pub use storage::{media_storage_budget, media_storage_charge, serialized_bank_bytes};
 #[path = "../../Pages/AuthorityPageRecords.rs"]
 mod records;
-#[cfg(test)]
-pub use records::retained_inputs;
+
 pub use records::*;
 #[path = "../../Pages/AuthorityPageCommands.rs"]
 mod commands;
@@ -129,7 +128,8 @@ fn identity(label: &str, fields: Vec<V>) -> Result<Digest> {
 }
 
 #[cfg(test)]
-#[path = "../../Pages/AuthorityPageTests.rs"]
+#[path = "../../../Tests/Unit/Pages/AuthorityPageTests.rs"]
 pub(crate) mod tests;
+
 #[cfg(test)]
-pub(crate) use tests::complete_content;
+include!("../../../Tests/Support/Authority/Domains/AuthorityDomainPage.rs");

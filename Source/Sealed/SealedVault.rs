@@ -547,5 +547,5 @@ impl Vault {
 }
 
 #[cfg(test)]
-#[path = "SealedVaultTests.rs"]
+#[path = "../../Tests/Unit/Sealed/SealedVaultTests.rs"]
 mod tests;

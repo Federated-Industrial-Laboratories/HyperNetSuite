@@ -311,5 +311,5 @@ pub fn template(arguments: Template) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "PrivateRouteAuthoringTests.rs"]
+#[path = "../../Tests/Unit/Routing/PrivateRouteAuthoringTests.rs"]
 mod tests;

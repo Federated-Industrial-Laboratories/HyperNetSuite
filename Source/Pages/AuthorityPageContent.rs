@@ -131,23 +131,6 @@ impl Copy {
         );
         Ok(r)
     }
-    #[cfg(test)]
-    pub fn payload(&self, network: Digest, incarnation: Digest) -> Result<Vec<u8>> {
-        wire::encode(&a(vec![
-            V::Uint(200),
-            V::Uint(1),
-            V::Text("PageContentCopy".into()),
-            b(&network),
-            b(&incarnation),
-            reference(&self.placement),
-            reference(&self.host),
-            b(&self.digest),
-            V::Uint(self.bytes),
-            b(&self.request),
-            V::Uint(self.recorded_ms),
-            V::Uint(self.expires_ms),
-        ]))
-    }
 }
 #[derive(Clone, Debug)]
 pub struct Copies {
@@ -822,5 +805,8 @@ pub(crate) fn evaluate(
 }
 
 #[cfg(test)]
-#[path = "AuthorityPageContentTests.rs"]
+#[path = "../../Tests/Unit/Pages/AuthorityPageContentTests.rs"]
 mod tests;
+
+#[cfg(test)]
+include!("../../Tests/Support/Pages/AuthorityPageContent.rs");

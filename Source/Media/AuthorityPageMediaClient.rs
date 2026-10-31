@@ -387,5 +387,5 @@ pub fn complete<T>(
 }
 
 #[cfg(test)]
-#[path = "AuthorityPageMediaClientTests.rs"]
+#[path = "../../Tests/Unit/Media/AuthorityPageMediaClientTests.rs"]
 mod tests;

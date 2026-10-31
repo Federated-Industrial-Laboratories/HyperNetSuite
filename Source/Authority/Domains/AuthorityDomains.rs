@@ -221,10 +221,7 @@ impl State {
             keys: BTreeMap::new(),
         }
     }
-    #[cfg(test)]
-    pub fn parse(value: &V, network: Digest, incarnation: Digest) -> Result<Self> {
-        Self::parse_inner(value, network, incarnation, false)
-    }
+
     /// A requester retains only metadata disclosed by its individually certified results.
     pub fn parse_context(value: &V, network: Digest, incarnation: Digest) -> Result<Self> {
         Self::parse_inner(value, network, incarnation, true)
@@ -345,24 +342,7 @@ impl State {
         self.charge()?;
         Ok(())
     }
-    #[cfg(test)]
-    pub fn requesters(&self) -> Vec<Key> {
-        let mut requesters: Vec<_> = self
-            .keys
-            .iter()
-            .filter_map(|(key, (class, _))| {
-                matches!(
-                    *class,
-                    3 | sealed_identity::ROOT_KEY | sealed_identity::SIGNING_KEY
-                )
-                .then_some(*key)
-            })
-            .collect();
-        requesters.extend(routes::requesters(self).expect("validated invitation records"));
-        requesters.sort();
-        requesters.dedup();
-        requesters
-    }
+
     pub fn validate_roles(&self, records: &[Vec<u8>], base: &Reservations) -> Result<()> {
         let deployments = crate::authority_deployment_records::Index::parse(
             records,
@@ -798,17 +778,7 @@ impl Decision {
         }
     }
 }
-#[cfg(test)]
-pub fn evaluate(
-    state: &State,
-    records: &[Vec<u8>],
-    reserved: &Reservations,
-    intent: &Intent,
-    at: u64,
-    replay: bool,
-) -> Result<Decision> {
-    Operation::parse(intent)?.prepare(state, records, reserved, intent, at, replay, true)
-}
+
 pub fn response_inputs(
     intent: &Intent,
     value: &V,
@@ -825,5 +795,8 @@ pub(crate) fn sorted(references: &mut Vec<VersionRef>) -> Result<()> {
     validate_versions(references, 64)
 }
 #[cfg(test)]
-#[path = "AuthorityDomainTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Domains/AuthorityDomainTests.rs"]
 mod tests;
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Domains/AuthorityDomains.rs");

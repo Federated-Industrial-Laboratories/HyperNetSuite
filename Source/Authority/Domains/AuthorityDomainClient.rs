@@ -391,27 +391,6 @@ fn refreshable_page_query(command: &Command) -> bool {
         )
 }
 impl<'a> Prepared<'a> {
-    #[cfg(test)]
-    fn new(
-        bootstrap: &'a Verified,
-        request: Request,
-        cache: Cache,
-        signer: &SigningKey,
-        store: &mut Store,
-        session: &mut Session,
-        health: ClockHealth,
-    ) -> Result<Self> {
-        Self::new_with_objects(
-            bootstrap,
-            request,
-            cache,
-            signer,
-            store,
-            session,
-            vec![],
-            &mut || Ok(health),
-        )
-    }
     #[allow(clippy::too_many_arguments)]
     fn new_with_objects(
         bootstrap: &'a Verified,
@@ -682,26 +661,7 @@ impl<'a> Prepared<'a> {
             ActionValidation::mutation(candidate.versions.clone(), candidate.updates.clone())?;
         Ok((validation, Some(candidate)))
     }
-    #[cfg(test)]
-    fn finish(
-        self,
-        reply: CertifiedReply,
-        evidence: AncestryEvidence,
-        store: &mut Store,
-        session: &mut Session,
-        clock: &mut impl FnMut() -> Result<ClockHealth>,
-    ) -> Result<ResultState> {
-        Ok(self
-            .finish_with_objects(
-                reply,
-                evidence,
-                crate::authority_objects::Resolved::default(),
-                store,
-                session,
-                clock,
-            )?
-            .0)
-    }
+
     fn finish_with_objects(
         mut self,
         reply: CertifiedReply,
@@ -1000,9 +960,12 @@ pub fn local_with_objects(
 }
 
 #[cfg(test)]
-#[path = "AuthorityDomainClientTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Domains/AuthorityDomainClientTests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../../Pages/AuthorityPageClientTests.rs"]
+#[path = "../../../Tests/Unit/Pages/AuthorityPageClientTests.rs"]
 mod page_tests;
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Domains/AuthorityDomainClient.rs");

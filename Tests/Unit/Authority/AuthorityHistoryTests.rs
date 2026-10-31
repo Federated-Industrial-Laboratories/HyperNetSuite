@@ -60,7 +60,11 @@ struct Vectors {
     consistency: Vec<Consistency>,
 }
 fn vectors() -> Vectors {
-    serde_json::from_str(include_str!("../../Tests/AuthorityHistoryVectors.json")).unwrap()
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/Tests/AuthorityHistoryVectors.json"
+    )))
+    .unwrap()
 }
 #[test]
 fn independent_rfc_vectors_and_short_extra_corrupted_paths() {

@@ -513,5 +513,5 @@ pub fn validate_record(kind: u64, value: &V, lookup: Digest) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "AuthoritySealedPublicationTests.rs"]
+#[path = "../../Tests/Unit/Sealed/AuthoritySealedPublicationTests.rs"]
 mod tests;

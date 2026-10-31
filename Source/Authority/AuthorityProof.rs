@@ -202,8 +202,7 @@ mod request;
 pub use request::{Intent, SignedRequest};
 #[path = "AuthorityStreamProof.rs"]
 mod stream_proof;
-#[cfg(test)]
-pub use stream_proof::initial_generation_id;
+
 pub use stream_proof::{CompletionMetadata, FenceOutcome, OwnStreamMetadata, StreamResponse};
 pub(crate) fn validate_stream_response(
     request: &SignedRequest,
@@ -883,5 +882,8 @@ pub fn verify_response(
 }
 
 #[cfg(test)]
-#[path = "AuthorityProofTests.rs"]
+#[path = "../../Tests/Unit/Authority/AuthorityProofTests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+include!("../../Tests/Support/Authority/AuthorityProof.rs");

@@ -840,7 +840,7 @@ pub fn local(
     pending.local(&control, store, session, &mut clock)
 }
 #[cfg(test)]
-#[path = "AuthorityApplicationClientTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Governance/AuthorityApplicationClientTests.rs"]
 mod tests;
 
 #[path = "AuthorityApplicationContext.rs"]

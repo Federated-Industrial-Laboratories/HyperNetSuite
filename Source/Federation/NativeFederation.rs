@@ -93,5 +93,5 @@ fn summary(result: &ResultState) -> Result<()> {
     )
 }
 #[cfg(test)]
-#[path = "NativeFederationTests.rs"]
+#[path = "../../Tests/Unit/Federation/NativeFederationTests.rs"]
 mod tests;

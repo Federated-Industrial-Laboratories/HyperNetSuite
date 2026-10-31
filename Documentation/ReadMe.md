@@ -2,7 +2,9 @@
 
 [Project README](../ReadMe.md) | [Installation](Installation.md) | [Security](Security.md)
 
-[Linux 0.9.0 release and downloads](ReleaseNotes.md)
+[Linux 0.9.1 release and downloads](ReleaseNotes.md)
+
+[0.9.1 permission scopes and migration](PermissionScopes.md)
 
 HyperNetSuite supplies native Page, Mail and Transfers applications, terminal
 Page viewers and command-line publishing, service and administration workflows. HyperNet runs

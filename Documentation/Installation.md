@@ -2,7 +2,7 @@
 
 [Documentation](ReadMe.md) | [Project README](../ReadMe.md)
 
-For public packages, start with the [Linux 0.9.0 download and installation steps](ReleaseNotes.md).
+For public packages, start with the [Linux 0.9.1 download and installation steps](ReleaseNotes.md).
 
 HyperNetSuite has an independent source tree, binary and package. It does not
 require a HyperNet checkout. Installation never starts a service or creates an
@@ -189,10 +189,10 @@ Maintainers can assemble an offline archive from a locked native release build:
 ```sh
 python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir dist SDK
 python3 Tools/Bundle.py Create --binary target/release/HyperNetSuite \
-  --streams-sdk-wheel dist/hypernet_streams-0.9.0-py3-none-any.whl \
+  --streams-sdk-wheel dist/hypernet_streams-0.9.1-py3-none-any.whl \
   --output HyperNetSuite.tar --signing-key PublisherKey
 python3 Tests/Bundle.py --binary target/release/HyperNetSuite \
-  --streams-sdk-wheel dist/hypernet_streams-0.9.0-py3-none-any.whl
+  --streams-sdk-wheel dist/hypernet_streams-0.9.1-py3-none-any.whl
 ```
 
 Assembly additionally requires GNU `readelf`. It records the binary's actual ELF

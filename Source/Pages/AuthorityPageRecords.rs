@@ -656,7 +656,6 @@ fn validate_records(state: &State, partial: bool) -> Result<()> {
     }
     Ok(())
 }
+
 #[cfg(test)]
-pub fn retained_inputs(_state: &State) -> Result<Vec<Reference>> {
-    Ok(vec![])
-}
+include!("../../Tests/Support/Pages/AuthorityPageRecords.rs");

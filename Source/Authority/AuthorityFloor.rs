@@ -572,18 +572,7 @@ impl Store {
         self.check_history(&result)?;
         self.advance(&result, self.stored.wall_floor_ms)
     }
-    /// The lower bound is an independent credential start, or zero when none applies.
-    /// The original live challenge already establishes causal issuance through BOOTTIME.
-    #[cfg(test)]
-    pub fn accept(
-        &mut self,
-        result: VerifiedResult,
-        session: &mut Session,
-        health: ClockHealth,
-        not_before_ms: u64,
-    ) -> Result<DurablePermit> {
-        self.accept_with_clock(result, session, &mut || Ok(health), not_before_ms)
-    }
+
     pub fn accept_with_clock(
         &mut self,
         result: VerifiedResult,
@@ -808,25 +797,7 @@ impl DurablePermit {
             false,
         )
     }
-    #[cfg(test)]
-    pub fn perform<T>(
-        self,
-        store: &mut Store,
-        session: &mut Session,
-        health: ClockHealth,
-        requested_effect: u64,
-        check_current_restrictions: impl FnMut(&proof::Restrictions) -> Result<()>,
-        effect: impl FnOnce(&OperationResult, &Store) -> Result<T>,
-    ) -> Result<T> {
-        self.perform_with_clock(
-            store,
-            session,
-            &mut || Ok(health),
-            requested_effect,
-            check_current_restrictions,
-            effect,
-        )
-    }
+
     pub fn perform_with_clock<T>(
         self,
         store: &mut Store,
@@ -846,30 +817,7 @@ impl DurablePermit {
             false,
         )
     }
-    #[cfg(test)]
-    pub fn perform_once<T>(
-        self,
-        store: &mut Store,
-        session: &mut Session,
-        health: ClockHealth,
-        requested_effect: u64,
-        check_current_restrictions: impl FnMut(&proof::Restrictions) -> Result<()>,
-        effect: impl FnOnce(&OperationResult, &Store) -> Result<T>,
-    ) -> Result<T> {
-        ensure!(
-            matches!(self.result.request(), proof::SignedRequest::Intent(_)),
-            "stream controls cannot invoke irreversible handlers"
-        );
-        self.run(
-            store,
-            session,
-            &mut || Ok(health),
-            requested_effect,
-            check_current_restrictions,
-            effect,
-            true,
-        )
-    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Keep protocol inputs, state and validation callbacks explicit."
@@ -941,8 +889,11 @@ impl DurablePermit {
 }
 // Whole, internally consistent local snapshot rollback requires an independently current anchor.
 #[cfg(test)]
-#[path = "AuthorityFloorTests.rs"]
+#[path = "../../Tests/Unit/Authority/AuthorityFloorTests.rs"]
 pub(crate) mod tests;
 
 #[path = "AuthorityRemoteReceipt.rs"]
 mod remote_receipt;
+
+#[cfg(test)]
+include!("../../Tests/Support/Authority/AuthorityFloor.rs");

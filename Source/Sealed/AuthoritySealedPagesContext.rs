@@ -169,5 +169,5 @@ pub(super) fn reviewer(
 }
 
 #[cfg(test)]
-#[path = "AuthoritySealedPagesContextTests.rs"]
+#[path = "../../Tests/Unit/Sealed/AuthoritySealedPagesContextTests.rs"]
 mod tests;

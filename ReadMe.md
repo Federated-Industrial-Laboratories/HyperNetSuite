@@ -5,7 +5,7 @@
 <p align="center">Native graphical, terminal and command-line clients for HyperNet.</p>
 
 <p align="center">
-  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.9.0">Linux 0.9.0</a> |
+  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.9.1">Linux 0.9.1</a> |
   <a href="Documentation/Installation.md">Install</a> |
   <a href="Documentation/ReadMe.md">Documentation</a> |
   <a href="Documentation/Security.md">Security</a> |
@@ -24,12 +24,16 @@ command line provides publishing and administration; terminal browsing and
 plain output work without a graphical desktop.
 
 > [!NOTE]
-> **Linux 0.9.0** is qualified on native Ubuntu x86_64 within the documented limits.
+> **Linux 0.9.1** is qualified on native Ubuntu x86_64 within the documented limits.
 > Other Linux distributions need compatible runtime libraries and graphics
 > support. AArch64, Windows and macOS remain unqualified; SELinux-enabled
 > deployment is also unqualified. This release has no independent security
 > certification. See the [release notes](Documentation/ReleaseNotes.md) and
 > [supported platforms](Documentation/SupportedPlatforms.md).
+
+Version 0.9.1 fixes overlapping stream and sealed-page permission scopes.
+Read [the migration guide](Documentation/PermissionScopes.md) before upgrading;
+network-wide grants no longer authorise those effects.
 
 ## Features
 
@@ -69,7 +73,7 @@ covers graphical dependencies, a terminal-only build and signed offline packages
 
 ## Install
 
-Download the [Linux 0.9.0 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.9.0)
+Download the [Linux 0.9.1 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.9.1)
 and follow [signed offline installation](Documentation/Installation.md#signed-offline-package).
 Authenticate the publisher independently and follow the required update-trust
 procedure before installing a package.
@@ -127,7 +131,7 @@ the client never silently selects a direct connection.
 
 ## Documentation
 
-The [release notes](Documentation/ReleaseNotes.md) describe the 0.9.0 scope and
+The [release notes](Documentation/ReleaseNotes.md) describe the 0.9.1 scope and
 known limits. The [documentation index](Documentation/ReadMe.md) separates reader and author
 guides, operator workflows and protocol references. Start with
 [installation](Documentation/Installation.md), [client use](Documentation/Usage.md)

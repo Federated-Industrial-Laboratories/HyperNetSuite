@@ -401,5 +401,5 @@ impl Vault {
 }
 
 #[cfg(test)]
-#[path = "AuthorityMailVaultTests.rs"]
+#[path = "../../Tests/Unit/Mail/AuthorityMailVaultTests.rs"]
 mod tests;

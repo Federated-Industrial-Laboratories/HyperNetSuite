@@ -239,5 +239,5 @@ pub fn run(command: Command) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "PrivateRouteClockTests.rs"]
+#[path = "../../Tests/Unit/Routing/PrivateRouteClockTests.rs"]
 mod tests;

@@ -610,5 +610,5 @@ impl Permit {
 }
 
 #[cfg(test)]
-#[path = "AuthorityRecipientTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Recipients/AuthorityRecipientTests.rs"]
 mod tests;

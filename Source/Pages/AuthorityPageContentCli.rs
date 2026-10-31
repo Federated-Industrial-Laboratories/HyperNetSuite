@@ -501,5 +501,5 @@ pub fn run(command: Command) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "AuthorityPageViewConsumerTests.rs"]
+#[path = "../../Tests/Unit/Pages/AuthorityPageViewConsumerTests.rs"]
 pub(crate) mod view_tests;

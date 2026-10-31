@@ -144,16 +144,7 @@ impl Container {
         }
         Ok(())
     }
-    #[cfg(test)]
-    pub fn content_digests(&self) -> (Digest, Vec<(Digest, Digest)>) {
-        (
-            ciphertext_digest(&self.source),
-            self.assets
-                .iter()
-                .map(|a| (a.id, ciphertext_digest(&a.bytes)))
-                .collect(),
-        )
-    }
+
     fn encode(&self) -> Result<Zeroizing<Vec<u8>>> {
         self.validate()?;
         let value = PrivateValue(V::Array(vec![
@@ -422,5 +413,8 @@ pub fn decrypt_challenge(
 }
 
 #[cfg(test)]
-#[path = "SealedCryptoTests.rs"]
+#[path = "../../Tests/Unit/Sealed/SealedCryptoTests.rs"]
 mod tests;
+
+#[cfg(test)]
+include!("../../Tests/Support/Sealed/SealedCrypto.rs");

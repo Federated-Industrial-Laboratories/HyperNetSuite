@@ -312,5 +312,5 @@ pub fn health(path: &Path) -> Result<ClockHealth> {
 }
 
 #[cfg(test)]
-#[path = "AuthorityClockTests.rs"]
+#[path = "../../Tests/Unit/Authority/AuthorityClockTests.rs"]
 mod tests;

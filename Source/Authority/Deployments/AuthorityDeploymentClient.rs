@@ -726,7 +726,7 @@ pub fn local(
     result
 }
 #[cfg(test)]
-#[path = "AuthorityDeploymentClientTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Deployments/AuthorityDeploymentClientTests.rs"]
 mod tests;
 
 #[path = "AuthorityActivationClient.rs"]
