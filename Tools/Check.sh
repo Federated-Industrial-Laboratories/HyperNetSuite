@@ -29,5 +29,8 @@ PYTHON
 # Bound concurrent clock-sensitive fixtures unless the caller selects a limit.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
 cargo fmt --all --check
+# Include files retain module scope and are not discovered by cargo fmt.
+shopt -s globstar
+rustfmt --edition 2024 --check Tests/**/*.rs
 cargo clippy --release --locked --all-targets -- -D warnings
 cargo test --release --locked

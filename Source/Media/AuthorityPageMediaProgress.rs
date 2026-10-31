@@ -262,5 +262,5 @@ impl Progress {
 }
 
 #[cfg(test)]
-#[path = "AuthorityPageMediaProgressTests.rs"]
+#[path = "../../Tests/Unit/Media/AuthorityPageMediaProgressTests.rs"]
 mod tests;

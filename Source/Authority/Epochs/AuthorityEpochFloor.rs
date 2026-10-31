@@ -92,10 +92,7 @@ impl Store {
         );
         Ok(())
     }
-    #[cfg(test)]
-    pub fn epoch_sealed(&self) -> bool {
-        self.stored.sealed.is_some()
-    }
+
     pub fn seal_epoch(&mut self, terminal: &ValidatedTerminal) -> Result<()> {
         self.unchanged()?;
         ensure!(
@@ -226,3 +223,6 @@ pub(super) fn forward(
     }
     Ok(())
 }
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Epochs/AuthorityEpochFloor.rs");

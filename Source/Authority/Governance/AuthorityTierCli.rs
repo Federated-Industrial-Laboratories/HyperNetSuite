@@ -401,5 +401,5 @@ pub fn run(command: Command) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "AuthorityTierCliTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Governance/AuthorityTierCliTests.rs"]
 mod tests;

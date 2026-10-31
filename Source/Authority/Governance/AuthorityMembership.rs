@@ -147,29 +147,6 @@ fn subset(child: &[(u64, Digest)], parent: &[(u64, Digest)], network: Digest) ->
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reservations(pub Vec<(u64, Key)>);
 impl Reservations {
-    #[cfg(test)]
-    pub fn parse(value: &V) -> Result<Self> {
-        let mut keys = BTreeSet::new();
-        let entries = value
-            .list(64)?
-            .iter()
-            .map(|v| {
-                let f = v.array(2)?;
-                let pair = (f[0].uint()?, f[1].fixed()?);
-                wire::valid_key(&pair.1)?;
-                ensure!(
-                    pair.0 <= 6 && keys.insert(pair.1),
-                    "unknown role or reused reserved key"
-                );
-                Ok(pair)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        ensure!(
-            entries.windows(2).all(|v| v[0] < v[1]),
-            "role reservations are not sorted and unique"
-        );
-        Ok(Self(entries))
-    }
     pub fn contains(&self, key: &Key) -> bool {
         self.0.iter().any(|(_, k)| k == key)
     }
@@ -790,3 +767,6 @@ pub fn sort_records(records: &mut [Vec<u8>]) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Governance/AuthorityMembership.rs");

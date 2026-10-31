@@ -748,23 +748,7 @@ impl<'a> GovernancePrepared<'a> {
             _ => ActionValidation::new(candidate.versions),
         }
     }
-    #[cfg(test)]
-    fn finish(
-        self,
-        reply: CertifiedReply,
-        ancestry: Vec<Vec<u8>>,
-        store: &mut Store,
-        session: &mut Session,
-        clock: &mut impl FnMut() -> Result<ClockHealth>,
-    ) -> Result<Outcome> {
-        self.finish_evidence(
-            reply,
-            AncestryEvidence::direct(ancestry),
-            store,
-            session,
-            clock,
-        )
-    }
+
     fn finish_evidence(
         self,
         reply: CertifiedReply,
@@ -996,7 +980,7 @@ impl<'a> GovernancePrepared<'a> {
 }
 
 #[cfg(test)]
-#[path = "AuthorityGovernanceClientTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Governance/AuthorityGovernanceClientTests.rs"]
 mod tests;
 
 #[path = "AuthorityMemberClient.rs"]
@@ -1005,5 +989,8 @@ use member_client::MemberPrepared;
 pub use member_client::{MemberMutation, MemberRequest};
 
 #[cfg(test)]
-#[path = "AuthorityMemberClientTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Governance/AuthorityMemberClientTests.rs"]
 mod member_tests;
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Governance/AuthorityGovernanceClient.rs");

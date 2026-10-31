@@ -504,5 +504,5 @@ pub fn browse(args: Browse) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "AuthorityPageNavigationTests.rs"]
+#[path = "../../Tests/Unit/Pages/AuthorityPageNavigationTests.rs"]
 mod tests;

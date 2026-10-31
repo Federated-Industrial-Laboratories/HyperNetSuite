@@ -474,14 +474,6 @@ impl TransferExchange {
     }
 }
 impl Transport {
-    #[cfg(test)]
-    pub(crate) fn socket(path: PathBuf) -> Self {
-        Self {
-            service_socket: Some(path),
-            service_directory: None,
-            core: PathBuf::new(),
-        }
-    }
     pub(crate) fn exchange_pooled(
         &self,
         directory: &Path,
@@ -1344,3 +1336,6 @@ pub fn run(_configuration: Option<&Path>, arguments: Arguments) -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+include!("../../Tests/Support/Transfers/Transfers.rs");

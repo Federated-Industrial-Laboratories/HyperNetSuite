@@ -155,14 +155,14 @@ pub fn validate_state(state: &State, partial: bool) -> Result<()> {
     }
     Ok(())
 }
-#[cfg(test)]
-pub fn retained_inputs(_state: &State) -> Result<Vec<Reference>> {
-    Ok(vec![])
-}
+
 pub fn response_inputs(_intent: &Intent, _value: &V) -> Result<Vec<Reference>> {
     Ok(vec![])
 }
 
 #[cfg(test)]
-#[path = "../../Federation/AuthorityFederationTests.rs"]
+#[path = "../../../Tests/Unit/Federation/AuthorityFederationTests.rs"]
 mod tests;
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Domains/AuthorityDomainFederation.rs");

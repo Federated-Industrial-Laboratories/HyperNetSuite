@@ -432,5 +432,5 @@ pub fn execute_context(
 }
 
 #[cfg(test)]
-#[path = "AuthorityPolicyClientTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Governance/AuthorityPolicyClientTests.rs"]
 mod tests;

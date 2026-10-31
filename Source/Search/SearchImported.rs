@@ -508,5 +508,5 @@ pub fn search(
 }
 
 #[cfg(test)]
-#[path = "SearchImportedTests.rs"]
+#[path = "../../Tests/Unit/Search/SearchImportedTests.rs"]
 mod tests;

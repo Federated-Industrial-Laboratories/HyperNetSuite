@@ -503,5 +503,5 @@ pub(super) fn retain_route(
 }
 
 #[cfg(test)]
-#[path = "PrivateRouteWorkflowTests.rs"]
+#[path = "../../Tests/Unit/Routing/PrivateRouteWorkflowTests.rs"]
 mod tests;

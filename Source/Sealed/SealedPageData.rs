@@ -350,5 +350,5 @@ pub fn verify_approval(
 }
 
 #[cfg(test)]
-#[path = "SealedPageDataTests.rs"]
+#[path = "../../Tests/Unit/Sealed/SealedPageDataTests.rs"]
 mod tests;

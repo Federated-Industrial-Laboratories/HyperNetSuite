@@ -3,8 +3,7 @@
 use super::*;
 use crate::authority_proof::{self as proof, Challenge, TrustDescriptor, VerifiedResult};
 use crate::trust_bootstrap::Verified;
-#[cfg(test)]
-use ed25519_dalek::SigningKey;
+
 pub const RECEIPT_LIMIT: usize = 3 * wire::MAXIMUM;
 pub struct Receipt {
     bytes: Vec<u8>,
@@ -86,52 +85,7 @@ impl Receipt {
         let ordered = wire::decode(f[5].bytes()?)?;
         proof::Scope::parse(&ordered.array(6)?[2])
     }
-    #[cfg(test)]
-    pub fn create(
-        request: &Request,
-        challenge: &[u8],
-        ordered: &[u8],
-        result: &proof::VerifiedResult,
-        signer: &SigningKey,
-        completed_at: u64,
-    ) -> Result<Self> {
-        ensure!(
-            signer.verifying_key().to_bytes() == request.operation().recipient
-                && result.disposition() == proof::Disposition::Permit,
-            "activation completion requires its exact serving recipient"
-        );
-        let signed = wire::sign_envelope(
-            &wire::encode(&a(vec![
-                V::Uint(200),
-                V::Uint(1),
-                V::Text("RuntimeActivationComplete".into()),
-                result.point().prefix().scope().value(),
-                b(&request.intent().digest),
-                b(&result.executed.result),
-                V::Uint(request.operation().role),
-                V::Uint(request.operation().local_generation),
-                V::Uint(completed_at),
-            ]))?,
-            signer,
-        )?;
-        let continuity = result.continuity();
-        let history = result.history();
-        let bytes = wire::encode_state(&a(vec![
-            V::Uint(200),
-            V::Uint(1),
-            V::Text("RuntimeActivationReceipt".into()),
-            b(&request.encode()?),
-            b(challenge),
-            b(ordered),
-            b(result.operation_result_bytes()),
-            b(result.point().certificate()),
-            a(continuity.ancestry.iter().map(|n| b(n)).collect()),
-            history.map_or(V::Null, |h| b(h.checkpoint().canonical_proof())),
-            history.map_or(V::Null, |h| b(h.canonical())),
-            b(&signed),
-        ]))?;
-        Self::parse(&bytes)
-    }
+
     pub fn verify(&self, bootstrap: &Verified, descriptor: &TrustDescriptor) -> Result<Report> {
         let value = wire::decode_state(&self.bytes)?;
         let f = value.array(12)?;
@@ -186,3 +140,6 @@ impl Receipt {
         Ok(Report { result, history })
     }
 }
+
+#[cfg(test)]
+include!("../../../Tests/Support/Authority/Deployments/AuthorityActivationReceipt.rs");

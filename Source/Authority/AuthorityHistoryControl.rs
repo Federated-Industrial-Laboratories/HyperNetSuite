@@ -10,10 +10,6 @@ impl std::ops::Deref for AncestryEvidence {
     }
 }
 impl AncestryEvidence {
-    #[cfg(test)]
-    pub(super) fn direct(nodes: Vec<Vec<u8>>) -> Self {
-        Self(HistoryEvidence::direct(nodes))
-    }
     pub(super) fn from_shared(evidence: HistoryEvidence) -> Self {
         Self(evidence)
     }
@@ -38,12 +34,7 @@ impl AncestryEvidence {
             deadline,
         )?))
     }
-    #[cfg(test)]
-    pub(super) fn checkpoint_reply(store: &Store, target: &[u8], bytes: &[u8]) -> Result<Self> {
-        Ok(Self(HistoryEvidence::checkpoint_reply(
-            store.prefix(),
-            target,
-            bytes,
-        )?))
-    }
 }
+
+#[cfg(test)]
+include!("../../Tests/Support/Authority/AuthorityHistoryControl.rs");

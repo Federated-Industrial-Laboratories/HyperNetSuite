@@ -30,63 +30,13 @@ pub struct Request {
 fn bytes(value: &Digest) -> V {
     V::Bytes(value.to_vec())
 }
-#[cfg(test)]
-fn identifier(value: &V) -> Result<Digest> {
-    let value = value.fixed()?;
-    ensure!(value != [0; 32], "zero search identifier");
-    Ok(value)
-}
+
 fn safe(c: char) -> bool {
     !c.is_control()
         && !matches!(c as u32, 0x00ad | 0x061c | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x206f | 0xfeff | 0xfdd0..=0xfdef | 0xe0000..=0xe007f)
         && c as u32 & 0xffff < 0xfffe
 }
 impl Request {
-    #[cfg(test)]
-    pub fn parse(bytes: &[u8]) -> Result<Self> {
-        ensure!(
-            bytes.len() <= MAXIMUM_REQUEST,
-            "search request exceeds its bound"
-        );
-        let value = wire::decode(bytes)?;
-        let f = value.array(15)?;
-        ensure!(
-            f[0].uint()? == 119 && f[1].uint()? == 1 && f[4].uint()? == 0,
-            "search request format differs"
-        );
-        f[5].null()?;
-        let out = Self {
-            network: identifier(&f[2])?,
-            incarnation: identifier(&f[3])?,
-            operation: identifier(&f[6])?,
-            scope: f[7].uint()?,
-            terms: f[8]
-                .list(16)?
-                .iter()
-                .map(|v| Ok(v.text()?.to_owned()))
-                .collect::<Result<_>>()?,
-            combination: f[9].uint()?,
-            namespaces: f[10]
-                .list(64)?
-                .iter()
-                .map(identifier)
-                .collect::<Result<_>>()?,
-            limit: usize::try_from(f[11].uint()?)?,
-            cursor: if f[12] == V::Null {
-                None
-            } else {
-                Some(identifier(&f[12])?)
-            },
-            historical: match f[13].uint()? {
-                0 => false,
-                1 => true,
-                _ => anyhow::bail!("invalid retained search view"),
-            },
-            snapshot: f[14].clone(),
-        };
-        out.validate()?;
-        Ok(out)
-    }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             [self.network, self.incarnation, self.operation]
@@ -267,18 +217,7 @@ pub fn matching(request: &Request, source: &[u8]) -> Result<Option<Match>> {
         score,
     }))
 }
-#[cfg(test)]
-pub fn response(request: &Request, source: &[u8]) -> Result<Vec<u8>> {
-    let found = matching(request, source)?;
-    wire::encode(&V::Array(vec![
-        V::Uint(201),
-        V::Uint(1),
-        V::Text("PageSearchResult".into()),
-        bytes(&request.digest()?),
-        V::Bytes(source.to_vec()),
-        found.as_ref().map_or(V::Null, Match::value),
-    ]))
-}
+
 pub fn verify_response(request: &Request, encoded: &[u8]) -> Result<(Vec<u8>, Option<Match>)> {
     let value = wire::decode(encoded)?;
     let f = value.array(6)?;
@@ -299,5 +238,8 @@ pub fn verify_response(request: &Request, encoded: &[u8]) -> Result<(Vec<u8>, Op
 }
 
 #[cfg(test)]
-#[path = "SearchTextTests.rs"]
+#[path = "../../Tests/Unit/Search/SearchTextTests.rs"]
 mod tests;
+
+#[cfg(test)]
+include!("../../Tests/Support/Search/SearchText.rs");

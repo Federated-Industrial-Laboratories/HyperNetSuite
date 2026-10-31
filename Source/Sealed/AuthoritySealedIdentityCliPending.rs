@@ -180,7 +180,7 @@ impl Pending {
 }
 
 #[cfg(test)]
-#[path = "AuthoritySealedIdentityCliPendingTests.rs"]
+#[path = "../../Tests/Unit/Sealed/AuthoritySealedIdentityCliPendingTests.rs"]
 mod tests;
 pub(super) fn verify_response(d: &Data, response: &[u8]) -> Result<identity::Possession> {
     let record = identity::signed_record(&d.binding, d.network, d.incarnation)?;

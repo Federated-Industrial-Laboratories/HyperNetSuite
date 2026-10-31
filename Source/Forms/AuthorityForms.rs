@@ -92,5 +92,5 @@ pub(super) fn guard_claim(job: &Outgoing, claim: &mail::Claim) -> Result<()> {
     Ok(())
 }
 #[cfg(test)]
-#[path = "AuthorityFormsTests.rs"]
+#[path = "../../Tests/Unit/Forms/AuthorityFormsTests.rs"]
 mod tests;

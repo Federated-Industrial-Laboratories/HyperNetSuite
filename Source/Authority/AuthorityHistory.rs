@@ -159,10 +159,7 @@ impl ValidatedCheckpoint {
     pub fn canonical_proof(&self) -> &[u8] {
         &self.proof
     }
-    #[cfg(test)]
-    pub fn statement(&self) -> &[u8] {
-        &self.statement
-    }
+
     pub fn digest(&self) -> &Digest {
         &self.digest
     }
@@ -344,5 +341,8 @@ pub fn verify_history(
 }
 
 #[cfg(test)]
-#[path = "AuthorityHistoryTests.rs"]
+#[path = "../../Tests/Unit/Authority/AuthorityHistoryTests.rs"]
 mod tests;
+
+#[cfg(test)]
+include!("../../Tests/Support/Authority/AuthorityHistory.rs");

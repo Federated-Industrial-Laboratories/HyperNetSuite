@@ -79,10 +79,6 @@ pub(crate) struct ContentPool {
     route: Option<Prepared>,
 }
 impl ContentPool {
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.route.is_none()
-    }
     pub(crate) fn clear(&mut self) {
         self.route = None;
     }
@@ -227,22 +223,7 @@ impl Prepared {
     pub(crate) fn setup_deadline(&self) -> u64 {
         self.deadline
     }
-    #[cfg(test)]
-    pub(crate) fn from_channel(
-        endpoint: Endpoint,
-        session: crate::route_connector::Session<'static>,
-        deadline: u64,
-    ) -> Self {
-        Self {
-            endpoint,
-            deadline,
-            session: std::cell::RefCell::new(session),
-            observed: std::cell::Cell::new(false),
-            authority: Weak::new(),
-            reused: false,
-            completed_floor: None,
-        }
-    }
+
     pub(crate) fn route(&self) -> &route_profile::Profile {
         &self.endpoint.route
     }
@@ -263,11 +244,7 @@ impl Prepared {
     fn matches(&self, endpoint: &Endpoint) -> Result<bool> {
         self.endpoint.same_identity(endpoint)
     }
-    #[cfg(test)]
-    pub(crate) fn in_pool(mut self, pool: &Arc<Mutex<AuthorityPool>>) -> Self {
-        self.authority = Arc::downgrade(pool);
-        self
-    }
+
     /// Only a fully validated successful operation may retain its connection.
     pub(crate) fn retain(
         mut self,
@@ -371,3 +348,6 @@ impl Drop for Selection {
         }
     }
 }
+
+#[cfg(test)]
+include!("../../Tests/Support/Routing/PrivateRouteClient.rs");

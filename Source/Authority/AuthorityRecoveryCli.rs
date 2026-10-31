@@ -2,10 +2,7 @@
 //! Separate offline profiles preserve predecessor state and durable recovery conflicts.
 use super::*;
 use crate::authority_epoch::archive;
-#[cfg(test)]
-use crate::authority_epoch::archive::Activated;
-#[cfg(test)]
-use crate::authority_history;
+
 use crate::authority_recovery as recovery;
 use clap::Args;
 use std::{collections::BTreeMap, ffi::OsStr, fs::File};
@@ -145,21 +142,7 @@ struct Store {
     _lock: files::ProfileLock,
     state: Ledger,
 }
-#[cfg(test)]
-fn predecessor(
-    bootstrap: &[u8],
-    checkpoint: Option<&[u8]>,
-    epochs: &[Activated],
-) -> Result<recovery::Predecessor> {
-    let checked = trust::inspect(bootstrap, true)?;
-    let current = archive::resolve(checked.descriptor(), epochs)?.descriptor;
-    let prefix = if let Some(proof) = checkpoint {
-        authority_history::verify_checkpoint(&current, proof)?.prefix()
-    } else {
-        current.genesis()?
-    };
-    recovery::Predecessor::new(&checked, &prefix)
-}
+
 fn retained_predecessor(bootstrap: &[u8], directory: &Path) -> Result<recovery::Predecessor> {
     let checked = trust::inspect(bootstrap, true)?;
     let store = crate::authority_floor::Store::open(directory, checked.descriptor().clone())?;
@@ -561,5 +544,8 @@ pub fn run(command: Command) -> Result<()> {
     }
 }
 #[cfg(test)]
-#[path = "AuthorityRecoveryCliTests.rs"]
+#[path = "../../Tests/Unit/Authority/AuthorityRecoveryCliTests.rs"]
 mod tests;
+
+#[cfg(test)]
+include!("../../Tests/Support/Authority/AuthorityRecoveryCli.rs");

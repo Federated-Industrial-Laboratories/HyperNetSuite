@@ -184,5 +184,5 @@ pub fn run(
 }
 
 #[cfg(test)]
-#[path = "SearchLocalTests.rs"]
+#[path = "../../Tests/Unit/Search/SearchLocalTests.rs"]
 mod tests;

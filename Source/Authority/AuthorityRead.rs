@@ -14,8 +14,7 @@ use ed25519_dalek::SigningKey;
 
 #[path = "AuthorityReadEvaluation.rs"]
 mod evaluation;
-#[cfg(test)]
-pub(crate) use evaluation::evaluate_domain;
+
 pub use evaluation::verify_domain;
 fn a(v: Vec<V>) -> V {
     V::Array(v)
@@ -194,24 +193,6 @@ pub struct Statement {
     pub result: Digest,
 }
 impl Statement {
-    #[cfg(test)]
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        wire::encode(&a(vec![
-            V::Uint(61),
-            V::Uint(1),
-            self.scope.value(),
-            b(&self.request),
-            b(&self.challenge),
-            b(&self.requester),
-            b(&self.recipient),
-            V::Uint(self.height),
-            b(&self.node),
-            b(&self.state),
-            V::Uint(self.evaluated_at_ms),
-            V::Uint(self.expires_at_ms),
-            b(&self.result),
-        ]))
-    }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let v = wire::decode(bytes)?;
         let f = record(&v, 61, 13)?;
@@ -431,3 +412,6 @@ pub(crate) fn result_versions(result: &OperationResult) -> Result<Vec<VersionRef
     );
     Ok(refs)
 }
+
+#[cfg(test)]
+include!("../../Tests/Support/Authority/AuthorityRead.rs");

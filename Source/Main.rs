@@ -342,5 +342,5 @@ fn load_identity(path: &Path) -> Result<Identity> {
 }
 
 #[cfg(test)]
-#[path = "Authority/Deployments/AuthorityDeploymentTests.rs"]
+#[path = "../Tests/Unit/Authority/Deployments/AuthorityDeploymentTests.rs"]
 mod authority_deployment_tests;

@@ -217,7 +217,7 @@ impl Operation {
 }
 
 #[cfg(test)]
-#[path = "AuthorityRuntimeActivationTests.rs"]
+#[path = "../../../Tests/Unit/Authority/Deployments/AuthorityRuntimeActivationTests.rs"]
 mod tests;
 
 #[path = "AuthorityActivationRequest.rs"]

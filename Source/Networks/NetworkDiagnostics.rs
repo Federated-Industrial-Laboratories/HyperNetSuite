@@ -213,5 +213,5 @@ pub fn run(options: Options) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "NetworkDiagnosticsTests.rs"]
+#[path = "../../Tests/Unit/Networks/NetworkDiagnosticsTests.rs"]
 mod tests;

@@ -42,17 +42,6 @@ pub struct Predecessor {
     shared: bool,
 }
 impl Predecessor {
-    #[cfg(test)]
-    pub fn new(bootstrap: &Verified, prefix: &Prefix) -> Result<Self> {
-        let scope = bootstrap.descriptor().scope();
-        let reference = VersionRef {
-            kind: 114,
-            id: scope.network,
-            generation: 1,
-            digest: wire::digest(&bootstrap.recovery_payload),
-        };
-        Self::retained(bootstrap, prefix, &bootstrap.recovery_payload, &reference)
-    }
     /// The caller authenticates the exact current policy reference from its durable certified floor.
     pub fn retained(
         bootstrap: &Verified,
@@ -86,10 +75,6 @@ impl Predecessor {
             keys: custody.keys.into_iter().map(|(p, k)| (k, p)).collect(),
             shared: custody.mode == 2,
         })
-    }
-    #[cfg(test)]
-    pub fn point(&self) -> &V {
-        &self.point
     }
 }
 #[derive(Clone, Serialize)]
@@ -408,5 +393,8 @@ pub fn verify_acceptance(
     Ok(())
 }
 #[cfg(test)]
-#[path = "AuthorityRecoveryTests.rs"]
+#[path = "../../Tests/Unit/Authority/AuthorityRecoveryTests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+include!("../../Tests/Support/Authority/AuthorityRecovery.rs");

@@ -411,10 +411,7 @@ impl Library {
         }
         result
     }
-    #[cfg(test)]
-    pub fn retain(&mut self, entry: Entry) -> Result<()> {
-        self.retain_many(vec![entry])
-    }
+
     pub fn retain_many(&mut self, entries: Vec<Entry>) -> Result<()> {
         self.data.generation = self
             .data
@@ -451,3 +448,6 @@ impl Library {
         self.save()
     }
 }
+
+#[cfg(test)]
+include!("../../Tests/Support/Search/SearchLibrary.rs");
