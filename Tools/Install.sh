@@ -29,7 +29,7 @@ sed -e 's#](../Documentation/#](../Documentation/HyperNetSuite/Documentation/#g'
 install -d -m 755 -- "$Prefix/SDK/hypernet_streams" "$Prefix/Examples/ApplicationStreams"
 install -m 644 -- SDK/pyproject.toml SDK/Licence.txt "$Prefix/SDK/"
 sed 's#](../Documentation/#](../Documentation/HyperNetSuite/Documentation/#g' SDK/README.md > "$Prefix/SDK/README.md"
-install -m 644 -- SDK/hypernet_streams/__init__.py "$Prefix/SDK/hypernet_streams/"
-install -m 644 -- Examples/ApplicationStreams/stream_service.py "$Prefix/Examples/ApplicationStreams/"
-python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir "$Prefix/SDK" SDK
+install -m 644 -- SDK/hypernet_streams/__init__.py SDK/hypernet_streams/context.py "$Prefix/SDK/hypernet_streams/"
+install -m 644 -- Examples/ApplicationStreams/stream_service.py Examples/ApplicationStreams/authority_service.py "$Prefix/Examples/ApplicationStreams/"
+python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir "$Prefix/SDK" ./SDK
 printf 'Installed HyperNetSuite in %s/Bin\n' "$Prefix"

@@ -9,12 +9,14 @@ use std::{
     os::unix::net::UnixStream,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
     },
     thread,
     time::{Duration, Instant},
 };
+#[path = "ApplicationStreamChecks.rs"]
+mod checks;
 #[derive(Args)]
 pub struct Arguments {
     #[command(flatten)]
@@ -34,6 +36,10 @@ pub struct Arguments {
 struct Active {
     info: ipc::ActiveInfo,
     cancel: Arc<AtomicBool>,
+    reference: Option<VersionRef>,
+    accepted: bool,
+    privacy: Value,
+    privacy_generation: Option<u64>,
 }
 struct State {
     active: BTreeMap<String, Active>,
@@ -77,6 +83,10 @@ fn reserve(
                 peer: Value::Null,
             },
             cancel: cancel.clone(),
+            reference: None,
+            accepted: false,
+            privacy: Value::Null,
+            privacy_generation: None,
         },
     );
     Ok((
@@ -184,27 +194,109 @@ struct Runtime {
     clock: Arc<crate::authority_clock::Source>,
     started: Instant,
     profile: Value,
+    checks: Option<Arc<checks::Checks>>,
 }
-fn request(mut stream: UnixStream, runtime: Runtime, handed_off: &AtomicBool) -> Result<()> {
+fn request(
+    mut stream: UnixStream,
+    runtime: Runtime,
+    handed_off: &AtomicBool,
+    response_version: &AtomicU64,
+) -> Result<()> {
     ipc::peer(&stream)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let parsed: ipc::Request = serde_json::from_slice(&ipc::read_frame(&mut stream)?)?;
+    let bytes = ipc::read_frame(&mut stream)?;
+    let header: Value = serde_json::from_slice(&bytes)?;
+    let version = header["version"]
+        .as_u64()
+        .context("local IPC version is absent")?;
     ensure!(
-        parsed.version == 1,
+        matches!(version, 1 | 2),
         "unsupported application agent IPC version"
     );
+    response_version.store(version, Ordering::Relaxed);
+    let (parsed, correlation) = if version == 1 {
+        (serde_json::from_slice::<ipc::Request>(&bytes)?, None)
+    } else {
+        let parsed: ipc::RequestV2 = serde_json::from_slice(&bytes)?;
+        parsed.validate()?;
+        let correlation = parsed
+            .nonce
+            .as_ref()
+            .zip(parsed.action_digest.as_ref())
+            .map(|(nonce, digest)| {
+                Ok::<_, anyhow::Error>((
+                    trust_bootstrap::hex32(nonce)?,
+                    trust_bootstrap::hex32(digest)?,
+                ))
+            })
+            .transpose()?;
+        (
+            ipc::Request {
+                version: 2,
+                action: parsed.action,
+                service: parsed.service,
+                protocol: parsed.protocol,
+                id: parsed.id,
+                timeout_ms: parsed.timeout_ms,
+            },
+            correlation,
+        )
+    };
+    ensure!(parsed.version == version, "local request version differs");
     let timeout = Duration::from_millis(parsed.timeout_ms.unwrap_or(30000));
     ensure!(
         (100..=60000).contains(&(timeout.as_millis() as u64)),
         "local IPC timeout must be100..60000 milliseconds"
     );
+    if version == 2 && parsed.action == "checkAuthority" {
+        let id = parsed.id.as_deref().context("check requires connection")?;
+        let (nonce, action_digest) = correlation.context("check correlation absent")?;
+        let started = crate::authority_challenge::boot_time_ms()?;
+        let input = checks::Input {
+            id,
+            nonce,
+            action_digest,
+            started,
+            deadline: started
+                .checked_add(timeout.as_millis() as u64)
+                .context("check deadline overflow")?,
+        };
+        let snapshot = runtime
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent state failed"))?
+            .active
+            .get(id)
+            .filter(|a| {
+                a.info.direction == "incoming" && a.accepted && !a.cancel.load(Ordering::Acquire)
+            })
+            .and_then(|a| a.reference.clone().map(|r| (r, a.cancel.clone())));
+        let result = match (&runtime.checks, snapshot) {
+            (Some(checks), Some((reference, cancel))) => {
+                checks.check(&input, reference, cancel, &stream)?
+            }
+            (_, None) => input.result("notActive"),
+            (None, _) => input.result("unavailable"),
+        };
+        if let Ok(mut state) = runtime.state.lock()
+            && let Some(active) = state.active.get_mut(id)
+            && !result["result"]["privacy"].is_null()
+        {
+            active.privacy = result["result"]["privacy"].clone();
+            active.privacy_generation = result["result"]["controlGeneration"].as_u64();
+        }
+        return ipc::write_json(&mut stream, &result);
+    }
     match parsed.action.as_str() {
         "status" => {
             let state = runtime
                 .state
                 .lock()
                 .map_err(|_| anyhow::anyhow!("agent connection state failed"))?;
+            if version == 2 {
+                return ipc::write_json(&mut stream, &status_v2(&runtime, &state));
+            }
             ipc::write_json(
                 &mut stream,
                 &json!({"version":1,"ok":true,"status":"Ready","network":runtime.profile["network"],"incarnation":runtime.profile["incarnation"],"principal":runtime.profile["principal"],"binding":runtime.profile["binding"],"uptimeMs":runtime.started.elapsed().as_millis(),"incoming":runtime.binding.is_some(),"targets":runtime.targets.iter().map(|t|json!({"service":t.service,"protocol":t.protocol})).collect::<Vec<_>>(),"connections":state.active.values().map(|a|json!({"id":a.info.id,"direction":a.info.direction,"service":a.info.service,"peer":{"principal":a.info.peer["principal"],"owner":a.info.peer["owner"],"endpoint":a.info.peer["endpoint"]}})).collect::<Vec<_>>(),"recentErrors":state.errors}),
@@ -225,7 +317,7 @@ fn request(mut stream: UnixStream, runtime: Runtime, handed_off: &AtomicBool) ->
             active.cancel.store(true, Ordering::Relaxed);
             ipc::write_json(
                 &mut stream,
-                &json!({"version":1,"ok":true,"id":id,"status":"Cancelling"}),
+                &json!({"version":version,"ok":true,"id":id,"status":"Cancelling"}),
             )
         }
         "connect" => {
@@ -292,11 +384,19 @@ fn request(mut stream: UnixStream, runtime: Runtime, handed_off: &AtomicBool) ->
                 )?;
                 let peer = json!({"network":hex::encode(plan.endpoint.route.network),"incarnation":hex::encode(plan.endpoint.route.incarnation),"service":service,"protocol":plan.proof.protocol,"owner":hex::encode(plan.owner),"endpoint":hex::encode(plan.endpoint_key),"route":hex::encode(plan.endpoint.route.destination.service),"session":hex::encode(admitted.id),"generation":admitted.generation,"expiresMs":plan.proof.expires,"maximumBytes":plan.proof.limits.bytes,"durationMs":plan.proof.limits.duration_ms,"idleMs":plan.proof.limits.idle_ms});
                 annotate(&guard, peer.clone())?;
+                let privacy = json!({"direction":"outgoing","transport":"HyperNet","transportAuthenticated":true,"tls":"TLS1.3","relayPath":"nestedTlsViaRelay","relayService":hex::encode(plan.endpoint.route.relay.service),"destinationService":hex::encode(plan.endpoint.route.destination.service),"selectedMinimum":plan.endpoint.route.minimum_assurance,"configuredAssurance":plan.endpoint.route.assurance,"provenance":"observedAuthenticatedTransport","certifiedEndpointProfile":plan.endpoint_provenance,"certifiedRelayProfile":null,"physicalIndependenceVerified":false,"profileCurrentnessAsserted":false,"endToEndMessageEncryption":"applicationDefined"});
+                if let Ok(mut state) = runtime.state.lock()
+                    && let Some(active) = state.active.get_mut(&guard.id)
+                {
+                    active.privacy = privacy.clone();
+                }
+                let mut response = json!({"version":version,"ok":true,"id":guard.id,"peer":peer});
+                if version == 2 {
+                    response["privacy"] = privacy;
+                    response["checkAuthority"] = json!(false);
+                }
                 handed_off.store(true, Ordering::Relaxed);
-                ipc::write_json(
-                    &mut stream,
-                    &json!({"version":1,"ok":true,"id":guard.id,"peer":peer}),
-                )?;
+                ipc::write_json(&mut stream, &response)?;
                 session.forward_application(stream.try_clone()?, plan.proof.limits.bytes)
             })();
             if let Err(e) = &outcome {
@@ -321,10 +421,9 @@ fn request(mut stream: UnixStream, runtime: Runtime, handed_off: &AtomicBool) ->
                     "local accept was cancelled by its caller"
                 );
                 if Instant::now() >= deadline {
-                    ipc::failure(
+                    let _ = ipc::write_json(
                         &mut stream,
-                        "Timeout",
-                        "no incoming stream arrived before the local deadline",
+                        &json!({"version":version,"ok":false,"error":{"code":"Timeout","message":"no incoming stream arrived before the local deadline"}}),
                     );
                     return Ok(());
                 }
@@ -344,12 +443,68 @@ fn request(mut stream: UnixStream, runtime: Runtime, handed_off: &AtomicBool) ->
                             .ready
                             .recv_timeout(Duration::from_secs(5))
                             .context("local endpoint acceptance acknowledgement failed")??;
+                        if let Ok(mut state) = runtime.state.lock()
+                            && let Some(a) = state.active.get_mut(&incoming.guard.id)
+                        {
+                            a.accepted = true;
+                        }
+                        let mut response = json!({"version":version,"ok":true,"id":incoming.guard.id,"peer":incoming.context});
+                        if version == 2 {
+                            response["checkAuthority"] =
+                                json!(runtime.checks.as_ref().is_some_and(|c| c.ready()));
+                            response["privacy"] = checks::unknown_incoming();
+                            // Bind arrival information to this exact signed session, never just a binding-wide ready record.
+                            let reference = runtime
+                                .state
+                                .lock()
+                                .map_err(|_| anyhow::anyhow!("agent state failed"))?
+                                .active
+                                .get(&incoming.guard.id)
+                                .and_then(|a| a.reference.clone());
+                            if let (Some(checks), Some(reference)) = (&runtime.checks, reference) {
+                                let started = crate::authority_challenge::boot_time_ms()?;
+                                let remaining = deadline
+                                    .saturating_duration_since(Instant::now())
+                                    .as_millis()
+                                    .min(5000)
+                                    as u64;
+                                if remaining >= 100 {
+                                    let input = checks::Input {
+                                        id: &incoming.guard.id,
+                                        nonce: crate::route_protocol::random()?,
+                                        action_digest: wire::digest(
+                                            b"ApplicationTransportObservation/v2",
+                                        ),
+                                        started,
+                                        deadline: started + remaining,
+                                    };
+                                    let result = checks.check(
+                                        &input,
+                                        reference,
+                                        incoming.cancel.clone(),
+                                        &stream,
+                                    )?;
+                                    if !result["result"]["privacy"].is_null() {
+                                        response["privacy"] = result["result"]["privacy"].clone();
+                                        if let Ok(mut state) = runtime.state.lock()
+                                            && let Some(a) =
+                                                state.active.get_mut(&incoming.guard.id)
+                                        {
+                                            a.privacy = response["privacy"].clone();
+                                            a.privacy_generation =
+                                                result["result"]["controlGeneration"].as_u64();
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         let duration = incoming.duration.saturating_sub(incoming.queued.elapsed());
+                        ensure!(
+                            !incoming.cancel.load(Ordering::Acquire) && !duration.is_zero(),
+                            "incoming stream ended before handoff"
+                        );
                         handed_off.store(true, Ordering::Relaxed);
-                        ipc::write_json(
-                            &mut stream,
-                            &json!({"version":1,"ok":true,"id":incoming.guard.id,"peer":incoming.context}),
-                        )?;
+                        ipc::write_json(&mut stream, &response)?;
                         let result = ipc::pump(
                             stream,
                             incoming.stream,
@@ -388,7 +543,11 @@ fn inbound(
         .context("incoming service binding is absent")?;
     let nonce = crate::route_protocol::random()?;
     ipc::write_frame(&mut stream, &streams::local::local_challenge(nonce)?)?;
-    let context = streams::local::verify_context(&ipc::read_frame(&mut stream)?, binding, nonce)?;
+    let (context, reference) = streams::local::verify_context_with_reference(
+        &ipc::read_frame(&mut stream)?,
+        binding,
+        nonce,
+    )?;
     let now = runtime.clock.health()?.observe()?.wall_ms;
     ensure!(
         context.expires_ms > now.saturating_add(1250),
@@ -398,6 +557,14 @@ fn inbound(
     value["owner"] = json!(hex::encode(binding.owner));
     value["endpoint"] = json!(hex::encode(binding.endpoint));
     annotate(&guard, value.clone())?;
+    runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("agent state failed"))?
+        .active
+        .get_mut(&guard.id)
+        .context("connection reservation disappeared")?
+        .reference = Some(reference);
     let duration = Duration::from_millis(context.duration_ms.min(context.expires_ms - now));
     let idle = Duration::from_millis(context.idle_ms);
     let (acknowledge, ready) = mpsc::sync_channel(1);
@@ -518,7 +685,10 @@ pub fn run(a: Arguments) -> Result<()> {
                 &binding.encode()?,
                 true,
             )?;
-            Some(ipc::Listener::bind(&directory)?)
+            Some((
+                ipc::Listener::bind(&directory)?,
+                ipc::Listener::bind_named(&directory, "Checks.sock")?,
+            ))
         }
     } else {
         None
@@ -534,7 +704,12 @@ pub fn run(a: Arguments) -> Result<()> {
         errors: VecDeque::new(),
         controls: 0,
     }));
+    let checks = binding
+        .as_ref()
+        .map(|b| checks::Checks::new(b.clone(), clock.clone()).map(Arc::new))
+        .transpose()?;
     let runtime = Runtime {
+        checks,
         state: state.clone(),
         jobs,
         incoming: Arc::new(Mutex::new(queue)),
@@ -571,13 +746,16 @@ pub fn run(a: Arguments) -> Result<()> {
                 workers.push(thread::spawn(move || {
                     let response = stream.try_clone();
                     let handed_off = AtomicBool::new(false);
-                    let result = request(stream, r.clone(), &handed_off);
+                    let version=AtomicU64::new(1);
+                    let result = request(stream, r.clone(), &handed_off, &version);
                     if let Err(e) = result
                         && !handed_off.load(Ordering::Relaxed)
                     {
                         error(&r.state, None, &format!("local control preparation: {e:#}"));
                         if let Ok(mut response) = response {
-                            ipc::failure(&mut response, "Refused", &format!("{e:#}"));
+                            if version.load(Ordering::Relaxed)==2 {
+                                let _ = ipc::write_json(&mut response,&json!({"version":2,"ok":false,"error":{"code":"Refused","message":"local request was invalid or unavailable"}}));
+                            } else {ipc::failure(&mut response, "Refused", &format!("{e:#}"));}
                         }
                     }
                     if let Ok(mut s) = r.state.lock() {
@@ -589,28 +767,22 @@ pub fn run(a: Arguments) -> Result<()> {
             Err(e) => return Err(e.into()),
         }
         let incoming_stream = if let Some(helper) = &mut mapped_ingress {
-            helper.accept()?
-        } else if let Some(listener) = &ingress {
-            match listener.socket.accept() {
-                Ok((stream, _)) => {
-                    if ipc::peer(&stream).is_ok() {
-                        Some(stream)
-                    } else {
-                        None
-                    }
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => None,
-                Err(e) => return Err(e.into()),
-            }
+            helper.accept_tagged()?
+        } else if let Some((payload, checks)) = &ingress {
+            local_ingress(payload, checks)?
         } else {
             None
         };
-        if let Some(stream) = incoming_stream {
-            if workers.len() >= 64 {
-                drop(stream);
-                continue;
-            }
-            if let Ok((guard, cancel)) = reserve(
+        if let Some((kind, stream)) = incoming_stream
+            && workers.len() < 64
+        {
+            if kind == ingress::DescriptorKind::Checks {
+                if let Some(checks) = runtime.checks.clone() {
+                    workers.push(thread::spawn(move || {
+                        let _ = checks.serve(stream);
+                    }));
+                }
+            } else if let Ok((guard, cancel)) = reserve(
                 &state,
                 "incoming",
                 hex::encode(runtime.binding.as_ref().unwrap().service),
@@ -654,6 +826,9 @@ pub fn run(a: Arguments) -> Result<()> {
             active.cancel.store(true, Ordering::Relaxed);
         }
     }
+    if let Some(checks) = &runtime.checks {
+        checks.stop();
+    }
     for worker in workers {
         let _ = worker.join();
     }
@@ -667,3 +842,87 @@ pub fn run(a: Arguments) -> Result<()> {
     let _ = actor.join();
     Ok(())
 }
+
+fn connection_privacy(active: &Active, runtime: &Runtime) -> Value {
+    if active.info.direction == "incoming"
+        && (active.privacy.is_null()
+            || !runtime.checks.as_ref().is_some_and(|c| {
+                c.ready() && c.status()["controlGeneration"].as_u64() == active.privacy_generation
+            }))
+    {
+        checks::unknown_incoming()
+    } else if active.privacy.is_null() {
+        json!({"direction":"outgoing","transport":"HyperNet","transportAuthenticated":false,"relayPath":"unavailable","provenance":"pending"})
+    } else {
+        active.privacy.clone()
+    }
+}
+
+fn local_ingress(
+    payload: &ipc::Listener,
+    checks: &ipc::Listener,
+) -> Result<Option<(ingress::DescriptorKind, UnixStream)>> {
+    for (kind, listener) in [
+        (ingress::DescriptorKind::Checks, checks),
+        (ingress::DescriptorKind::Payload, payload),
+    ] {
+        match listener.socket.accept() {
+            Ok((stream, _)) => {
+                if ipc::peer(&stream).is_ok() {
+                    return Ok(Some((kind, stream)));
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(None)
+}
+
+fn status_v2(runtime: &Runtime, state: &State) -> Value {
+    json!({
+        "version":2,"ok":true,"status":"Ready",
+        "network":runtime.profile["network"],"incarnation":runtime.profile["incarnation"],
+        "principal":runtime.profile["principal"],"binding":runtime.profile["binding"],
+        "uptimeMs":runtime.started.elapsed().as_millis(),"incoming":runtime.binding.is_some(),
+        "capabilities":{"checkAuthority":runtime.checks.as_ref().map_or_else(||json!({"supported":true,"capability":streams::control::CAPABILITY,"endpointReady":false,"controlGeneration":null}),|c|c.status())},
+        "targets":runtime.targets.iter().map(|t|json!({"service":t.service,"protocol":t.protocol})).collect::<Vec<_>>(),
+        "connections":state.active.values().map(|a|json!({
+            "id":a.info.id,"direction":a.info.direction,"service":a.info.service,
+            "checkAuthority":a.accepted && a.reference.is_some() && !a.cancel.load(Ordering::Acquire) && runtime.checks.as_ref().is_some_and(|c|c.ready()),
+            "privacy":status_privacy(connection_privacy(a,runtime))
+        })).collect::<Vec<_>>()
+    })
+}
+fn status_privacy(value: Value) -> Value {
+    // Keep all sixteen slots and targets inside one control frame; connect/check retain full provenance.
+    let mut result = serde_json::Map::new();
+    for field in [
+        "transportAuthenticated",
+        "transportProtection",
+        "tls",
+        "relayPath",
+        "relayService",
+        "selectedMinimum",
+        "configuredAssurance",
+        "provenance",
+        "physicalIndependenceVerified",
+        "profileCurrentnessAsserted",
+        "endpointMode",
+        "attachmentProfileDigest",
+    ] {
+        if let Some(value) = value.get(field) {
+            result.insert(field.into(), value.clone());
+        }
+    }
+    if let Some(profile) = value
+        .get("certifiedEndpointProfile")
+        .filter(|p| !p.is_null())
+    {
+        result.insert("certifiedEndpointProfile".into(),json!({"profileDigest":profile["profileDigest"],"notAfterBootMs":profile["notAfterBootMs"]}));
+    }
+    Value::Object(result)
+}
+#[cfg(test)]
+#[path = "../../Tests/Unit/Applications/ApplicationStreamsAgentTests.rs"]
+mod tests;

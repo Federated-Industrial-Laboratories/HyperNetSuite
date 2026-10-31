@@ -1,7 +1,7 @@
 # Application streams
 
 [Documentation](ReadMe.md) | [Application access](ApplicationAccess.md) |
-[Python SDK](../SDK/README.md)
+[Python SDK](../SDK/README.md) | [Version2 context](ApplicationContext.md)
 
 Application streams connect a named service through an approved HyperNet relay.
 Each connection authenticates its application principal, exact service and
@@ -128,7 +128,7 @@ HyperNetSuite streams agent --bootstrap /Private/Bootstrap.cbor \
 ```
 
 The companion creates `/Private/Companion/Control.sock` for SDK requests. Its
-rootless ingress helper creates `Ingress/{Binding.json,Control.sock}` under the
+rootless ingress helper creates `Ingress/{Binding.json,Control.sock,Checks.sock}` under the
 exact subordinate UID used by Core. The helper requires `/usr/bin/podman`, enters
 its rootless namespace, confines its filesystem to Ingress, drops supplementary
 groups and privileges, and permits only bounded local descriptor handoffs. It

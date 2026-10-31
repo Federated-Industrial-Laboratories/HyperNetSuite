@@ -62,6 +62,21 @@ impl Source {
             Self::Signed { monitor_key, .. } => Some(monitor_key),
         }
     }
+    /// Local absolute deadlines require the same healthy host boot and an unshifted time namespace.
+    pub fn verified_boot(&self) -> Result<String> {
+        unshifted_clock()?;
+        self.health()?.observe()?;
+        let boot = match self {
+            Self::Signed {
+                host_kernel_boot, ..
+            } => host_kernel_boot.clone(),
+            Self::Private { .. } => std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?
+                .trim()
+                .to_owned(),
+        };
+        ensure!(valid_boot(&boot), "invalid verified kernel boot");
+        Ok(boot)
+    }
     pub fn health(&self) -> Result<ClockHealth> {
         match self {
             Self::Private { path } => health(path),

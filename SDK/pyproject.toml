@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hypernet-streams"
-version = "0.9.1"
+version = "0.10.0"
 description = "Local IPC client for authenticated HyperNet application streams"
 requires-python = ">=3.10"
 license = {file = "Licence.txt"}

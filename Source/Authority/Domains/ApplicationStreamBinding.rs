@@ -78,7 +78,15 @@ pub struct PeerContext {
     pub idle_ms: u64,
     pub duration_ms: u64,
 }
+#[allow(dead_code)]
 pub fn verify_context(bytes: &[u8], binding: &Binding, nonce: Digest) -> Result<PeerContext> {
+    Ok(verify_context_with_reference(bytes, binding, nonce)?.0)
+}
+pub fn verify_context_with_reference(
+    bytes: &[u8],
+    binding: &Binding,
+    nonce: Digest,
+) -> Result<(PeerContext, VersionRef)> {
     let (payload, signatures) = wire::envelope(bytes, 1)?;
     let v = wire::decode(&payload)?;
     let f = v.array(7)?;
@@ -102,19 +110,22 @@ pub fn verify_context(bytes: &[u8], binding: &Binding, nonce: Digest) -> Result<
             && p.protocol == binding.protocol,
         "local context names another stream"
     );
-    Ok(PeerContext {
-        network: hex::encode(binding.network),
-        incarnation: hex::encode(binding.incarnation),
-        service: hex::encode(binding.service),
-        protocol: binding.protocol.clone(),
-        principal: hex::encode(p.principal),
-        grant: hex::encode(p.grant.id),
-        grant_generation: p.grant.generation,
-        session: hex::encode(r.id),
-        generation: r.generation,
-        expires_ms: p.expires,
-        maximum_bytes: p.limits.bytes,
-        idle_ms: p.limits.idle_ms,
-        duration_ms: p.limits.duration_ms,
-    })
+    Ok((
+        PeerContext {
+            network: hex::encode(binding.network),
+            incarnation: hex::encode(binding.incarnation),
+            service: hex::encode(binding.service),
+            protocol: binding.protocol.clone(),
+            principal: hex::encode(p.principal),
+            grant: hex::encode(p.grant.id),
+            grant_generation: p.grant.generation,
+            session: hex::encode(r.id),
+            generation: r.generation,
+            expires_ms: p.expires,
+            maximum_bytes: p.limits.bytes,
+            idle_ms: p.limits.idle_ms,
+            duration_ms: p.limits.duration_ms,
+        },
+        r,
+    ))
 }

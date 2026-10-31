@@ -22,7 +22,7 @@ sys.dont_write_bytecode = True
 import PackageTrust
 
 PRODUCT = 'HyperNetSuite'
-VERSION = '0.9.1'
+VERSION = '0.10.0'
 NAMESPACE = 'HyperNetSuiteBundle1'
 PRINCIPAL = 'HyperNetSuitePublisher'
 MAX_ARCHIVE = 512 * 1024 * 1024
@@ -108,7 +108,7 @@ def architecture():
 def allowed_path(name):
     if re.fullmatch(r'SDK/hypernet_streams-[0-9]+\.[0-9]+\.[0-9]+-py3-none-any\.whl', name):
         return True
-    if name in ('.github/assets/header.svg', 'Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite', 'SDK/README.md', 'SDK/Licence.txt', 'SDK/pyproject.toml', 'SDK/hypernet_streams/__init__.py', 'Examples/ApplicationStreams/stream_service.py'):
+    if name in ('.github/assets/header.svg', 'Licence.txt', 'ReadMe.md', 'Bin/HyperNetSuite', 'SDK/README.md', 'SDK/Licence.txt', 'SDK/pyproject.toml', 'SDK/hypernet_streams/__init__.py', 'SDK/hypernet_streams/context.py', 'Examples/ApplicationStreams/stream_service.py', 'Examples/ApplicationStreams/authority_service.py'):
         return True
     return bool(re.fullmatch(r'(Tools/[A-Z][A-Za-z0-9]*\.(py|sh)|Documentation/[A-Z][A-Za-z0-9]*\.(md|txt|json)|Examples/[A-Z][A-Za-z0-9]*\.(py|png|svg|md|txt)|Tests/(ApplicationStreams|ReaderTerminal|LayoutTerminal|MarkupRobustness|MediaImport|MediaTerminal|NativeGraphics|NetworkProvisioning)\.py)', name))
 
@@ -420,13 +420,14 @@ def stream_wheel(path, repository):
     require(path.name == expected, 'SDK wheel version or Python tag differs')
     require(path.stat().st_size <= 1024 * 1024, 'SDK wheel exceeds its bound')
     prefix = f'hypernet_streams-{VERSION}.dist-info/'
-    allowed = {'hypernet_streams/__init__.py', *(prefix + name for name in ('METADATA', 'WHEEL', 'top_level.txt', 'RECORD', 'licenses/Licence.txt'))}
+    allowed = {'hypernet_streams/__init__.py', 'hypernet_streams/context.py', *(prefix + name for name in ('METADATA', 'WHEEL', 'top_level.txt', 'RECORD', 'licenses/Licence.txt'))}
     with zipfile.ZipFile(path) as wheel:
         entries = wheel.infolist()
         names = [entry.filename for entry in entries]
         require(len(names) == len(set(names)) and set(names) == allowed, 'SDK wheel contains unexpected files')
         require(all(entry.file_size <= 65536 for entry in entries), 'SDK wheel member exceeds its bound')
-        require(wheel.read('hypernet_streams/__init__.py') == (repository / 'SDK/hypernet_streams/__init__.py').read_bytes(), 'SDK wheel differs from included implementation')
+        for module in ('__init__.py', 'context.py'):
+            require(wheel.read('hypernet_streams/' + module) == (repository / 'SDK/hypernet_streams' / module).read_bytes(), 'SDK wheel differs from included implementation')
         require(wheel.read(prefix + 'licenses/Licence.txt') == (repository / 'Licence.txt').read_bytes(), 'SDK wheel omits or changes the Suite license notice')
         metadata = wheel.read(prefix + 'METADATA').decode('utf-8')
         require('Name: hypernet-streams\n' in metadata and f'Version: {VERSION}\n' in metadata and 'Requires-Dist:' not in metadata, 'SDK wheel metadata differs or adds a runtime dependency')

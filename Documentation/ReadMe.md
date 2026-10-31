@@ -2,7 +2,7 @@
 
 [Project README](../ReadMe.md) | [Installation](Installation.md) | [Security](Security.md)
 
-[Linux 0.9.1 release and downloads](ReleaseNotes.md)
+[Linux 0.10.0 release and downloads](ReleaseNotes.md)
 
 [0.9.1 permission scopes and migration](PermissionScopes.md)
 
@@ -68,6 +68,7 @@ and runtime installation are documented by
 | Inspect or export a bounded local diagnostic summary | [Diagnostics](Diagnostics.md) |
 | Verify, replace or remove installed software | [Upgrade and recovery](UpgradeRecovery.md) |
 | Connect application services and manage local companions | [Application streams](ApplicationStreams.md) |
+| Check current application authority and directional transport context | [Application context](ApplicationContext.md) |
 | Connect an installed service to a remote authority | [Native authority connector](AuthorityConnector.md) |
 | Grant an application its own scoped authority | [Application access](ApplicationAccess.md) |
 | Disclose exact review data to an external processor | [Adapters](Adapters.md) |

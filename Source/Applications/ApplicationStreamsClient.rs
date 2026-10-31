@@ -359,7 +359,22 @@ impl Client {
                 expires,
                 envelope: vec![],
             };
+            let endpoint_provenance =
+                (route_service.profile.identity == endpoint.route.destination).then(|| {
+                    json!({
+                        "source":"certifiedServiceLookup",
+                        "service":hex::encode(route_record.reference.id),
+                        "generation":route_record.reference.generation,
+                        "recordDigest":hex::encode(route_record.reference.digest),
+                        "profileDigest":hex::encode(wire::digest(&route_service.profile.envelope)),
+                        "endpointMode":route_service.profile.mode,
+                        "evaluatedAtMs":result.evaluated_at_ms,
+                        "expiresAtMs":result.expires_at_ms,
+                        "notAfterBootMs":result.deadline_boot_ms
+                    })
+                });
             return Ok(Plan {
+                endpoint_provenance,
                 proof,
                 binding: registered.registration.binding,
                 owner: registered.registration.owner,
@@ -414,6 +429,7 @@ fn renewal_default() -> u64 {
     60000
 }
 pub(super) struct Plan {
+    pub endpoint_provenance: Option<serde_json::Value>,
     pub proof: streams::Proof,
     pub binding: Digest,
     pub owner: Digest,

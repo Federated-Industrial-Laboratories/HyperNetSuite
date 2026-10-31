@@ -59,7 +59,7 @@ def main():
 os.chdir(sys.argv[1]);os.chroot('.');os.chdir('/')
 if sys.argv[2]=='mapped':
  os.setgroups([]);os.setgid(1001);os.setuid(1001)
-s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.settimeout(5);s.connect('/Control.sock')
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.settimeout(5);s.connect('/'+sys.argv[3])
 if sys.argv[2]=='other':
  try:
   s.sendall(b'refused');assert s.recv(32)==b''
@@ -68,28 +68,32 @@ else:
  s.sendall(b'local descriptor');s.shutdown(socket.SHUT_WR)
  assert s.recv(32)==b'verified handoff'
 '''
-        refused = subprocess.run(['/usr/bin/podman', 'unshare', 'python3', '-S', '-c', script,
-            str(root/'Ingress'), 'other'], capture_output=True, timeout=10)
-        assert refused.returncode == 0, refused.stderr.decode()
-        peer = subprocess.Popen(['/usr/bin/podman', 'unshare', 'python3', '-S', '-c', script,
-            str(root/'Ingress'), 'mapped'], stderr=subprocess.PIPE)
-        data, ancillary, flags, _ = parent.recvmsg(1, socket.CMSG_SPACE(4))
-        assert data == b'\1' and not flags and len(ancillary) == 1
-        assert ancillary[0][:2] == (socket.SOL_SOCKET, socket.SCM_RIGHTS)
-        descriptors = array.array('i'); descriptors.frombytes(ancillary[0][2])
-        assert len(descriptors) == 1
-        parent.sendall(b'\1')
-        with socket.socket(fileno=descriptors[0]) as stream:
-            stream.settimeout(5)
-            assert stream.recv(32) == b'local descriptor'
-            assert stream.recv(1) == b''
-            stream.sendall(b'verified handoff')
-        assert peer.wait(timeout=5) == 0, peer.stderr.read().decode()
+        tags = [('Control.sock', 1)]
+        if args.binding_kind == 'application':
+            tags.append(('Checks.sock', 2))
+        for socket_name, tag in tags:
+            refused = subprocess.run(['/usr/bin/podman', 'unshare', 'python3', '-S', '-c', script,
+                str(root/'Ingress'), 'other', socket_name], capture_output=True, timeout=10)
+            assert refused.returncode == 0, refused.stderr.decode()
+            peer = subprocess.Popen(['/usr/bin/podman', 'unshare', 'python3', '-S', '-c', script,
+                str(root/'Ingress'), 'mapped', socket_name], stderr=subprocess.PIPE)
+            data, ancillary, flags, _ = parent.recvmsg(1, socket.CMSG_SPACE(4))
+            assert data == bytes([tag]) and not flags and len(ancillary) == 1
+            assert ancillary[0][:2] == (socket.SOL_SOCKET, socket.SCM_RIGHTS)
+            descriptors = array.array('i'); descriptors.frombytes(ancillary[0][2])
+            assert len(descriptors) == 1
+            parent.sendall(b'\1')
+            with socket.socket(fileno=descriptors[0]) as stream:
+                stream.settimeout(5)
+                assert stream.recv(32) == b'local descriptor'
+                assert stream.recv(1) == b''
+                stream.sendall(b'verified handoff')
+            assert peer.wait(timeout=5) == 0, peer.stderr.read().decode()
         parent.close()
         assert helper.wait(timeout=5) == 0, helper.stderr.read().decode()
         print(json.dumps(dict(passed=True, binarySha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
             mappedUid=1001, wrongUidRefused=True, fdHandoff=True, halfClose=True,
-            chroot=True, seccomp=True, bindingKind=args.binding_kind)))
+            chroot=True, seccomp=True, bindingKind=args.binding_kind, descriptorTags=[tag for _, tag in tags])))
     finally:
         parent.close(); child.close()
         for process in (peer, helper):

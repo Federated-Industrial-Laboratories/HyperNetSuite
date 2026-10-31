@@ -76,3 +76,41 @@ fn local_duplex_preserves_half_close_and_bounds_cancel_and_bytes() {
     );
     assert!(started.elapsed() < Duration::from_secs(1));
 }
+
+#[test]
+fn v1_schema_stays_strict_and_v2_checks_are_exactly_scoped() {
+    let mut value = json!({"version":2,"action":"checkAuthority","id":"01".repeat(32),"nonce":"02".repeat(32),"actionDigest":"03".repeat(32),"timeoutMs":5000});
+    serde_json::from_value::<RequestV2>(value.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    value["version"] = json!(1);
+    assert!(serde_json::from_value::<Request>(value.clone()).is_err());
+    value["version"] = json!(2);
+    for field in ["principal", "session", "grant", "service"] {
+        let mut extra = value.clone();
+        extra[field] = json!("substitute");
+        assert!(
+            serde_json::from_value::<RequestV2>(extra)
+                .and_then(|r| r.validate().map_err(serde::de::Error::custom))
+                .is_err()
+        );
+    }
+    for timeout in [0, 99, 5001] {
+        value["timeoutMs"] = json!(timeout);
+        assert!(
+            serde_json::from_value::<RequestV2>(value.clone())
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    value["timeoutMs"] = json!(100);
+    value["nonce"] = json!("AA".repeat(32));
+    assert!(
+        serde_json::from_value::<RequestV2>(value)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+}

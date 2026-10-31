@@ -7,6 +7,19 @@ identity files, mail vaults, recovery files and downloads outside an installed
 software prefix. Package removal never revokes network grants or deletes those
 external files.
 
+## Application context 0.10.0
+
+Use matching Core endpoints and Suite companions for the opt-in version 2 checks.
+Stop active work and follow the existing software-replacement procedure; restart
+companions and renew local consent for changed endpoint artifacts. Existing
+version 1 payload workflows remain compatible when the checks channel is absent.
+No grant replacement is required solely for this additive feature.
+
+The signed 0.10.0 package target uses sequence 6 and version floor 0.10.0. Product
+state-contract identifiers are unchanged, and all existing trust and authority
+floors remain binding. Upgrades from 0.9.0 must still complete the 0.9.1 permission
+migration below; a new package does not repair broad grants or a lagging voter.
+
 ## Permission hotfix 0.9.1
 
 Upgrade Core and Suite together and apply the
@@ -64,12 +77,12 @@ its final newline. It is not OpenSSH's displayed base64 fingerprint.
 python3 Tools/Bundle.py KeyPin --public-key /Trust/Publisher.pub
 python3 Tools/Bundle.py TrustInit --trust-directory /Private/SuitePackageTrust \
   --public-key /Trust/Publisher.pub --root-pin <independently-authenticated-sha256> \
-  --root-generation 1 --version-floor 0.8.0 --state-contract HyperNet080Client1
+  --root-generation 1 --version-floor 0.10.0 --state-contract HyperNet080Client1
 ```
 
 The state contract is fixed by this product; an arbitrary operator-supplied label
 cannot mark incompatible state as compatible. Core uses a different contract and
-trust directory. The current Linux release is version 0.9.1. Signed update sequences identify exact
+trust directory. The current Linux release is version 0.10.0. Signed update sequences identify exact
 builds and cannot move backwards. Earlier development packages do not become
 release packages when a version label changes. Use independently accepted release
 trust and the signed target for the new package; retain existing state and floors.
