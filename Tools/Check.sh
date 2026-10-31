@@ -26,6 +26,8 @@ for ancestor in path.parents:
 if len(os.fsencode(path / ('I' + '0' * 16) / 'UnavailableAuthority.sock')) >= 108:
     raise SystemExit('Test directory is too long for Unix sockets; set HYPERNET_TEST_DIRECTORY to a shorter private path')
 PYTHON
+# Bound concurrent clock-sensitive fixtures unless the caller selects a limit.
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
 cargo fmt --all --check
 cargo clippy --release --locked --all-targets -- -D warnings
 cargo test --release --locked
