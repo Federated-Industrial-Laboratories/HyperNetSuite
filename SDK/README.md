@@ -3,7 +3,7 @@
 This Linux Python package uses the private HyperNetSuite companion. The companion
 owns HyperNet cryptography, permission checks, requester floors and route renewal.
 The package has no runtime dependencies. Install the included wheel with
-`python3 -m pip install --no-index SDK/hypernet_streams-0.9.1-py3-none-any.whl`.
+`python3 -m pip install --no-index SDK/hypernet_streams-0.10.0-py3-none-any.whl`.
 A source checkout also supports `python3 -m pip install ./SDK`, or adding the SDK
 directory to `PYTHONPATH`. Build a wheel offline with
 `python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir dist ./SDK` from

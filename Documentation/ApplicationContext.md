@@ -2,7 +2,7 @@
 
 [Application streams](ApplicationStreams.md) | [Python SDK](../SDK/README.md)
 
-Local IPC version2 adds typed, action-bound authority checks and directional
+Version 0.10.0 introduces local IPC version 2 with typed, action-bound authority checks and directional
 transport context. Version1 requests, responses, CLI commands and raw payload
 streams retain their existing contract. An older endpoint can continue serving
 version1 streams when the optional checks channel is absent.
@@ -61,10 +61,17 @@ local verified observation, not a portable proof or a reusable application grant
 The wire names `callerStartedBootMs` and `callerDeadlineBootMs` mean the
 companion's dispatch instant and derived absolute deadline. That deadline crosses
 the Core queue and authority read unchanged; no retry restarts a relative timer.
-`notAfterBootMs` further bounds a certified result by its authority and clock
-validity. The SDK separately retains its original call-start timeout and uses the
-minimum of that bound and the receipt bound. IPC delay therefore consumes the
-application's own time budget. The signed observation is not rewritten.
+The authority challenge has a separate ceiling at the original companion start
+plus 5,000 ms, including time already spent queued. This lets the existing
+conservative authority interval support a shorter caller wait, including the
+SDK's one-second default. It does not extend that wait or permit a late effect.
+Clock health is re-observed during and after the read; the initial short-lived
+clock sample does not reset or shorten the fixed caller deadline.
+`notAfterBootMs` further bounds a certified result by its authority and the
+current clock observation at completion. The SDK separately retains its original
+call-start timeout and uses the minimum of that bound and the receipt bound. IPC
+delay therefore consumes the application's own time budget. The signed
+observation is not rewritten.
 
 One pending check is allowed per connection, with four across the companion.
 The checks channel consumes none of the existing16 application connection slots.
