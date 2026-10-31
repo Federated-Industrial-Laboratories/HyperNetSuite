@@ -28,12 +28,14 @@ struct Fixture {
     records: Vec<Vec<u8>>,
     reserved: Reservations,
     grant: VersionRef,
+    reviewer: VersionRef,
     host: VersionRef,
 }
 impl Fixture {
     fn new() -> Self {
-        let f =
-            deployment::Fixture::with_actions(vec![0, 2, 4, 5, 9, 10, 11, 12, 13, 23, 26, 29, 30]);
+        let f = deployment::Fixture::with_actions(vec![
+            0, 1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 23, 26, 29, 30,
+        ]);
         let mut m = deployment::manifest();
         m.consent_policy.allow_opaque = true;
         m.consent_policy.reviewer_roots = vec![public(5)];
@@ -52,11 +54,13 @@ impl Fixture {
             .into_iter()
             .find(|r| r.kind == 102 && r.id == [23; 32])
             .unwrap();
+        let reviewer = deployment::scoped_grant(&mut records, &grant, [232; 32], &[(2, [78; 32])]);
         let mut f = Self {
             state: State::empty([20; 32], [21; 32]),
             records,
             reserved: f.reservations,
             grant: grant.clone(),
+            reviewer,
             host: grant,
         };
         let mut h = page::HostProfile {
@@ -69,13 +73,13 @@ impl Fixture {
             maximum_asset_bytes: 1024 * 1024,
             retention_ms: 15000,
             content: Some(page::ContentPolicy {
+                search: false,
                 metadata_bytes: 65536,
                 data_bytes: 2 * 1024 * 1024,
                 staging_bytes: 1024 * 1024,
                 quarantine_bytes: 1024 * 1024,
                 maximum_objects: 128,
                 opaque: true,
-                search: false,
                 failure_domain: [91; 32],
                 reviewers: vec![public(5)],
             }),
@@ -101,8 +105,20 @@ impl Fixture {
         let mut snapshot = deployment::snapshot(&[]);
         for exact in [false, true] {
             let command = build(&snapshot);
+            let reviewer = matches!(
+                &command,
+                DomainCommand::SealedPublication(
+                    Command::Prepare { .. } | Command::Stage { .. } | Command::Context { .. }
+                ) | DomainCommand::Page(page::Command::Content(
+                    page::content::Command::Receipt { .. }
+                ))
+            );
             let operation = Operation {
-                grant: Some(self.grant.clone()),
+                grant: Some(if reviewer {
+                    self.reviewer.clone()
+                } else {
+                    self.grant.clone()
+                }),
                 command,
                 snapshot: domains::snapshot(&snapshot).unwrap(),
             };
@@ -473,6 +489,74 @@ fn sealed_finalisation_refuses_a_roster_removed_after_freeze() {
     f.revoke();
     assert_ne!(f.stage().code, 0);
     assert!(!f.state.records.contains_key(&(113, [77; 32])));
+}
+
+#[test]
+fn sealed_publication_refuses_stream_and_broad_review_authority() {
+    let mut f = Fixture::new();
+    f.policy();
+    let precise = f.reviewer.clone();
+    let mixed = deployment::scoped_grant(
+        &mut f.records,
+        &f.grant,
+        [233; 32],
+        &[(2, [78; 32]), (3, [78; 32])],
+    );
+    let stream = deployment::scoped_grant(&mut f.records, &f.grant, [234; 32], &[(3, [78; 32])]);
+    for grant in [f.grant.clone(), mixed, stream] {
+        f.reviewer = grant;
+        assert_eq!(f.stage().code, 3);
+        assert!(!f.state.records.contains_key(&(113, [77; 32])));
+    }
+    f.reviewer = precise;
+    assert_eq!(f.stage().code, 0);
+    f.copy();
+    let outer = f.outer();
+    assert_eq!(
+        f.run(
+            |_| Command::Commit {
+                outer: outer.clone()
+            }
+            .into(),
+            5
+        )
+        .code,
+        0
+    );
+    let device = f.state.record(108, [83; 32]).unwrap().reference.clone();
+    assert_eq!(
+        f.run(
+            |_| Command::Read {
+                outer: outer.clone(),
+                device: device.clone()
+            }
+            .into(),
+            73
+        )
+        .code,
+        0
+    );
+    // Retained broad-review history remains readable as state, but live serving
+    // cannot continue under the ambiguous reviewer permission.
+    let mut legacy =
+        PublicationState::parse(&f.state.record(PUBLICATION_STATE, outer.id).unwrap().payload)
+            .unwrap();
+    legacy.reviewer_grant = f.grant.clone();
+    let next = Record::next(&f.state, PUBLICATION_STATE, outer.id, legacy.value()).unwrap();
+    f.state.records.insert(next.reference.index(), next);
+    f.state = State::parse(&f.state.value(), [20; 32], [21; 32]).unwrap();
+    assert_eq!(
+        f.run(
+            |_| Command::Read {
+                outer: outer.clone(),
+                device: device.clone()
+            }
+            .into(),
+            73
+        )
+        .code,
+        3
+    );
 }
 #[test]
 fn sealed_withdrawal_tombstones_exact_stored_ciphertext() {

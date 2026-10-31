@@ -17,6 +17,12 @@ Use a stable enrolled application identity with only the required rights. See
 withdrawal. An independently authorised route voucher carries transport rights;
 its possession key differs from the application's signing key.
 
+Version 0.9.1 requires Service-only terminal grants for stream management and
+connection. Network and mixed-purpose grants refuse these operations. The legacy
+numbers 29/30 also identify sealed-page permissions under a separate, disjoint
+scope rule. Read [permission scopes](PermissionScopes.md) before upgrading an
+existing service or application; same-rights renewal cannot repair a broad grant.
+
 ## Register a service
 
 Prepare and register a role5 route with protocol `application` through the

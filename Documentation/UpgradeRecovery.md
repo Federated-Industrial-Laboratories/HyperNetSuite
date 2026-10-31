@@ -7,6 +7,16 @@ identity files, mail vaults, recovery files and downloads outside an installed
 software prefix. Package removal never revokes network grants or deletes those
 external files.
 
+## Permission hotfix 0.9.1
+
+Upgrade Core and Suite together and apply the
+[permission-scope migration](PermissionScopes.md). Broad and mixed-purpose grants
+no longer authorise stream or sealed-page effects. Existing signed records remain
+readable; a package update does not silently rewrite grants, admissions, service
+registrations or sealed reviews. Drain affected work and use the normal stopped
+replacement. Do not mix old and patched authority semantics or downgrade to regain
+broad permission.
+
 ## Side-by-side upgrade
 
 1. Record the currently selected binary path and verify its signed inventory.

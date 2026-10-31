@@ -149,6 +149,8 @@ mod transfer_protocol;
 mod transfer_vault;
 #[path = "Transfers/Transfers.rs"]
 mod transfers;
+#[path = "Protocol/TrustActionScope.rs"]
+mod trust_action_scope;
 #[path = "Protocol/TrustBootstrap.rs"]
 mod trust_bootstrap;
 #[path = "Protocol/TrustWire.rs"]
