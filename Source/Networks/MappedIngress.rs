@@ -31,6 +31,11 @@ pub struct Ingress {
     child: Child,
     channel: UnixStream,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DescriptorKind {
+    Payload = 1,
+    Checks = 2,
+}
 impl Ingress {
     pub fn start(directory: &Path, binding: &streams::local::Binding) -> Result<Self> {
         Self::start_binding(directory, &binding.encode()?, "application")
@@ -92,6 +97,17 @@ impl Ingress {
         Ok(result)
     }
     pub fn accept(&mut self) -> Result<Option<UnixStream>> {
+        self.accept_tagged()?
+            .map(|(kind, stream)| {
+                ensure!(
+                    kind == DescriptorKind::Payload,
+                    "unexpected mapped ingress descriptor kind"
+                );
+                Ok(stream)
+            })
+            .transpose()
+    }
+    pub fn accept_tagged(&mut self) -> Result<Option<(DescriptorKind, UnixStream)>> {
         if let Some(status) = self.child.try_wait()? {
             anyhow::bail!("mapped ingress helper stopped: {status}");
         }
@@ -116,8 +132,8 @@ impl Drop for Ingress {
         let _ = self.child.wait();
     }
 }
-fn send(channel: &UnixStream, stream: &UnixStream) -> Result<()> {
-    let mut byte = [1u8];
+fn send(channel: &UnixStream, stream: &UnixStream, kind: DescriptorKind) -> Result<()> {
+    let mut byte = [kind as u8];
     let mut io = libc::iovec {
         iov_base: byte.as_mut_ptr().cast(),
         iov_len: 1,
@@ -142,7 +158,7 @@ fn send(channel: &UnixStream, stream: &UnixStream) -> Result<()> {
     }
     Ok(())
 }
-fn receive(channel: &UnixStream) -> Result<Option<UnixStream>> {
+fn receive(channel: &UnixStream) -> Result<Option<(DescriptorKind, UnixStream)>> {
     let mut byte = [0u8];
     let mut io = libc::iovec {
         iov_base: byte.as_mut_ptr().cast(),
@@ -189,14 +205,19 @@ fn receive(channel: &UnixStream) -> Result<Option<UnixStream>> {
     }
     ensure!(
         count == 1
-            && byte == [1]
+            && matches!(byte[0], 1 | 2)
             && header.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) == 0
             && descriptors.len() == 1,
         "mapped ingress descriptor response is absent or invalid"
     );
-    Ok(Some(unsafe {
+    let kind = if byte[0] == 1 {
+        DescriptorKind::Payload
+    } else {
+        DescriptorKind::Checks
+    };
+    Ok(Some((kind, unsafe {
         UnixStream::from_raw_fd(descriptors.pop().unwrap().into_raw_fd())
-    }))
+    })))
 }
 fn restrict() -> Result<()> {
     const LOAD: u16 = 0x20;
@@ -376,27 +397,44 @@ pub fn run(a: Arguments) -> Result<()> {
     files::atomic_at(&root, std::ffi::OsStr::new("Binding.json"), &bytes, true)?;
     drop(root);
     let listener = ipc::Listener::bind(Path::new("/"))?;
+    let checks = if a.binding_kind == "application" {
+        Some(ipc::Listener::bind_named(Path::new("/"), "Checks.sock")?)
+    } else {
+        None
+    };
     restrict()?;
     ipc::write_frame(&mut channel, b"Ready")?;
     loop {
         if ipc::disconnected(&channel)? {
             break;
         }
-        match listener.socket.accept() {
-            Ok((stream, _)) => {
-                if ipc::peer(&stream).is_err() {
-                    continue;
+        let mut accepted = false;
+        for (kind, listener) in std::iter::once((DescriptorKind::Payload, &listener)).chain(
+            checks
+                .as_ref()
+                .map(|listener| (DescriptorKind::Checks, listener)),
+        ) {
+            match listener.socket.accept() {
+                Ok((stream, _)) => {
+                    if ipc::peer(&stream).is_err() {
+                        continue;
+                    }
+                    accepted = true;
+                    send(&channel, &stream, kind)?;
+                    let mut ack = [0u8];
+                    channel.read_exact(&mut ack)?;
+                    ensure!(ack == [1], "parent refused ingress descriptor handoff");
                 }
-                send(&channel, &stream)?;
-                let mut ack = [0u8];
-                channel.read_exact(&mut ack)?;
-                ensure!(ack == [1], "parent refused ingress descriptor handoff");
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(e.into()),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-            Err(e) => return Err(e.into()),
+        }
+        if !accepted {
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
     Ok(())
 }
+#[cfg(test)]
+#[path = "../../Tests/Unit/Networks/MappedIngressTests.rs"]
+mod tests;

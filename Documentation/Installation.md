@@ -187,7 +187,7 @@ The gate is not an installation step.
 Maintainers can assemble an offline archive from a locked native release build:
 
 ```sh
-python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir dist SDK
+python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir dist ./SDK
 python3 Tools/Bundle.py Create --binary target/release/HyperNetSuite \
   --streams-sdk-wheel dist/hypernet_streams-0.9.1-py3-none-any.whl \
   --output HyperNetSuite.tar --signing-key PublisherKey

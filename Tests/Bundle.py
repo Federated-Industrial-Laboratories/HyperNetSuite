@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+import zipfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +97,22 @@ class BundleTests(unittest.TestCase):
         manifest = json.loads(self.verify().stdout)
         self.assertEqual(manifest['product'], 'HyperNetSuite')
         self.assertEqual(manifest['metadata']['binarySha256'], hashlib.sha256(BINARY.read_bytes()).hexdigest())
+
+    def test_context_sdk_module_is_packaged_and_source_bound(self):
+        paths = {item.name for item, _ in self.entries}
+        self.assertIn('Payload/SDK/hypernet_streams/context.py', paths)
+        self.assertIn('Payload/Examples/ApplicationStreams/authority_service.py', paths)
+        modified = self.prefix()
+        modified.mkdir()
+        wheel = modified / SDK_WHEEL.name
+        with zipfile.ZipFile(SDK_WHEEL) as source, zipfile.ZipFile(wheel, 'w') as destination:
+            for item in source.infolist():
+                payload = source.read(item)
+                if item.filename == 'hypernet_streams/context.py':
+                    payload += b'\n# changed implementation\n'
+                destination.writestr(item, payload)
+        with self.assertRaises(ValueError):
+            Bundle.stream_wheel(wheel, ROOT)
 
     def test_wrong_pinned_signer(self):
         self.verify(key=self.other, success=False)

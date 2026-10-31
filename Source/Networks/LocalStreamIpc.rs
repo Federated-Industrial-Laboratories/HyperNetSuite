@@ -33,6 +33,73 @@ pub struct Request {
     pub id: Option<String>,
     pub timeout_ms: Option<u64>,
 }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestV2 {
+    pub version: u64,
+    pub action: String,
+    pub service: Option<String>,
+    pub protocol: Option<String>,
+    pub id: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub nonce: Option<String>,
+    pub action_digest: Option<String>,
+}
+impl RequestV2 {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.version == 2, "unsupported local IPC version");
+        let check = self.action == "checkAuthority";
+        ensure!(
+            check || self.nonce.is_none() && self.action_digest.is_none(),
+            "check correlation on another operation"
+        );
+        match self.action.as_str() {
+            "checkAuthority" => {
+                ensure!(
+                    self.service.is_none() && self.protocol.is_none(),
+                    "check cannot select a service or principal"
+                );
+                for (index, value) in [&self.id, &self.nonce, &self.action_digest]
+                    .iter()
+                    .enumerate()
+                {
+                    let value = value
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("check correlation is absent"))?;
+                    ensure!(
+                        value.len() == 64
+                            && value
+                                .bytes()
+                                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+                        "check correlation must be32 lowercase hex bytes"
+                    );
+                    ensure!(
+                        index == 0 || value.bytes().any(|c| c != b'0'),
+                        "check nonce and digest must be nonzero"
+                    );
+                }
+                ensure!(
+                    self.timeout_ms.is_some_and(|n| (100..=5000).contains(&n)),
+                    "check timeout must be100..5000ms"
+                );
+            }
+            "connect" => ensure!(
+                self.id.is_none() && self.service.is_some(),
+                "invalid connect fields"
+            ),
+            "accept" | "status" => ensure!(
+                self.id.is_none() && self.service.is_none() && self.protocol.is_none(),
+                "invalid local operation fields"
+            ),
+            "cancel" => ensure!(
+                self.id.is_some() && self.service.is_none() && self.protocol.is_none(),
+                "invalid cancel fields"
+            ),
+            _ => anyhow::bail!("unsupported local IPC operation"),
+        }
+        Ok(())
+    }
+}
 pub fn read_frame(stream: &mut impl Read) -> Result<Vec<u8>> {
     let mut size = [0; 4];
     stream.read_exact(&mut size)?;
@@ -128,8 +195,15 @@ pub struct Listener {
 }
 impl Listener {
     pub fn bind(directory: &Path) -> Result<Self> {
+        Self::bind_named(directory, "Control.sock")
+    }
+    pub fn bind_named(directory: &Path, name: &str) -> Result<Self> {
+        ensure!(
+            matches!(name, "Control.sock" | "Checks.sock"),
+            "unsupported local socket"
+        );
         private(directory, false)?;
-        let path = directory.join("Control.sock");
+        let path = directory.join(name);
         if fs::symlink_metadata(&path).is_ok() {
             metadata(&path)?;
             let before = metadata(&path)?;
