@@ -10,6 +10,8 @@ use std::{net::TcpListener, process::Command};
 
 #[path = "../Networks/ApplicationPreparationTransportTests.rs"]
 mod application_preparation_transport;
+#[path = "../Networks/AuthorityPreparationTransportTests.rs"]
+mod authority_preparation_transport;
 #[path = "../Networks/NetworkAuthorityCleanupTransportTests.rs"]
 mod cleanup_transport_tests;
 #[path = "../Networks/ConsumedReadInteropTests.rs"]

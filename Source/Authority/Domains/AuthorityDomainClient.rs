@@ -826,9 +826,18 @@ pub(crate) fn local_with_read_budget(
         )
     } else {
         // Ordinary operations retain their exact journal/recovery path and are never reissued here.
-        local(bootstrap, request, path, signer, store, session, || {
-            budget.clock(&mut clock)
-        })
+        Ok(local_with_objects_budget(
+            bootstrap,
+            request,
+            path,
+            signer,
+            store,
+            session,
+            crate::authority_objects::Resolved::default(),
+            || budget.clock(&mut clock),
+            Some(budget.transport()),
+        )?
+        .0)
     }
 }
 
@@ -865,7 +874,23 @@ pub fn local_with_objects(
     store: &mut Store,
     session: &mut Session,
     inputs: crate::authority_objects::Resolved,
+    clock: impl FnMut() -> Result<ClockHealth>,
+) -> Result<(ResultState, crate::authority_objects::Resolved)> {
+    local_with_objects_budget(
+        bootstrap, request, path, signer, store, session, inputs, clock, None,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn local_with_objects_budget(
+    bootstrap: &Verified,
+    request: Request,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    inputs: crate::authority_objects::Resolved,
     mut clock: impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
 ) -> Result<(ResultState, crate::authority_objects::Resolved)> {
     ensure!(
         !request.command.serving(),
@@ -884,14 +909,34 @@ pub fn local_with_objects(
         ));
     }
     let descriptor = store.descriptor().clone();
-    stream_client::ensure_stream(&descriptor, path, signer, store, session, &mut clock)?;
+    stream_client::ensure_stream_with_budget(
+        &descriptor,
+        path,
+        signer,
+        store,
+        session,
+        &mut clock,
+        caller.clone(),
+    )?;
     // These owner-signed records already bind a Context/Directory/Prepare reply.
     // A discovery between that reply and submission would invalidate its exact pre-state.
     if !policy_exempt(&request) && !signed_snapshot(&request.command) {
-        policy::refresh_before_request(bootstrap, path, signer, store, session, &mut clock)?;
+        policy::refresh_before_request_with_transport(
+            bootstrap,
+            path,
+            signer,
+            store,
+            session,
+            &mut clock,
+            caller.clone(),
+        )?;
     }
     let cache = Cache::load(bootstrap, store)?;
-    let control = crate::authority_local_transport::LocalControl::prepare_authority(path, store)?;
+    let control = crate::authority_local_transport::LocalControl::prepare_authority_with_budget(
+        path,
+        store,
+        caller.clone(),
+    )?;
     let mut prepared = Prepared::new_with_objects(
         bootstrap,
         request,
@@ -922,7 +967,7 @@ pub fn local_with_objects(
             signer,
             session,
             &mut clock,
-            || LocalControl::prepare_authority(path, store),
+            || LocalControl::prepare_authority_with_budget(path, store, caller.clone()),
             &mut |attempt, clock, control| {
                 crate::authority_local_transport::exchange_objects(
                     &descriptor,

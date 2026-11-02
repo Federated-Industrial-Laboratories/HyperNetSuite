@@ -21,6 +21,11 @@ load results must identify their exact artifacts separately from earlier release
 - Relay admission, final-service readiness and application acceptance share the
   caller's original preparation deadline. Successful handoff clears only that
   operation bound; the separately authorised active-stream lifetime remains.
+- The same caller deadline and cancellation cover cold authority-route admission,
+  history preparation and exact-outcome recovery, including time in the actor queue.
+  Best-effort caller cleanup receives an enqueue-time cap of the lesser of its idle
+  allowance and five seconds. Expiry preserves any unknown signed operation for
+  exact recovery and never reclaims an authoritative stream slot.
 - Exhausted connection, preparation-queue and reusable-slot budgets return the
   existing `Capacity` IPC code. Clients can apply bounded retry without treating
   temporary capacity loss as a permanent refusal. Other refusals retain their code.

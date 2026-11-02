@@ -142,7 +142,7 @@ enum Job {
         crate::authority_inspection::read_client::RetryBudget,
         SyncSender<Result<Plan>>,
     ),
-    Done(Box<streams::Proof>),
+    Done(Box<streams::Proof>, u64),
 }
 fn actor(
     mut client: Client,
@@ -172,11 +172,9 @@ fn actor(
                     slots.remove(&(plan.proof.service.id, plan.proof.slot));
                 }
             }
-            Job::Done(proof) => {
+            Job::Done(proof, deadline) => {
                 if !crate::private_route_client::cancelled() {
-                    let _ = client
-                        .resume_agent(&targets)
-                        .and_then(|()| client.close(&proof));
+                    let _ = client.cleanup(&proof, deadline, &targets);
                 }
                 slots.remove(&(proof.service.id, proof.slot));
             }
@@ -419,7 +417,17 @@ fn request(
             if let Err(e) = &outcome {
                 error(&runtime.state, Some(&guard.id), &format!("{e:#}"));
             }
-            let _ = runtime.jobs.send(Job::Done(Box::new(plan.proof)));
+            // Best-effort cleanup receives one enqueue-bound budget, never a new
+            // route lifetime when the actor eventually dequeues this completion.
+            let cleanup_deadline = crate::authority_challenge::boot_time_ms()?.saturating_add(
+                plan.proof
+                    .limits
+                    .idle_ms
+                    .min(crate::authority_challenge::MAXIMUM_DURATION_MS),
+            );
+            let _ = runtime
+                .jobs
+                .send(Job::Done(Box::new(plan.proof), cleanup_deadline));
             outcome
         }
         "accept" => {

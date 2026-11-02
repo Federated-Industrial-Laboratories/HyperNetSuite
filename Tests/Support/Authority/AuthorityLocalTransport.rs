@@ -5,6 +5,7 @@ impl LocalControl {
         Self {
             endpoint: Endpoint::Relay(Box::new(route)),
             history: None,
+            caller: None,
         }
     }
     #[cfg(test)]
@@ -15,6 +16,7 @@ impl LocalControl {
         Self {
             endpoint: Endpoint::Relay(Box::new(route)),
             history: None,
+            caller: None,
         }
         .prefetch_authority(store)
     }

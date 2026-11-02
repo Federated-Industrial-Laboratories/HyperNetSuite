@@ -8,24 +8,25 @@ use crate::{
 
 /// One pre-handoff caller deadline and at most one replacement certified read.
 pub(crate) struct RetryBudget {
-    deadline: u64,
+    transport: crate::route_connector::OperationBudget,
     reissued: bool,
-    cancelled: Box<dyn Fn() -> bool + Send>,
 }
 impl RetryBudget {
-    pub(crate) fn new(deadline: u64, cancelled: impl Fn() -> bool + Send + 'static) -> Self {
+    pub(crate) fn new(deadline: u64, cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
         Self {
-            deadline,
+            transport: crate::route_connector::OperationBudget::new(deadline, cancelled),
             reissued: false,
-            cancelled: Box::new(cancelled),
         }
+    }
+    pub(crate) fn transport(&self) -> crate::route_connector::OperationBudget {
+        self.transport.clone()
     }
     pub(crate) fn check(&self) -> Result<()> {
         ensure!(
-            !(self.cancelled)() && !crate::private_route_client::cancelled(),
+            !self.transport.cancelled() && !crate::private_route_client::cancelled(),
             "application preparation was cancelled"
         );
-        remaining(self.deadline)?;
+        remaining(self.transport.deadline)?;
         Ok(())
     }
     pub(crate) fn clock(
@@ -38,7 +39,7 @@ impl RetryBudget {
                 Err(error) if error.is::<crate::authority_clock::ObservationExpired>() => {
                     self.check()?;
                     std::thread::sleep(std::time::Duration::from_millis(
-                        remaining(self.deadline)?.min(25),
+                        remaining(self.transport.deadline)?.min(25),
                     ));
                 }
                 result => {
@@ -56,7 +57,7 @@ impl RetryBudget {
                 if self.reissued
                     || !error.is::<crate::authority_floor::ReadExpired>()
                     || self.check().is_err()
-                    || !remaining(self.deadline).is_ok_and(|left| left >= DURATION)
+                    || !remaining(self.transport.deadline).is_ok_and(|left| left >= DURATION)
                 {
                     return Err(error);
                 }
@@ -83,13 +84,14 @@ pub(crate) struct Exchange {
 pub(crate) mod tests;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn exchange(
+pub(crate) fn exchange_with_budget(
     query: Query,
     path: &Path,
     signer: &SigningKey,
     store: &Store,
     session: &mut Session,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
 ) -> Result<Exchange> {
     store.require_requester(signer.verifying_key().to_bytes())?;
     ensure!(
@@ -97,7 +99,7 @@ pub(crate) fn exchange(
         "reconcile the exact pending operation before a fresh read"
     );
     // Admission and cold ancestry preparation precede the finite challenge interval.
-    let control = LocalControl::prepare_authority(path, store)?;
+    let control = LocalControl::prepare_authority_with_budget(path, store, caller)?;
     let nonce = random_id()?;
     let request = read::Request::sign(
         store.descriptor().scope(),

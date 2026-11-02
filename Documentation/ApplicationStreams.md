@@ -185,7 +185,18 @@ ordinary command, extend a certificate, retry a refusal or hide invalid clock or
 identity evidence. The same original preparation deadline bounds relay admission,
 final-service readiness and application acceptance. Successful handoff clears
 only that preparation bound; the separately authorised stream lifetime remains.
-Closing or cancelling the local request stops preparation.
+Closing or cancelling the local request stops preparation. The same bound covers
+cold authority-route admission, history preparation, certified exchanges and
+exact-outcome recovery; time spent waiting for the serial actor consumes it.
+A successfully consumed result may retain its admitted authority connection after
+clearing the completed call's bound. The connection's original lifetime, byte
+allowance and current-authority requirements remain unchanged.
+
+Best-effort caller cleanup has one deadline captured when its completion is
+enqueued: the lesser of the admitted idle allowance and five seconds. Queue wait
+consumes that budget. Expired cleanup starts no new authority work. A signed
+operation with an unknown outcome remains durable for subsequent exact recovery;
+local cleanup expiry does not retire an authoritative slot or reset its generation.
 If an otherwise authenticated clock observation expires, preparation waits for
 a fresh valid observation within that same deadline. Every replacement is fully
 validated. Waiting does not replay an authority command, extend an existing

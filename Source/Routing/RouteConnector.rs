@@ -12,7 +12,41 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
     os::fd::{AsRawFd, FromRawFd},
+    sync::Arc,
 };
+#[derive(Clone)]
+pub(crate) struct OperationBudget {
+    pub(crate) deadline: u64,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+impl OperationBudget {
+    pub(crate) fn new(deadline: u64, cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            deadline,
+            cancelled: Arc::new(cancelled),
+        }
+    }
+    pub(crate) fn cancelled(&self) -> bool {
+        (self.cancelled)()
+    }
+    pub(crate) fn check(&self) -> io::Result<()> {
+        if self.cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "application preparation cancelled",
+            ));
+        }
+        if boot_time_ms().map_err(io::Error::other)? >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                OperationDeadlineExpired {
+                    deadline: self.deadline,
+                },
+            ));
+        }
+        Ok(())
+    }
+}
 #[derive(Debug)]
 pub(crate) struct OperationDeadlineExpired {
     pub(crate) deadline: u64,
@@ -31,6 +65,7 @@ struct Socket<'a> {
     socket: TcpStream,
     deadline: u64,
     operation_deadline: Option<u64>,
+    caller: Option<OperationBudget>,
     idle_deadline: u64,
     idle_ms: u64,
     remaining_bytes: u64,
@@ -66,6 +101,9 @@ impl Socket<'_> {
         self.remaining_bytes = self.remaining_bytes.min(limits.bytes);
     }
     fn check(&self) -> io::Result<u64> {
+        if let Some(caller) = &self.caller {
+            caller.check()?;
+        }
         if (self.cancelled)() {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
@@ -76,6 +114,7 @@ impl Socket<'_> {
         let deadline = self
             .deadline
             .min(self.operation_deadline.unwrap_or(u64::MAX))
+            .min(self.caller.as_ref().map_or(u64::MAX, |c| c.deadline))
             .min(self.idle_deadline);
         deadline.checked_sub(now).filter(|n| *n > 0).ok_or_else(|| {
             // An exhausted session budget remains terminal, including a tie with operation expiry.
@@ -228,7 +267,11 @@ fn connect(
     address: SocketAddr,
     deadline: u64,
     cancelled: &(dyn Fn() -> bool + Sync),
+    caller: Option<&OperationBudget>,
 ) -> Result<TcpStream> {
+    if let Some(caller) = caller {
+        caller.check()?;
+    }
     ensure!(!cancelled(), "private route cancelled");
     let family = if address.is_ipv4() {
         libc::AF_INET
@@ -281,6 +324,7 @@ fn connect(
         socket,
         deadline,
         operation_deadline: None,
+        caller: caller.cloned(),
         idle_deadline: deadline,
         idle_ms: u64::MAX,
         remaining_bytes: u64::MAX,
@@ -351,6 +395,26 @@ impl<'a> Session<'a> {
         handshake_deadline: u64,
         cancelled: &'a (dyn Fn() -> bool + Sync),
     ) -> Result<Self> {
+        Self::connect_with_budget(
+            profile,
+            possession,
+            session_deadline,
+            handshake_deadline,
+            cancelled,
+            None,
+        )
+    }
+    pub(crate) fn connect_with_budget(
+        profile: &Profile,
+        possession: &SigningKey,
+        session_deadline: u64,
+        handshake_deadline: u64,
+        cancelled: &'a (dyn Fn() -> bool + Sync),
+        caller: Option<OperationBudget>,
+    ) -> Result<Self> {
+        if let Some(caller) = &caller {
+            caller.check()?;
+        }
         profile.validate()?;
         let record =
             domains::Record::parse(&profile.voucher, profile.network, profile.incarnation)?;
@@ -379,9 +443,11 @@ impl<'a> Session<'a> {
                 profile.relay_address,
                 deadline.min(handshake_deadline),
                 cancelled,
+                caller.as_ref(),
             )?,
             deadline,
             operation_deadline: Some(handshake_deadline),
+            caller,
             idle_deadline: start.saturating_add(profile.limits.idle_ms),
             idle_ms: profile.limits.idle_ms,
             remaining_bytes: profile.limits.bytes,
@@ -452,6 +518,34 @@ impl<'a> Session<'a> {
             stream: Some(inner),
             cleanup_receipt: None,
         })
+    }
+    pub(crate) fn bind_caller(&mut self, caller: Option<OperationBudget>) -> Result<()> {
+        let socket = &mut self
+            .stream
+            .as_mut()
+            .context("private route session closed")?
+            .sock
+            .sock;
+        ensure!(
+            socket.caller.is_none(),
+            "private route already belongs to an operation"
+        );
+        if let Some(caller) = &caller {
+            caller.check()?;
+        }
+        socket.caller = caller;
+        Ok(())
+    }
+    pub(crate) fn complete_caller(&mut self) -> Result<()> {
+        let socket = &mut self
+            .stream
+            .as_mut()
+            .context("private route session closed")?
+            .sock
+            .sock;
+        socket.check()?;
+        socket.caller = None;
+        Ok(())
     }
     pub fn exchange(
         &mut self,

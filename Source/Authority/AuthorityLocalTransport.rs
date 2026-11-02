@@ -58,6 +58,7 @@ enum Endpoint {
 pub struct LocalControl {
     endpoint: Endpoint,
     history: Option<PrefetchedHistory>,
+    caller: Option<crate::route_connector::OperationBudget>,
 }
 impl LocalControl {
     /// The selected file is an explicit relay profile or an owned local socket; failures never switch transports.
@@ -69,6 +70,16 @@ impl LocalControl {
         path: &Path,
         check: impl FnOnce(Option<&crate::private_route_client::Endpoint>) -> Result<()>,
     ) -> Result<Self> {
+        Self::open_with_budget(path, check, None)
+    }
+    fn open_with_budget(
+        path: &Path,
+        check: impl FnOnce(Option<&crate::private_route_client::Endpoint>) -> Result<()>,
+        caller: Option<crate::route_connector::OperationBudget>,
+    ) -> Result<Self> {
+        if let Some(caller) = &caller {
+            caller.check()?;
+        }
         use std::os::unix::fs::FileTypeExt;
         let metadata = std::fs::symlink_metadata(path)?;
         let endpoint = if metadata.file_type().is_socket() {
@@ -80,14 +91,17 @@ impl LocalControl {
                 metadata.is_file(),
                 "endpoint must be a private route file or owned Unix socket"
             );
-            return Self::from_relay_checked(
-                crate::private_route_client::Endpoint::load(path)?,
-                check,
-            );
+            let selected = crate::private_route_client::Endpoint::load(path)?;
+            if caller.is_none() {
+                return Self::from_relay_checked(selected, check);
+            }
+            check(Some(&selected))?;
+            Endpoint::Relay(Box::new(selected.prepare_with_budget(caller.clone())?))
         };
         Ok(Self {
             endpoint,
             history: None,
+            caller,
         })
     }
     pub(crate) fn from_relay_checked(
@@ -98,16 +112,26 @@ impl LocalControl {
         Ok(Self {
             endpoint: Endpoint::Relay(Box::new(selected.prepare()?)),
             history: None,
+            caller: None,
         })
     }
     /// Cold history is prepared before the fresh challenge; an exact completed floor can defer it.
     pub fn prepare_authority(path: &Path, store: &crate::authority_floor::Store) -> Result<Self> {
-        let mut control = Self::open(path)?.prefetch_authority(store)?;
+        Self::prepare_authority_with_budget(path, store, None)
+    }
+    pub(crate) fn prepare_authority_with_budget(
+        path: &Path,
+        store: &crate::authority_floor::Store,
+        caller: Option<crate::route_connector::OperationBudget>,
+    ) -> Result<Self> {
+        let mut control =
+            Self::open_with_budget(path, |_| Ok(()), caller.clone())?.prefetch_authority(store)?;
         // History can consume the remaining admission. Replacement stays before a fresh challenge.
         if matches!(&control.endpoint, Endpoint::Relay(route) if route.reused() && !route.fits_authority_challenge())
         {
             drop(control);
-            control = Self::open(path)?.prefetch_authority(store)?;
+            control =
+                Self::open_with_budget(path, |_| Ok(()), caller)?.prefetch_authority(store)?;
         }
         Ok(control)
     }
@@ -213,7 +237,12 @@ impl LocalControl {
         let result = match &self.endpoint {
             Endpoint::Local(local) => {
                 remaining(deadline)?;
-                local.exchange_limit(request, deadline, maximum)
+                match &self.caller {
+                    Some(caller) => {
+                        local.exchange_with_budget(request, deadline, maximum, Some(caller))
+                    }
+                    None => local.exchange_limit(request, deadline, maximum),
+                }
             }
             Endpoint::Relay(route) => route.exchange(request, deadline, maximum),
         };
@@ -309,7 +338,15 @@ impl OwnedControl {
         );
         Ok(stat)
     }
-    fn connect(&self, deadline: u64, wait: bool) -> Result<UnixStream> {
+    fn connect(
+        &self,
+        deadline: u64,
+        wait: bool,
+        caller: Option<&crate::route_connector::OperationBudget>,
+    ) -> Result<UnixStream> {
+        if let Some(caller) = caller {
+            caller.check()?;
+        }
         remaining(deadline)?;
         let before = self.socket_stat()?;
         let descriptor = unsafe {
@@ -354,7 +391,7 @@ impl OwnedControl {
                 wait,
                 "private cleanup connection is not immediately available"
             );
-            ready(&stream, libc::POLLOUT, deadline)?;
+            ready(&stream, libc::POLLOUT, deadline, caller)?;
             if let Some(error) = stream.take_error()? {
                 return Err(error.into());
             }
@@ -396,7 +433,7 @@ impl OwnedControl {
             acknowledgement_of: Some(self.name.clone()),
         };
         target.socket_stat()?;
-        let mut stream = target.connect(deadline, false)?;
+        let mut stream = target.connect(deadline, false, None)?;
         let mut frame = Vec::with_capacity(4 + request.len());
         frame.extend_from_slice(&(request.len() as u32).to_be_bytes());
         frame.extend_from_slice(request);
@@ -413,6 +450,18 @@ impl OwnedControl {
         deadline: u64,
         maximum_response: usize,
     ) -> Result<Vec<u8>> {
+        self.exchange_with_budget(request, deadline, maximum_response, None)
+    }
+    fn exchange_with_budget(
+        &self,
+        request: &[u8],
+        deadline: u64,
+        maximum_response: usize,
+        caller: Option<&crate::route_connector::OperationBudget>,
+    ) -> Result<Vec<u8>> {
+        if let Some(caller) = caller {
+            caller.check()?;
+        }
         ensure!(
             (1..=4 * wire::MAXIMUM).contains(&maximum_response),
             "invalid private reply bound"
@@ -421,23 +470,36 @@ impl OwnedControl {
             !request.is_empty() && request.len() <= wire::MAXIMUM,
             "local control request exceeds bound"
         );
-        let mut stream = self.connect(deadline, true)?;
-        write_all(&mut stream, &(request.len() as u32).to_be_bytes(), deadline)?;
-        write_all(&mut stream, request, deadline)?;
+        let mut stream = self.connect(deadline, true, caller)?;
+        write_all(
+            &mut stream,
+            &(request.len() as u32).to_be_bytes(),
+            deadline,
+            caller,
+        )?;
+        write_all(&mut stream, request, deadline, caller)?;
         let mut length = [0; 4];
-        read_all(&mut stream, &mut length, deadline)?;
+        read_all(&mut stream, &mut length, deadline, caller)?;
         let length = u32::from_be_bytes(length) as usize;
         ensure!(
             (1..=maximum_response).contains(&length),
             "local control response exceeds bound"
         );
         let mut response = vec![0; length];
-        read_all(&mut stream, &mut response, deadline)?;
+        read_all(&mut stream, &mut response, deadline, caller)?;
         Ok(response)
     }
 }
-fn ready(stream: &UnixStream, event: libc::c_short, deadline: u64) -> Result<()> {
+fn ready(
+    stream: &UnixStream,
+    event: libc::c_short,
+    deadline: u64,
+    caller: Option<&crate::route_connector::OperationBudget>,
+) -> Result<()> {
     loop {
+        if let Some(caller) = caller {
+            caller.check()?;
+        }
         let remaining = remaining(deadline)?;
         let mut descriptor = libc::pollfd {
             fd: stream.as_raw_fd(),
@@ -460,14 +522,22 @@ fn ready(stream: &UnixStream, event: libc::c_short, deadline: u64) -> Result<()>
         return Ok(());
     }
 }
-fn write_all(stream: &mut UnixStream, mut bytes: &[u8], deadline: u64) -> Result<()> {
+fn write_all(
+    stream: &mut UnixStream,
+    mut bytes: &[u8],
+    deadline: u64,
+    caller: Option<&crate::route_connector::OperationBudget>,
+) -> Result<()> {
     while !bytes.is_empty() {
+        if let Some(caller) = caller {
+            caller.check()?;
+        }
         remaining(deadline)?;
         match stream.write(bytes) {
             Ok(0) => bail!("private control write closed"),
             Ok(n) => bytes = &bytes[n..],
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                ready(stream, libc::POLLOUT, deadline)?
+                ready(stream, libc::POLLOUT, deadline, caller)?
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.into()),
@@ -475,14 +545,22 @@ fn write_all(stream: &mut UnixStream, mut bytes: &[u8], deadline: u64) -> Result
     }
     Ok(())
 }
-fn read_all(stream: &mut UnixStream, mut bytes: &mut [u8], deadline: u64) -> Result<()> {
+fn read_all(
+    stream: &mut UnixStream,
+    mut bytes: &mut [u8],
+    deadline: u64,
+    caller: Option<&crate::route_connector::OperationBudget>,
+) -> Result<()> {
     while !bytes.is_empty() {
+        if let Some(caller) = caller {
+            caller.check()?;
+        }
         remaining(deadline)?;
         match stream.read(bytes) {
             Ok(0) => bail!("private control read closed"),
             Ok(n) => bytes = &mut bytes[n..],
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                ready(stream, libc::POLLIN, deadline)?
+                ready(stream, libc::POLLIN, deadline, caller)?
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.into()),

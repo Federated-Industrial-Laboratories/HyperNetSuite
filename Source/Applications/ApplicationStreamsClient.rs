@@ -110,7 +110,7 @@ impl Client {
         Ok(())
     }
     pub fn resume_agent(&mut self, targets: &[Target]) -> Result<()> {
-        stream_client::resolve_refusal_local(
+        stream_client::resolve_refusal_local_with_budget(
             &self.store.descriptor().clone(),
             &self.socket,
             &self.key,
@@ -120,6 +120,7 @@ impl Client {
                 Some(budget) => budget.clock(|| self.clock.health()),
                 None => self.clock.health(),
             },
+            self.preparation.as_ref().map(|budget| budget.transport()),
         )?;
         if let Some(pending) = self.store.resume_ordinary()? {
             let intent = Intent::from_signed(pending.signed())?;
@@ -384,6 +385,19 @@ impl Client {
             });
         }
         anyhow::bail!(Capacity::Slots)
+    }
+    pub fn cleanup(
+        &mut self,
+        proof: &streams::Proof,
+        deadline: u64,
+        targets: &[Target],
+    ) -> Result<()> {
+        let budget = crate::authority_inspection::read_client::RetryBudget::new(deadline, || false);
+        budget.check()?;
+        self.preparation = Some(budget);
+        let result = self.resume_agent(targets).and_then(|()| self.close(proof));
+        self.preparation = None;
+        result
     }
     pub fn close(&mut self, proof: &streams::Proof) -> Result<()> {
         let result = self.stream(

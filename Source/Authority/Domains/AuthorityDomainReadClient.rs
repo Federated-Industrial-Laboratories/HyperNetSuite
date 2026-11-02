@@ -60,13 +60,14 @@ pub(super) fn local(
                 store,
                 session,
                 &mut || budget.clock(&mut *clock),
+                Some(budget.transport()),
             )
         })
     } else {
         policy::refresh_before_request(bootstrap, path, signer, store, session, &mut *clock)?;
         let prior = Cache::load(bootstrap, store)?;
         local_once(
-            bootstrap, &request, &prior, path, signer, store, session, clock,
+            bootstrap, &request, &prior, path, signer, store, session, clock, None,
         )
     }
 }
@@ -81,17 +82,19 @@ fn local_once(
     store: &mut Store,
     session: &mut Session,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
 ) -> Result<ResultState> {
     let expected = vec![policy::current_reference(bootstrap, store)?];
     let operation = request.operation(store, &expected)?;
     let descriptor = store.descriptor().clone();
-    let exchange = crate::authority_inspection::read_client::exchange(
+    let exchange = crate::authority_inspection::read_client::exchange_with_budget(
         Query::Domain(operation),
         path,
         signer,
         store,
         session,
         clock,
+        caller,
     )?;
     let result = (|| {
         let mut candidate = None;

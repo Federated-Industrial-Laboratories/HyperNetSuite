@@ -762,3 +762,63 @@ fn preparation_read_reissue_is_single_bounded_and_never_accepts_other_failures()
     assert_eq!(calls, 1);
     assert!(!budget.reissued);
 }
+
+#[test]
+fn preparation_budget_stops_blocked_policy_reply_without_reissuing() {
+    use std::{
+        io::Read,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+    for cancelled in [false, true] {
+        let mut f = Fixture::new();
+        let path = f.directory.0.join("BoundedPolicy.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let signal = Arc::new(AtomicBool::new(false));
+        let observed = signal.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, bytes) = receive_control(&listener);
+            let (request, _) = submitted(&bytes);
+            assert!(matches!(
+                read::Request::from_signed(&request).unwrap().query,
+                Query::PolicyContext
+            ));
+            if cancelled {
+                signal.store(true, Ordering::Release);
+            }
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            assert_eq!(stream.read(&mut [0; 1]).unwrap(), 0);
+            listener.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        });
+        let end = crate::authority_challenge::boot_time_ms().unwrap()
+            + if cancelled { 5000 } else { 250 };
+        let mut budget = RetryBudget::new(end, move || observed.load(Ordering::Acquire));
+        let prefix = f.store.prefix().clone();
+        let error = policy::refresh_before_request_with_budget(
+            &f.bootstrap,
+            &path,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            || Ok(f.current),
+            &mut budget,
+        )
+        .unwrap_err();
+        assert!(!budget.reissued);
+        assert!(f.store.resume_ordinary().unwrap().is_none());
+        assert_eq!(f.store.prefix(), &prefix);
+        assert!(crate::authority_challenge::boot_time_ms().unwrap() < end + 500);
+        if cancelled {
+            assert!(format!("{error:#}").contains("application preparation cancelled"));
+        }
+        server.join().unwrap();
+    }
+}
