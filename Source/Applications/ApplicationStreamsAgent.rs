@@ -140,9 +140,10 @@ enum Job {
     Plan(
         Target,
         crate::authority_inspection::read_client::RetryBudget,
+        timing::Timing,
         SyncSender<Result<Plan>>,
     ),
-    Done(Box<streams::Proof>, u64),
+    Done(Box<streams::Proof>, u64, timing::Timing),
 }
 fn actor(
     mut client: Client,
@@ -159,12 +160,14 @@ fn actor(
     let mut slots = BTreeSet::new();
     while let Ok(job) = receiver.recv() {
         match job {
-            Job::Plan(target, budget, reply) => {
+            Job::Plan(target, budget, timing, reply) => {
+                timing.event("Dequeue", "Complete");
                 let result = if crate::private_route_client::cancelled() {
                     Err(anyhow::anyhow!("application agent is stopping"))
                 } else {
-                    client.plan(&target, &slots, budget, &targets)
+                    client.plan(&target, &slots, budget, &targets, &timing)
                 };
+                timing.event("Plan", if result.is_ok() { "Complete" } else { "Failed" });
                 if let Ok(plan) = &result {
                     slots.insert((plan.proof.service.id, plan.proof.slot));
                 }
@@ -172,9 +175,12 @@ fn actor(
                     slots.remove(&(plan.proof.service.id, plan.proof.slot));
                 }
             }
-            Job::Done(proof, deadline) => {
+            Job::Done(proof, deadline, timing) => {
+                timing.event("Dequeue", "Complete");
                 if !crate::private_route_client::cancelled() {
-                    let _ = client.cleanup(&proof, deadline, &targets);
+                    let _ = timing.run("Work", || client.cleanup(&proof, deadline, &targets));
+                } else {
+                    timing.event("Work", "Cancelled");
                 }
                 slots.remove(&(proof.service.id, proof.slot));
             }
@@ -357,18 +363,23 @@ fn request(
                         || ipc::disconnected(&preparation_caller).unwrap_or(true)
                 },
             );
-            runtime
-                .jobs
-                .try_send(Job::Plan(target, budget, reply))
-                .map_err(|error| match error {
-                    mpsc::TrySendError::Full(_) => anyhow::Error::new(Capacity::Requests),
-                    mpsc::TrySendError::Disconnected(_) => {
-                        anyhow::anyhow!("authority request worker is unavailable")
-                    }
-                })?;
-            let mut plan = receive
-                .recv_timeout(timeout)
-                .context("authority connection preparation timed out")??;
+            let timing = timing::Timing::plan(preparation_deadline);
+            timing.run("Enqueue", || {
+                runtime
+                    .jobs
+                    .try_send(Job::Plan(target, budget, timing, reply))
+                    .map_err(|error| match error {
+                        mpsc::TrySendError::Full(_) => anyhow::Error::new(Capacity::Requests),
+                        mpsc::TrySendError::Disconnected(_) => {
+                            anyhow::anyhow!("authority request worker is unavailable")
+                        }
+                    })
+            })?;
+            let mut plan = timing.run("Wait", || {
+                receive
+                    .recv_timeout(timeout)
+                    .context("authority connection preparation timed out")?
+            })?;
             let outcome = (|| -> Result<()> {
                 let caller = stream.try_clone()?;
                 let cancelled = || {
@@ -382,21 +393,25 @@ fn request(
                 let deadline = crate::authority_challenge::boot_time_ms()?
                     .checked_add(plan.proof.limits.duration_ms)
                     .context("stream deadline overflow")?;
-                let mut session = crate::route_connector::Session::connect_with_deadlines(
-                    &plan.endpoint.route,
-                    &possession,
-                    deadline,
-                    preparation_deadline,
-                    &cancelled,
-                )?;
-                let admitted = session.authenticate_application_before(
-                    plan.endpoint.route.network,
-                    plan.endpoint.route.incarnation,
-                    &mut plan.proof,
-                    plan.binding,
-                    &plan.key,
-                    preparation_deadline,
-                )?;
+                let mut session = timing.run("Route", || {
+                    crate::route_connector::Session::connect_with_deadlines(
+                        &plan.endpoint.route,
+                        &possession,
+                        deadline,
+                        preparation_deadline,
+                        &cancelled,
+                    )
+                })?;
+                let admitted = timing.run("Authenticate", || {
+                    session.authenticate_application_before(
+                        plan.endpoint.route.network,
+                        plan.endpoint.route.incarnation,
+                        &mut plan.proof,
+                        plan.binding,
+                        &plan.key,
+                        preparation_deadline,
+                    )
+                })?;
                 let peer = json!({"network":hex::encode(plan.endpoint.route.network),"incarnation":hex::encode(plan.endpoint.route.incarnation),"service":service,"protocol":plan.proof.protocol,"owner":hex::encode(plan.owner),"endpoint":hex::encode(plan.endpoint_key),"route":hex::encode(plan.endpoint.route.destination.service),"session":hex::encode(admitted.id),"generation":admitted.generation,"expiresMs":plan.proof.expires,"maximumBytes":plan.proof.limits.bytes,"durationMs":plan.proof.limits.duration_ms,"idleMs":plan.proof.limits.idle_ms});
                 annotate(&guard, peer.clone())?;
                 let privacy = json!({"direction":"outgoing","transport":"HyperNet","transportAuthenticated":true,"tls":"TLS1.3","relayPath":"nestedTlsViaRelay","relayService":hex::encode(plan.endpoint.route.relay.service),"destinationService":hex::encode(plan.endpoint.route.destination.service),"selectedMinimum":plan.endpoint.route.minimum_assurance,"configuredAssurance":plan.endpoint.route.assurance,"provenance":"observedAuthenticatedTransport","certifiedEndpointProfile":plan.endpoint_provenance,"certifiedRelayProfile":null,"physicalIndependenceVerified":false,"profileCurrentnessAsserted":false,"endToEndMessageEncryption":"applicationDefined"});
@@ -411,7 +426,7 @@ fn request(
                     response["checkAuthority"] = json!(false);
                 }
                 handed_off.store(true, Ordering::Relaxed);
-                ipc::write_json(&mut stream, &response)?;
+                timing.run("Handoff", || ipc::write_json(&mut stream, &response))?;
                 session.forward_application(stream.try_clone()?, plan.proof.limits.bytes)
             })();
             if let Err(e) = &outcome {
@@ -425,9 +440,17 @@ fn request(
                     .idle_ms
                     .min(crate::authority_challenge::MAXIMUM_DURATION_MS),
             );
-            let _ = runtime
-                .jobs
-                .send(Job::Done(Box::new(plan.proof), cleanup_deadline));
+            let cleanup_timing = timing::Timing::cleanup(cleanup_deadline);
+            let _ = cleanup_timing.run("Enqueue", || {
+                runtime
+                    .jobs
+                    .send(Job::Done(
+                        Box::new(plan.proof),
+                        cleanup_deadline,
+                        cleanup_timing,
+                    ))
+                    .map_err(|_| ())
+            });
             outcome
         }
         "accept" => {
@@ -721,6 +744,7 @@ pub fn run(a: Arguments) -> Result<()> {
     let (jobs, receiver) = mpsc::sync_channel(16);
     let (ready, started) = mpsc::sync_channel(1);
     let actor_targets = targets.clone();
+    timing::start();
     let actor = thread::spawn(move || actor(c, actor_targets, receiver, ready));
     started.recv().context("authority actor did not start")??;
     let (incoming, queue) = mpsc::sync_channel(16);

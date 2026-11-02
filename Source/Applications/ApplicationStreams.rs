@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 mod agent;
 #[path = "ApplicationStreamsClient.rs"]
 mod client;
+#[path = "ApplicationStreamTiming.rs"]
+mod timing;
 use crate::{local_stream_ipc as ipc, mapped_ingress as ingress};
 #[path = "ApplicationStreamsOffer.rs"]
 mod offer;

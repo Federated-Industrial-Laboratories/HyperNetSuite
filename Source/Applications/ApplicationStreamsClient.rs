@@ -250,12 +250,13 @@ impl Client {
         used: &BTreeSet<(Digest, u64)>,
         budget: crate::authority_inspection::read_client::RetryBudget,
         targets: &[Target],
+        timing: &timing::Timing,
     ) -> Result<Plan> {
         budget.check()?;
         self.preparation = Some(budget);
-        let result = self
-            .resume_agent(targets)
-            .and_then(|()| self.plan_inner(target, used))
+        let result = timing
+            .run("Resume", || self.resume_agent(targets))
+            .and_then(|()| self.plan_inner(target, used, timing))
             .and_then(|plan| {
                 self.preparation
                     .as_ref()
@@ -266,18 +267,25 @@ impl Client {
         self.preparation = None;
         result
     }
-    fn plan_inner(&mut self, target: &Target, used: &BTreeSet<(Digest, u64)>) -> Result<Plan> {
+    fn plan_inner(
+        &mut self,
+        target: &Target,
+        used: &BTreeSet<(Digest, u64)>,
+        timing: &timing::Timing,
+    ) -> Result<Plan> {
         let service = id(&target.service)?;
-        let endpoint = self.endpoint(target)?;
+        let endpoint = timing.run("Endpoint", || self.endpoint(target))?;
         let grant = self.grant(&target.grant)?;
         for slot in 0..streams::SLOTS {
             if used.contains(&(service, slot)) {
                 continue;
             }
-            let result = self.stream(
-                Some(grant.clone()),
-                streams::Command::Lookup { service, slot },
-            )?;
+            let result = timing.run("SlotLookup", || {
+                self.stream(
+                    Some(grant.clone()),
+                    streams::Command::Lookup { service, slot },
+                )
+            })?;
             let r = result.cache.state.record(172, service)?;
             let registered = streams::Service::parse(
                 &r.payload,

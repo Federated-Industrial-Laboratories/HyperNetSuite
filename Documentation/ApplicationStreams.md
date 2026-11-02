@@ -197,6 +197,23 @@ enqueued: the lesser of the admitted idle allowance and five seconds. Queue wait
 consumes that budget. Expired cleanup starts no new authority work. A signed
 operation with an unknown outcome remains durable for subsequent exact recovery;
 local cleanup expiry does not retire an authoritative slot or reset its generation.
+
+Companion stderr includes finite, content-free timing samples for the first64
+outgoing preparations and first16 queued cleanups per process. Each sample retains
+one process-local number and its original deadline. Enqueue, dequeue, exact
+recovery, endpoint preparation, each service-slot lookup, relay setup,
+application authentication and handoff have separate stages. Monotonic boot and
+elapsed milliseconds distinguish queue wait from operation cost; samples from
+different processes are not causal request identifiers. At most3152 records,
+each below256 bytes, are added per process. No account, session, target, message,
+signed payload or error text is recorded. Clock and output errors do not replace
+operation results. One separate writer has a nonblocking queue of64 records
+(at most16 KiB of record buffers plus one in-flight record and queue metadata).
+Full or closed queues drop records;
+missing stages can therefore mean dropped diagnostics. A stalled log consumer
+cannot block authority work. Sampling does not change permission or preparation
+deadlines.
+
 If an otherwise authenticated clock observation expires, preparation waits for
 a fresh valid observation within that same deadline. Every replacement is fully
 validated. Waiting does not replay an authority command, extend an existing
