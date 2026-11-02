@@ -67,10 +67,7 @@ fn reserve(
     let mut locked = state
         .lock()
         .map_err(|_| anyhow::anyhow!("agent connection state failed"))?;
-    ensure!(
-        locked.active.len() < 16,
-        "application connection capacity exhausted"
-    );
+    ensure!(locked.active.len() < 16, Capacity::Connections);
     let id = hex::encode(crate::route_protocol::random()?);
     let cancel = Arc::new(AtomicBool::new(false));
     locked.active.insert(
@@ -112,6 +109,19 @@ fn error(state: &Arc<Mutex<State>>, id: Option<&str>, message: &str) {
             "message":&message[..end]
         }));
     }
+}
+fn preparation_failure(error: &anyhow::Error, version: u64) -> Value {
+    let (code, message) = if error.is::<Capacity>() {
+        ("Capacity", "local application capacity exhausted")
+    } else {
+        ("Refused", "local request was invalid or unavailable")
+    };
+    let message = if version == 2 {
+        message.into()
+    } else {
+        format!("{error:#}")
+    };
+    json!({"version":version,"ok":false,"error":{"code":code,"message":message}})
 }
 fn annotate(guard: &Guard, peer: Value) -> Result<()> {
     let mut state = guard
@@ -352,7 +362,12 @@ fn request(
             runtime
                 .jobs
                 .try_send(Job::Plan(target, budget, reply))
-                .map_err(|_| anyhow::anyhow!("authority request queue is full"))?;
+                .map_err(|error| match error {
+                    mpsc::TrySendError::Full(_) => anyhow::Error::new(Capacity::Requests),
+                    mpsc::TrySendError::Disconnected(_) => {
+                        anyhow::anyhow!("authority request worker is unavailable")
+                    }
+                })?;
             let mut plan = receive
                 .recv_timeout(timeout)
                 .context("authority connection preparation timed out")??;
@@ -748,16 +763,17 @@ pub fn run(a: Arguments) -> Result<()> {
                 workers.push(thread::spawn(move || {
                     let response = stream.try_clone();
                     let handed_off = AtomicBool::new(false);
-                    let version=AtomicU64::new(1);
+                    let version = AtomicU64::new(1);
                     let result = request(stream, r.clone(), &handed_off, &version);
                     if let Err(e) = result
                         && !handed_off.load(Ordering::Relaxed)
                     {
                         error(&r.state, None, &format!("local control preparation: {e:#}"));
                         if let Ok(mut response) = response {
-                            if version.load(Ordering::Relaxed)==2 {
-                                let _ = ipc::write_json(&mut response,&json!({"version":2,"ok":false,"error":{"code":"Refused","message":"local request was invalid or unavailable"}}));
-                            } else {ipc::failure(&mut response, "Refused", &format!("{e:#}"));}
+                            let _ = ipc::write_json(
+                                &mut response,
+                                &preparation_failure(&e, version.load(Ordering::Relaxed)),
+                            );
                         }
                     }
                     if let Ok(mut s) = r.state.lock() {

@@ -21,6 +21,9 @@ load results must identify their exact artifacts separately from earlier release
 - Relay admission, final-service readiness and application acceptance share the
   caller's original preparation deadline. Successful handoff clears only that
   operation bound; the separately authorised active-stream lifetime remains.
+- Exhausted connection, preparation-queue and reusable-slot budgets return the
+  existing `Capacity` IPC code. Clients can apply bounded retry without treating
+  temporary capacity loss as a permanent refusal. Other refusals retain their code.
 - The Python application-stream SDK and package manifest advance together to
   0.10.1. Existing IPC version 1 and version 2 contracts remain compatible.
 

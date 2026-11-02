@@ -213,6 +213,12 @@ Service/session expiry, byte budget, idle timeout, current revocation and explic
 cancellation close forwarding. A restart never restores spent allowance or
 replays application requests. Applications decide how to resume their own work.
 
+Exhausted local connections, a full preparation queue and unavailable reusable
+session slots return the existing `Capacity` IPC code. Clients can retry within
+their original bounded setup policy after capacity is released. Other invalid or
+unavailable requests remain `Refused`; error text is not a permission decision.
+Version2 responses keep private diagnostic details out of the application reply.
+
 ## Use the SDK and file example
 
 Install the included [Python package](../SDK/README.md). A receiving application

@@ -383,7 +383,7 @@ impl Client {
                 key: self.key.clone(),
             });
         }
-        anyhow::bail!("all application stream slots remain live")
+        anyhow::bail!(Capacity::Slots)
     }
     pub fn close(&mut self, proof: &streams::Proof) -> Result<()> {
         let result = self.stream(

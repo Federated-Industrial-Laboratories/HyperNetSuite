@@ -1,6 +1,54 @@
 // SPDX-License-Identifier: MIT
 use super::*;
 #[test]
+fn exhausted_connections_report_capacity_and_recover_after_release() {
+    let state = Arc::new(Mutex::new(State {
+        active: BTreeMap::new(),
+        errors: VecDeque::new(),
+        controls: 0,
+    }));
+    let mut held = (0..16)
+        .map(|_| reserve(&state, "outgoing", "service".into()).unwrap())
+        .collect::<Vec<_>>();
+    let error = reserve(&state, "outgoing", "service".into())
+        .err()
+        .expect("the seventeenth connection must be refused")
+        .context("local control preparation");
+    for version in [1, 2] {
+        let mut frame = Vec::new();
+        ipc::write_json(&mut frame, &preparation_failure(&error, version)).unwrap();
+        let body = ipc::read_frame(&mut frame.as_slice()).unwrap();
+        let response: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response["version"], version);
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "Capacity");
+    }
+    assert_eq!(state.lock().unwrap().active.len(), 16);
+    let (guard, released) = held.pop().unwrap();
+    drop(guard);
+    assert!(released.load(Ordering::Relaxed));
+    let replacement = reserve(&state, "outgoing", "service".into()).unwrap();
+    assert_eq!(state.lock().unwrap().active.len(), 16);
+    drop(replacement);
+    drop(held);
+    assert!(state.lock().unwrap().active.is_empty());
+}
+
+#[test]
+fn typed_slot_and_queue_capacity_do_not_reclassify_other_refusals() {
+    for capacity in [Capacity::Slots, Capacity::Requests] {
+        let error = anyhow::Error::new(capacity).context("PRIVATE_DIAGNOSTIC");
+        let response = preparation_failure(&error, 2);
+        assert_eq!(response["error"]["code"], "Capacity");
+        assert!(!response.to_string().contains("PRIVATE_DIAGNOSTIC"));
+    }
+    let error = anyhow::anyhow!("PRIVATE_DIAGNOSTIC capacity exhausted by invalid policy");
+    let response = preparation_failure(&error, 2);
+    assert_eq!(response["error"]["code"], "Refused");
+    assert!(!response.to_string().contains("PRIVATE_DIAGNOSTIC"));
+}
+
+#[test]
 fn full_v2_status_fits_one_frame_and_excludes_private_configuration() {
     let h = "f".repeat(64);
     let n = u64::MAX;
