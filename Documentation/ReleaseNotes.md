@@ -24,6 +24,10 @@ load results must identify their exact artifacts separately from earlier release
 - Exhausted connection, preparation-queue and reusable-slot budgets return the
   existing `Capacity` IPC code. Clients can apply bounded retry without treating
   temporary capacity loss as a permanent refusal. Other refusals retain their code.
+- Independent domain verification recognises Core's endpoint-only
+  `StreamRetirementContext` read. It discloses the bounded session/service/route
+  context for same-proof cleanup after concurrent closure, without granting live
+  permission. Supporting authority replicas are required for this new query.
 - The Python application-stream SDK and package manifest advance together to
   0.10.1. Existing IPC version 1 and version 2 contracts remain compatible.
 

@@ -219,6 +219,14 @@ their original bounded setup policy after capacity is released. Other invalid or
 unavailable requests remain `Refused`; error text is not a permission decision.
 Version2 responses keep private diagnostic details out of the application reply.
 
+The endpoint completes retirement after a caller closes its stream. Core 0.10.2
+uses the endpoint-only `StreamRetirementContext` read to obtain the current
+record after a competing close. It retires only the original signed proof and
+generation, including after grant revocation or proof expiry; the read grants no
+forwarding permission. An unknown close outcome must resolve before another
+retirement is prepared. This recovery requires a supporting authority committee;
+older replicas refuse the new query without an ordinary-mutation fallback.
+
 ## Use the SDK and file example
 
 Install the included [Python package](../SDK/README.md). A receiving application

@@ -65,6 +65,7 @@ impl Query {
                         &op.command,
                         domains::Command::Stream(
                             domains::streams::Command::Permit { .. }
+                                | domains::streams::Command::RetirementContext { .. }
                                 | domains::streams::Command::Lookup { .. }
                                 | domains::streams::Command::Inspect { .. }
                         ) | domains::Command::Page(domains::page::Command::View { .. })
