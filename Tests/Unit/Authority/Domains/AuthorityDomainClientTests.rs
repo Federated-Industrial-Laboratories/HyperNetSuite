@@ -83,11 +83,34 @@ fn elapsed_health(health: ClockHealth, elapsed: u64) -> ClockHealth {
     .frozen()
 }
 
+// Durable setup precedes a new challenge; frozen wall values still model quorum evaluation.
+fn attempt_clock<'a>(
+    issued: &'a mut ClockHealth,
+    current: &'a mut ClockHealth,
+) -> impl FnMut() -> Result<ClockHealth> + 'a {
+    let before = issued.observe().unwrap();
+    let received = current.observe().unwrap();
+    let gap = received.wall_ms.checked_sub(before.wall_ms).unwrap();
+    move || {
+        let boot = boot_time_ms()?;
+        *issued = ClockHealth::new(before.wall_ms, boot, boot + 30000, 100)?.frozen();
+        *current = ClockHealth::new(received.wall_ms, boot + gap, boot + 30000, 100)?.frozen();
+        eprintln!(
+            "domain fixture clock: prior_boot={} sampled_boot={} deadline={} evaluation_gap={}",
+            before.boot_ms,
+            boot,
+            boot + DURATION,
+            gap
+        );
+        Ok(*issued)
+    }
+}
+
 #[test]
 fn own_backup_metadata_finishes_without_inventing_a_discretionary_policy_dependency() {
     let mut f = Fixture::with_actions(vec![0, 20]);
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
-    let prepared = Prepared::new(
+    let prepared = Prepared::new_with_objects(
         &f.bootstrap,
         Request {
             command: domains::backup::Command::List { after: None }.into(),
@@ -97,9 +120,14 @@ fn own_backup_metadata_finishes_without_inventing_a_discretionary_policy_depende
         &f.signer,
         &mut f.store,
         &mut f.session,
-        f.issued,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
     )
     .unwrap();
+    assert_eq!(
+        prepared.deadline,
+        f.issued.observe().unwrap().boot_ms + DURATION
+    );
     assert!(
         Intent::from_signed(&prepared.intent)
             .unwrap()
@@ -143,16 +171,21 @@ fn page_history_refresh_keeps_exact_intent_and_original_deadline() {
     let mut f = Fixture::with_actions(vec![0, 20]);
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
     let request = page_query(&f);
-    let mut prepared = Prepared::new(
+    let mut prepared = Prepared::new_with_objects(
         &f.bootstrap,
         request,
         cache,
         &f.signer,
         &mut f.store,
         &mut f.session,
-        f.issued,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
     )
     .unwrap();
+    assert_eq!(
+        prepared.deadline,
+        f.issued.observe().unwrap().boot_ms + DURATION
+    );
     let original = prepared.intent.clone();
     let deadline = prepared.deadline;
     let prefix = f.store.prefix().clone();
@@ -498,16 +531,21 @@ fn cache_failure_reopens_and_retries_the_exact_original_domain_request() {
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
     assert!(cache.records.is_empty());
     let request = domain_request(&f);
-    let prepared = Prepared::new(
+    let prepared = Prepared::new_with_objects(
         &f.bootstrap,
         request,
         cache,
         &f.signer,
         &mut f.store,
         &mut f.session,
-        f.issued,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
     )
     .unwrap();
+    assert_eq!(
+        prepared.deadline,
+        f.issued.observe().unwrap().boot_ms + DURATION
+    );
     let original = prepared.intent.clone();
     let (certified, evidence) = reply(&prepared, &f);
     let path = f.directory.0.join(CACHE);
@@ -562,16 +600,21 @@ fn cache_failure_reopens_and_retries_the_exact_original_domain_request() {
         .is_err()
     );
     let request = domain_request(&f);
-    let prepared = Prepared::new(
+    let prepared = Prepared::new_with_objects(
         &f.bootstrap,
         request,
         cache,
         &f.signer,
         &mut f.store,
         &mut f.session,
-        f.issued,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
     )
     .unwrap();
+    assert_eq!(
+        prepared.deadline,
+        f.issued.observe().unwrap().boot_ms + DURATION
+    );
     assert_eq!(prepared.intent, original);
     let (certified, evidence) = reply(&prepared, &f);
     prepared
