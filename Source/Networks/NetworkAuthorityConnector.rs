@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 #[path = "AuthorityConnectorPacket.rs"]
-mod packet;
+pub(crate) mod packet;
 const DURATION_MS: u64 = 30000;
 #[derive(Args)]
 pub struct Arguments {
@@ -162,6 +162,32 @@ fn endpoint(path: &Path, binding: &Binding, bootstrap: &trust::Verified) -> Resu
     );
     Ok(endpoint)
 }
+fn deliver_reply(
+    stream: &mut UnixStream,
+    reply: &[u8],
+    deadline: u64,
+    cleanup: Option<&packet::Cleanup>,
+) -> Result<()> {
+    if let Some(cleanup) = cleanup {
+        cleanup.receipt(reply)?;
+        if ipc::disconnected(stream)? {
+            return Ok(());
+        }
+    }
+    write(stream, &(reply.len() as u32).to_be_bytes(), deadline)?;
+    write(stream, reply, deadline)
+}
+pub(crate) fn exchange_cleanup(
+    session: Option<&mut Session<'_>>,
+    request: &[u8],
+    deadline: u64,
+    cleanup: &packet::Cleanup,
+) -> Result<Vec<u8>> {
+    let Some(session) = session.filter(|session| session.read_acknowledgements()) else {
+        return cleanup.not_released();
+    };
+    session.exchange(request, deadline, packet::Cleanup::MAXIMUM)
+}
 fn actor(
     receiver: mpsc::Receiver<Job>,
     selected: PathBuf,
@@ -188,6 +214,7 @@ fn actor(
         if let Ok(mut state) = status.lock() {
             state.active = true;
         }
+        let mut cleanup = false;
         let result = (|| -> Result<()> {
             job.stream.set_nonblocking(true)?;
             *current
@@ -205,8 +232,32 @@ fn actor(
             let mut request = vec![0; length];
             read(&mut job.stream, &mut request, initial)?;
             let route = endpoint(&selected, &binding, &bootstrap)?;
-            packet::validate(route.route.network, route.route.incarnation, &request)?;
-            let now = crate::authority_clock::health(&clock)?.observe()?.wall_ms;
+            let acknowledgement =
+                packet::validate(route.route.network, route.route.incarnation, &request)?;
+            let now = crate::authority_clock::health(&clock)?.observe()?;
+            cleanup = acknowledgement.is_some();
+            if let Some(acknowledgement) = &acknowledgement {
+                job.deadline = acknowledgement.deadline(now, job.deadline)?;
+                // A notification sender may already have closed. Only the signed
+                // deadline and the original admitted session bound remote cleanup.
+                *current
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("authority caller lock failed"))? = None;
+                if !session.as_ref().is_some_and(Session::read_acknowledgements) {
+                    let reply = exchange_cleanup(
+                        session.as_mut(),
+                        &request,
+                        job.deadline,
+                        acknowledgement,
+                    )?;
+                    return deliver_reply(
+                        &mut job.stream,
+                        &reply,
+                        job.deadline,
+                        Some(acknowledgement),
+                    );
+                }
+            }
             let record = Record::parse(
                 &route.route.voucher,
                 route.route.network,
@@ -217,19 +268,28 @@ fn actor(
                 state.voucher_expires_ms = voucher.expires;
             }
             ensure!(
-                now < voucher.expires,
+                now.wall_ms < voucher.expires,
                 "authority route voucher expired; retain an explicitly renewed same-target route through an independently valid authority route"
             );
             let remaining = job.deadline.saturating_sub(boot_time_ms()?);
+            let maximum_response = if cleanup {
+                packet::Cleanup::MAXIMUM
+            } else {
+                4 * wire::MAXIMUM
+            };
             let reusable = retained.as_ref() == Some(&route.route)
                 && session.as_ref().is_some_and(|s: &Session<'_>| {
                     s.reusable_exchange(
                         remaining,
-                        route_connector::exchange_reservation(request.len(), 4 * wire::MAXIMUM)
+                        route_connector::exchange_reservation(request.len(), maximum_response)
                             .unwrap_or(u64::MAX),
                     )
                 });
             if !reusable {
+                ensure!(
+                    !cleanup,
+                    "fresh acknowledgement requires the existing admitted session"
+                );
                 session = None;
                 let possession = crate::networks::route_key(&route.profile, &route.route)?;
                 let lifetime = boot_time_ms()?
@@ -249,17 +309,20 @@ fn actor(
             } else if let Ok(mut state) = status.lock() {
                 state.reused_exchanges = state.reused_exchanges.saturating_add(1);
             }
-            let reply = session
-                .as_mut()
-                .context("authority route session absent")?
-                .exchange(&request, job.deadline, 4 * wire::MAXIMUM)?;
-            write(
+            let reply = if let Some(cleanup) = &acknowledgement {
+                exchange_cleanup(session.as_mut(), &request, job.deadline, cleanup)?
+            } else {
+                session
+                    .as_mut()
+                    .context("authority route session absent")?
+                    .exchange(&request, job.deadline, maximum_response)?
+            };
+            deliver_reply(
                 &mut job.stream,
-                &(reply.len() as u32).to_be_bytes(),
+                &reply,
                 job.deadline,
-            )?;
-            write(&mut job.stream, &reply, job.deadline)?;
-            Ok(())
+                acknowledgement.as_ref(),
+            )
         })();
         if let Ok(mut caller) = current.lock() {
             *caller = None;
@@ -272,8 +335,10 @@ fn actor(
                     state.last_error = None;
                 }
                 Err(error) => {
-                    session = None;
-                    retained = None;
+                    if !cleanup {
+                        session = None;
+                        retained = None;
+                    }
                     state.refused = state.refused.saturating_add(1);
                     state.last_error = Some(format!("{error:#}").chars().take(512).collect());
                 }

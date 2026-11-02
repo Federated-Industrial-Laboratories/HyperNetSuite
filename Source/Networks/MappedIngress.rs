@@ -397,6 +397,11 @@ pub fn run(a: Arguments) -> Result<()> {
     files::atomic_at(&root, std::ffi::OsStr::new("Binding.json"), &bytes, true)?;
     drop(root);
     let listener = ipc::Listener::bind(Path::new("/"))?;
+    let listener = if a.binding_kind == "authority" {
+        listener.with_read_acknowledgements()?
+    } else {
+        listener
+    };
     let checks = if a.binding_kind == "application" {
         Some(ipc::Listener::bind_named(Path::new("/"), "Checks.sock")?)
     } else {

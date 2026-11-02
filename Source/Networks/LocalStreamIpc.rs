@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Private Unix IPC binds one owner and inode before exchanging bounded control frames or raw bytes.
 use crate::transfer_files as files;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -192,6 +192,7 @@ pub struct Listener {
     pub socket: UnixListener,
     path: PathBuf,
     identity: (u64, u64),
+    acknowledgement: Option<PathBuf>,
 }
 impl Listener {
     pub fn bind(directory: &Path) -> Result<Self> {
@@ -228,11 +229,56 @@ impl Listener {
             socket,
             path,
             identity,
+            acknowledgement: None,
         })
+    }
+    pub(crate) fn with_read_acknowledgements(mut self) -> Result<Self> {
+        let alias = self.path.with_file_name("ReadAcknowledgements.sock");
+        if fs::symlink_metadata(&alias).is_ok() {
+            let before = metadata(&alias)?;
+            let directory = private(
+                self.path.parent().context("agent socket parent absent")?,
+                false,
+            )?;
+            let endpoint = Path::new("/proc/self/fd")
+                .join(directory.as_raw_fd().to_string())
+                .join("ReadAcknowledgements.sock");
+            match UnixStream::connect(endpoint) {
+                Ok(_) => anyhow::bail!("another acknowledgement socket is active"),
+                Err(e) => ensure!(
+                    matches!(
+                        e.raw_os_error(),
+                        Some(libc::ECONNREFUSED) | Some(libc::ENOENT)
+                    ),
+                    "cannot establish that the prior acknowledgement socket is stale"
+                ),
+            }
+            ensure!(
+                metadata(&alias)? == before,
+                "stale acknowledgement socket changed"
+            );
+            fs::remove_file(&alias)?;
+        }
+        ensure!(
+            metadata(&self.path)? == self.identity,
+            "agent socket changed before alias publication"
+        );
+        fs::hard_link(&self.path, &alias)?;
+        self.acknowledgement = Some(alias);
+        ensure!(
+            metadata(self.acknowledgement.as_ref().unwrap())? == self.identity,
+            "acknowledgement alias differs from the agent socket"
+        );
+        Ok(self)
     }
 }
 impl Drop for Listener {
     fn drop(&mut self) {
+        if let Some(path) = &self.acknowledgement
+            && metadata(path).ok() == Some(self.identity)
+        {
+            let _ = fs::remove_file(path);
+        }
         if metadata(&self.path).ok() == Some(self.identity) {
             let _ = fs::remove_file(&self.path);
         }

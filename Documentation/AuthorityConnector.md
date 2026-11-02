@@ -42,8 +42,52 @@ One authority TLS session is reused while its original transport budget permits.
 At most16 local connections wait for its serial actor. Each connection carries
 one bounded request and reply. Intake has a five-second deadline; the whole
 queued exchange has a30-second maximum and cannot extend Core's own deadline.
-Caller disconnection or process termination cancels an active exchange. Invalid,
+Caller disconnection or process termination cancels an ordinary active exchange. Invalid,
 foreign-network and management packets close without reaching the authority.
+
+A consumed fresh read can send signed control operation8 as optional cleanup.
+The mapped ingress publishes `ReadAcknowledgements.sock` as a private hard-link
+alias of its existing `Control.sock`. It adds no listener, queue or connection
+allowance. Core verifies the same owned socket device/inode before sending;
+absence or substitution skips cleanup without contacting a legacy connector.
+Both names share the existing socket's cleanup and replacement checks.
+Its version1 acknowledgement binds the network scope, original read identifier,
+complete statement digest, result digest and deadline. The Core recipient signs
+it only after consuming that exact result. The authority releases only the
+matching completed read; pending and unacknowledged reads retain their original
+expiry and lost-response recovery.
+
+Cleanup uses the same16-entry queue and only the existing admitted TLS session.
+It cannot open a new session, renew a budget or retry a read. Its deadline is
+the earlier of the original queued deadline and the signed deadline translated
+through the healthy clock with the conservative clock margin. That signed
+deadline is bounded by Core's original call and statement expiry. Invalid or
+expired deadlines refuse cleanup. Cleanup requests and receipts are at most1024
+bytes. The connector drains one exact, bound version1 receipt from the remote
+authority. A connected forwarding caller receives the framed receipt; a closed
+notification sender needs no reply. A false receipt can mean cleanup was skipped
+for unsupported transport, or the exact entry was already released or expired.
+
+Only protocol1 final-service TLS offers optional `HyperNetRoute/1+ReadAck1`,
+followed by the existing `HyperNetRoute/1` fallback. The authenticated endpoint's
+selection reports cleanup support. Relay TLS keeps its existing protocol. If
+the final session selected legacy TLS, the connector skips cleanup and returns
+a bound false receipt locally. It sends no probe or unsupported packet and keeps
+the same usable session for ordinary requests.
+
+Core never waits for cleanup, and a cleanup failure cannot change the consumed
+result or reuse its authority. Supported combinations are:
+
+| Consumer and transport | Cleanup behavior |
+| --- | --- |
+| Legacy Core consumer | No cleanup; existing start/poll semantics |
+| Updated Core with legacy local connector | Missing alias skips cleanup without opening a socket |
+| Updated connector with legacy collecting endpoint | Legacy final TLS skips cleanup; ordinary session reuse continues |
+| Updated Core, connector and collecting endpoint | Exact consumed result can release its completed collection |
+
+Skipped, lost or failed cleanup leaves the read retained until its original
+expiry. Existing control operations and their reply semantics do not change.
+Process termination still cancels cleanup.
 
 Status includes the voucher expiry, completed/refused counts, the current bounded
 error and the observation's boot timestamp. It is a local snapshot, not a claim
