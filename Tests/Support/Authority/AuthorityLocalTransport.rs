@@ -2,7 +2,10 @@
 // Test fixtures and accessors in the owning module scope.
 impl LocalControl {
     pub(crate) fn from_prepared_test(route: crate::private_route_client::Prepared) -> Self {
-        Self { endpoint: Endpoint::Relay(Box::new(route)), history: None }
+        Self {
+            endpoint: Endpoint::Relay(Box::new(route)),
+            history: None,
+        }
     }
     #[cfg(test)]
     pub(crate) fn prepared_for_test(
