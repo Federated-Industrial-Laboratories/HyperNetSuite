@@ -7,6 +7,39 @@ use crate::{
 };
 use std::{net::Shutdown, os::unix::net::UnixStream};
 impl Session<'_> {
+    /// Both readiness phases share the caller's original preparation bound.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn authenticate_application_before(
+        &mut self,
+        network: Digest,
+        incarnation: Digest,
+        proof: &mut streams::Proof,
+        binding: Digest,
+        key: &SigningKey,
+        deadline: u64,
+    ) -> Result<VersionRef> {
+        let result = (|| {
+            let inner = self
+                .stream
+                .as_mut()
+                .context("application stream is closed")?;
+            inner.sock.sock.operation_deadline = Some(deadline);
+            inner.sock.sock.check()?;
+            let result =
+                self.authenticate_application(network, incarnation, proof, binding, key)?;
+            let inner = self
+                .stream
+                .as_mut()
+                .context("application stream is closed")?;
+            inner.sock.sock.check()?;
+            inner.sock.sock.operation_deadline = None;
+            Ok(result)
+        })();
+        if result.is_err() {
+            self.stream.take();
+        }
+        result
+    }
     pub fn authenticate_application(
         &mut self,
         network: Digest,

@@ -8,8 +8,12 @@ use rustls::{
 };
 use std::{net::TcpListener, process::Command};
 
+#[path = "../Networks/ApplicationPreparationTransportTests.rs"]
+mod application_preparation_transport;
 #[path = "../Networks/NetworkAuthorityCleanupTransportTests.rs"]
 mod cleanup_transport_tests;
+#[path = "../Networks/ConsumedReadInteropTests.rs"]
+mod consumed_read_interop;
 #[path = "../Pages/AuthorityPageContentTransportTests.rs"]
 mod content_transport_tests;
 

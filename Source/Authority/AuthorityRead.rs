@@ -16,6 +16,9 @@ use ed25519_dalek::SigningKey;
 mod evaluation;
 
 pub use evaluation::verify_domain;
+#[path = "AuthorityReadAcknowledgement.rs"]
+mod acknowledgement;
+pub(crate) use acknowledgement::Acknowledgement;
 fn a(v: Vec<V>) -> V {
     V::Array(v)
 }
@@ -173,9 +176,12 @@ pub fn read_id(request: &[u8], challenge: &[u8]) -> Result<Digest> {
     let request = Request::from_signed(request)?;
     let challenge = Challenge::from_signed(challenge)?;
     request.validate_challenge(&challenge)?;
+    bound_id(&request.digest, &challenge.digest)
+}
+fn bound_id(request: &Digest, challenge: &Digest) -> Result<Digest> {
     Ok(wire::digest(&wire::encode(&a(vec![
-        b(&request.digest),
-        b(&challenge.digest),
+        b(request),
+        b(challenge),
     ]))?))
 }
 #[derive(Clone, Debug)]
@@ -193,6 +199,23 @@ pub struct Statement {
     pub result: Digest,
 }
 impl Statement {
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        wire::encode(&a(vec![
+            V::Uint(61),
+            V::Uint(1),
+            self.scope.value(),
+            b(&self.request),
+            b(&self.challenge),
+            b(&self.requester),
+            b(&self.recipient),
+            V::Uint(self.height),
+            b(&self.node),
+            b(&self.state),
+            V::Uint(self.evaluated_at_ms),
+            V::Uint(self.expires_at_ms),
+            b(&self.result),
+        ]))
+    }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let v = wire::decode(bytes)?;
         let f = record(&v, 61, 13)?;

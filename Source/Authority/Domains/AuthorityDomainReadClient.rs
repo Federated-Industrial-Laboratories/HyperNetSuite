@@ -129,7 +129,10 @@ fn local_once(
         let verified = exchange.evidence.attach_read(store, verified)?;
         if verified.result.disposition != Disposition::Permit {
             let code = verified.result.code;
-            store.observe_read(verified, session, clock, 0)?;
+            let consumed = store.observe_read_consumed(verified, session, clock, 0)?;
+            exchange
+                .control
+                .acknowledge_read(&consumed, signer, exchange.deadline);
             return Err(Refusal { code }.into());
         }
         let candidate = candidate.context("permitted fresh read lacks validated context")?;
@@ -147,24 +150,29 @@ fn local_once(
             b(&exchange.reply.node),
         ]))?;
         remaining(exchange.deadline)?;
-        store.accept_read(verified, session, clock, 0, |_, store| {
-            let cache = Cache {
-                state: candidate.state,
-                records: candidate.records,
-            };
-            cache.save(store)?;
-            policy::retain_records(bootstrap, store, &cache.records)?;
-            remaining(exchange.deadline)?;
-            Ok(ResultState {
-                value: candidate.value,
-                prefix,
-                cache,
-                evaluated_at_ms,
-                expires_at_ms,
-                deadline_boot_ms: exchange.deadline,
-                receipt,
-            })
-        })
+        let (value, consumed) =
+            store.accept_read_consumed(verified, session, clock, 0, |_, store| {
+                let cache = Cache {
+                    state: candidate.state,
+                    records: candidate.records,
+                };
+                cache.save(store)?;
+                policy::retain_records(bootstrap, store, &cache.records)?;
+                remaining(exchange.deadline)?;
+                Ok(ResultState {
+                    value: candidate.value,
+                    prefix,
+                    cache,
+                    evaluated_at_ms,
+                    expires_at_ms,
+                    deadline_boot_ms: exchange.deadline,
+                    receipt,
+                })
+            })?;
+        exchange
+            .control
+            .acknowledge_read(&consumed, signer, exchange.deadline);
+        Ok(value)
     })();
     if result.is_err() {
         session.discard(&exchange.challenge)?;

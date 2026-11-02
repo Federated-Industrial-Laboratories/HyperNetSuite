@@ -301,6 +301,16 @@ impl Prepared {
         self.observed.set(true);
         Ok(bytes)
     }
+    pub(crate) fn acknowledge_read(
+        &self,
+        packet: &[u8],
+        acknowledgement: crate::authority_read::Acknowledgement,
+        deadline: u64,
+    ) {
+        if let Ok(mut session) = self.session.try_borrow_mut() {
+            session.notify_read_consumed(packet, acknowledgement, deadline);
+        }
+    }
 }
 pub(crate) fn observation_path(profile: &Path) -> Result<PathBuf> {
     use std::os::unix::ffi::OsStrExt;

@@ -5,6 +5,17 @@ use crate::networks::authority_connector::{exchange_cleanup, packet};
 
 #[test]
 fn authority_connector_cleanup_negotiates_without_probe_or_legacy_session_churn() {
+    cleanup_transport(false, false);
+}
+#[test]
+fn consumed_read_cleanup_returns_before_delayed_receipt_and_preserves_next_exchange() {
+    cleanup_transport(true, false);
+}
+#[test]
+fn consumed_read_cleanup_wrong_receipt_closes_before_the_next_request() {
+    cleanup_transport(true, true);
+}
+fn cleanup_transport(direct: bool, corrupt: bool) {
     let f = Fixture::new();
     let (relay, service) = certificates(&f.directory.0);
     let possession = SigningKey::from_bytes(&[99; 32]);
@@ -91,8 +102,14 @@ fn authority_connector_cleanup_negotiates_without_probe_or_legacy_session_churn(
             std::sync::Arc::make_mut(&mut final_config).alpn_protocols =
                 vec![route_tls::READ_ACK_ALPN.to_vec(), route_tls::ALPN.to_vec()];
         }
+        let (release, after_consume) = std::sync::mpsc::sync_channel(1);
         std::thread::scope(|threads| {
-            let server = threads.spawn(|| {
+            let request_for_server = &request;
+            let cleanup_for_server = &cleanup;
+            let possession_for_server = &possession;
+            let scope_for_server = &scope;
+            let service_for_server = &service;
+            let server = threads.spawn(move || {
                 let end = std::time::Instant::now() + Duration::from_secs(4);
                 let socket = loop {
                     match listener.accept() {
@@ -127,7 +144,7 @@ fn authority_connector_cleanup_negotiates_without_probe_or_legacy_session_churn(
                 assert_eq!(
                     open.verify(nonce, exporter, &framed_read(&mut outer))
                         .unwrap(),
-                    possession.verifying_key().to_bytes()
+                    possession_for_server.verifying_key().to_bytes()
                 );
                 let binding = wire::digest(&open.binding(nonce, exporter).unwrap());
                 framed_send(&mut outer, &route_protocol::ready(binding, limits).unwrap());
@@ -136,9 +153,9 @@ fn authority_connector_cleanup_negotiates_without_probe_or_legacy_session_churn(
                 framed_send(
                     &mut inner,
                     &route_protocol::endpoint_ready(
-                        scope.network,
-                        scope.incarnation,
-                        service.identity.service,
+                        scope_for_server.network,
+                        scope_for_server.incarnation,
+                        service_for_server.identity.service,
                         1,
                     )
                     .unwrap(),
@@ -146,14 +163,30 @@ fn authority_connector_cleanup_negotiates_without_probe_or_legacy_session_churn(
                 assert_eq!(framed_read(&mut inner), b"ordinary before cleanup");
                 framed_send(&mut inner, b"first result");
                 if supported {
-                    assert_eq!(framed_read(&mut inner), request);
-                    let mut fields = wire::decode(&cleanup.not_released().unwrap())
+                    assert_eq!(&framed_read(&mut inner), request_for_server);
+                    if direct {
+                        after_consume
+                            .recv_timeout(Duration::from_secs(1))
+                            .expect("consumed caller waited for cleanup receipt");
+                    }
+                    let mut fields = wire::decode(&cleanup_for_server.not_released().unwrap())
                         .unwrap()
                         .array(7)
                         .unwrap()
                         .to_vec();
                     fields[6] = V::Bool(true);
+                    if direct && corrupt {
+                        fields[3] = b(&[77; 32]);
+                    }
                     framed_send(&mut inner, &wire::encode(&a(fields)).unwrap());
+                }
+                if supported && direct && corrupt {
+                    match inner.read(&mut [0; 1]) {
+                        Ok(0) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {}
+                        result => panic!("wrong receipt allowed another request: {result:?}"),
+                    }
+                    return;
                 }
                 // The legacy endpoint sees no cleanup or capability probe between ordinary requests.
                 assert_eq!(framed_read(&mut inner), b"ordinary after cleanup");
@@ -176,18 +209,32 @@ fn authority_connector_cleanup_negotiates_without_probe_or_legacy_session_churn(
                     .unwrap(),
                 b"first result"
             );
-            let reply = exchange_cleanup(Some(&mut session), &request, deadline, &cleanup).unwrap();
-            cleanup.receipt(&reply).unwrap();
-            assert_eq!(
-                wire::decode(&reply).unwrap().array(7).unwrap()[6],
-                V::Bool(supported)
-            );
-            assert_eq!(
-                session
-                    .exchange(b"ordinary after cleanup", deadline, 1024)
-                    .unwrap(),
-                b"second result"
-            );
+            if direct {
+                let acknowledgement = packet::validate(scope.network, scope.incarnation, &request)
+                    .unwrap()
+                    .unwrap();
+                let cleanup_end = boot_time_ms().unwrap() + 100;
+                session.notify_read_consumed(&request, acknowledgement, cleanup_end);
+                // The original cleanup send interval expires before its non-authority receipt arrives.
+                std::thread::sleep(Duration::from_millis(120));
+                if supported {
+                    release.send(()).unwrap();
+                }
+            } else {
+                let reply =
+                    exchange_cleanup(Some(&mut session), &request, deadline, &cleanup).unwrap();
+                cleanup.receipt(&reply).unwrap();
+                assert_eq!(
+                    wire::decode(&reply).unwrap().array(7).unwrap()[6],
+                    V::Bool(supported)
+                );
+            }
+            let next = session.exchange(b"ordinary after cleanup", deadline, 1024);
+            if supported && direct && corrupt {
+                assert!(next.is_err());
+            } else {
+                assert_eq!(next.unwrap(), b"second result");
+            }
             server.join().unwrap();
         });
     }

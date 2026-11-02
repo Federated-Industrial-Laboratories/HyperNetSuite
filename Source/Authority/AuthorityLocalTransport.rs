@@ -111,6 +111,26 @@ impl LocalControl {
         }
         Ok(control)
     }
+    /// Optional cleanup follows actual consumption and cannot change its outcome.
+    pub(crate) fn acknowledge_read(
+        &self,
+        consumed: &crate::authority_floor::ConsumedRead,
+        key: &ed25519_dalek::SigningKey,
+        deadline: u64,
+    ) {
+        let send = || -> Result<()> {
+            remaining(deadline)?;
+            let (acknowledgement, packet) = consumed.acknowledgement(key, deadline)?;
+            match &self.endpoint {
+                Endpoint::Local(local) => local.notify_read_consumed(&packet, deadline),
+                Endpoint::Relay(route) => {
+                    route.acknowledge_read(&packet, acknowledgement, deadline);
+                    Ok(())
+                }
+            }
+        };
+        let _ = send();
+    }
     /// Call only after proof verification and durable completion. The hint grants no authority.
     pub(crate) fn retain(self, store: &crate::authority_floor::Store) {
         if let Endpoint::Relay(route) = self.endpoint {
@@ -236,6 +256,7 @@ impl LocalControl {
 struct OwnedControl {
     directory: File,
     name: CString,
+    acknowledgement_of: Option<CString>,
 }
 impl OwnedControl {
     pub fn open(path: &Path) -> Result<Self> {
@@ -247,17 +268,32 @@ impl OwnedControl {
             .context("control socket filename required")?;
         let directory = files::private_directory(parent)?;
         let name = CString::new(name.as_bytes())?;
-        let this = Self { directory, name };
+        let this = Self {
+            directory,
+            name,
+            acknowledgement_of: None,
+        };
         this.socket_stat()?;
         Ok(this)
     }
     fn socket_stat(&self) -> Result<libc::stat> {
+        let stat = self.stat_named(&self.name)?;
+        if let Some(original) = &self.acknowledgement_of {
+            let control = self.stat_named(original)?;
+            ensure!(
+                stat.st_dev == control.st_dev && stat.st_ino == control.st_ino,
+                "private cleanup alias differs from the control socket"
+            );
+        }
+        Ok(stat)
+    }
+    fn stat_named(&self, name: &CString) -> Result<libc::stat> {
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         ensure!(
             unsafe {
                 libc::fstatat(
                     self.directory.as_raw_fd(),
-                    self.name.as_ptr(),
+                    name.as_ptr(),
                     stat.as_mut_ptr(),
                     libc::AT_SYMLINK_NOFOLLOW,
                 )
@@ -273,7 +309,7 @@ impl OwnedControl {
         );
         Ok(stat)
     }
-    fn connect(&self, deadline: u64) -> Result<UnixStream> {
+    fn connect(&self, deadline: u64, wait: bool) -> Result<UnixStream> {
         remaining(deadline)?;
         let before = self.socket_stat()?;
         let descriptor = unsafe {
@@ -314,6 +350,10 @@ impl OwnedControl {
                 ),
                 "private control connection failed: {error}"
             );
+            ensure!(
+                wait,
+                "private cleanup connection is not immediately available"
+            );
             ready(&stream, libc::POLLOUT, deadline)?;
             if let Some(error) = stream.take_error()? {
                 return Err(error.into());
@@ -345,6 +385,28 @@ impl OwnedControl {
         );
         Ok(stream)
     }
+    fn notify_read_consumed(&self, request: &[u8], deadline: u64) -> Result<()> {
+        ensure!(
+            request.len() <= crate::authority_read::Acknowledgement::MAXIMUM,
+            "private cleanup frame exceeds bound"
+        );
+        let target = Self {
+            directory: self.directory.try_clone()?,
+            name: CString::new("ReadAcknowledgements.sock")?,
+            acknowledgement_of: Some(self.name.clone()),
+        };
+        target.socket_stat()?;
+        let mut stream = target.connect(deadline, false)?;
+        let mut frame = Vec::with_capacity(4 + request.len());
+        frame.extend_from_slice(&(request.len() as u32).to_be_bytes());
+        frame.extend_from_slice(request);
+        remaining(deadline)?;
+        ensure!(
+            stream.write(&frame)? == frame.len(),
+            "private cleanup frame incomplete"
+        );
+        Ok(())
+    }
     pub(crate) fn exchange_limit(
         &self,
         request: &[u8],
@@ -359,7 +421,7 @@ impl OwnedControl {
             !request.is_empty() && request.len() <= wire::MAXIMUM,
             "local control request exceeds bound"
         );
-        let mut stream = self.connect(deadline)?;
+        let mut stream = self.connect(deadline, true)?;
         write_all(&mut stream, &(request.len() as u32).to_be_bytes(), deadline)?;
         write_all(&mut stream, request, deadline)?;
         let mut length = [0; 4];

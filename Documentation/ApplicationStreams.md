@@ -182,7 +182,10 @@ local persistence. The replacement is a new certified read within the caller's
 original preparation deadline; the learned floor remains retained. This allowance
 is shared across policy discovery and service lookup. It does not replay an
 ordinary command, extend a certificate, retry a refusal or hide invalid clock or
-identity evidence. Closing or cancelling the local request stops preparation.
+identity evidence. The same original preparation deadline bounds relay admission,
+final-service readiness and application acceptance. Successful handoff clears
+only that preparation bound; the separately authorised stream lifetime remains.
+Closing or cancelling the local request stops preparation.
 If an otherwise authenticated clock observation expires, preparation waits for
 a fresh valid observation within that same deadline. Every replacement is fully
 validated. Waiting does not replay an authority command, extend an existing

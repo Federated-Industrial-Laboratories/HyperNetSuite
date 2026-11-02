@@ -369,18 +369,20 @@ fn request(
                 let deadline = crate::authority_challenge::boot_time_ms()?
                     .checked_add(plan.proof.limits.duration_ms)
                     .context("stream deadline overflow")?;
-                let mut session = crate::route_connector::Session::connect(
+                let mut session = crate::route_connector::Session::connect_with_deadlines(
                     &plan.endpoint.route,
                     &possession,
                     deadline,
+                    preparation_deadline,
                     &cancelled,
                 )?;
-                let admitted = session.authenticate_application(
+                let admitted = session.authenticate_application_before(
                     plan.endpoint.route.network,
                     plan.endpoint.route.incarnation,
                     &mut plan.proof,
                     plan.binding,
                     &plan.key,
+                    preparation_deadline,
                 )?;
                 let peer = json!({"network":hex::encode(plan.endpoint.route.network),"incarnation":hex::encode(plan.endpoint.route.incarnation),"service":service,"protocol":plan.proof.protocol,"owner":hex::encode(plan.owner),"endpoint":hex::encode(plan.endpoint_key),"route":hex::encode(plan.endpoint.route.destination.service),"session":hex::encode(admitted.id),"generation":admitted.generation,"expiresMs":plan.proof.expires,"maximumBytes":plan.proof.limits.bytes,"durationMs":plan.proof.limits.duration_ms,"idleMs":plan.proof.limits.idle_ms});
                 annotate(&guard, peer.clone())?;

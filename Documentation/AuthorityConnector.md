@@ -85,6 +85,20 @@ result or reuse its authority. Supported combinations are:
 | Updated connector with legacy collecting endpoint | Legacy final TLS skips cleanup; ordinary session reuse continues |
 | Updated Core, connector and collecting endpoint | Exact consumed result can release its completed collection |
 
+Suite policy-context and domain reads also acknowledge successful consumption,
+including a verified refusal, after durable publication and the final one-use
+check. Local reads use the same owned socket alias. Private-route reads use only
+their existing authenticated session when its final TLS selection supports
+cleanup. A legacy session receives no cleanup packet.
+
+The direct Suite path makes one nonblocking framed write and never waits for
+cleanup. It retains at most one pending receipt. Before the next ordinary
+exchange, it drains and correlates that bounded receipt under the new exchange's
+original deadline. The receipt grants no authority and does not extend the old
+acknowledgement's signed expiry or send deadline. A partial write or invalid
+receipt closes that transport; the consumed outcome remains unchanged. Cleanup
+cannot create a new challenge, reconnect or replenish the session allowance.
+
 Skipped, lost or failed cleanup leaves the read retained until its original
 expiry. Existing control operations and their reply semantics do not change.
 Process termination still cancels cleanup.

@@ -332,6 +332,7 @@ pub(crate) fn exchange_reservation(request: usize, maximum_response: usize) -> R
 /// One admitted connection owns a fixed resource budget; failed exchanges cannot reconnect.
 pub struct Session<'a> {
     stream: Option<Stream<'a>>,
+    cleanup_receipt: Option<crate::authority_read::Acknowledgement>,
 }
 impl<'a> Session<'a> {
     pub fn connect(
@@ -449,6 +450,7 @@ impl<'a> Session<'a> {
         inner.sock.sock.operation_deadline = None;
         Ok(Self {
             stream: Some(inner),
+            cleanup_receipt: None,
         })
     }
     pub fn exchange(
@@ -470,6 +472,12 @@ impl<'a> Session<'a> {
                 .context("private route session is closed")?;
             inner.sock.sock.operation_deadline = Some(deadline);
             inner.sock.sock.check()?;
+            if let Some(cleanup) = self.cleanup_receipt.take() {
+                // This bounded receipt grants no authority. Drain its exact frame before
+                // the new request, without retransmitting or extending the old cleanup.
+                let receipt = receive(inner, crate::authority_read::Acknowledgement::MAXIMUM)?;
+                cleanup.receipt(&receipt)?;
+            }
             // Endpoint readiness and both authenticated TLS layers precede every application credential.
             send(inner, request).context("send private application request")?;
             let response =
@@ -480,8 +488,61 @@ impl<'a> Session<'a> {
         })();
         if result.is_err() {
             self.stream.take();
+            self.cleanup_receipt = None;
         }
         result
+    }
+    /// A consumed result never waits for cleanup or gains another transport allowance.
+    pub(crate) fn notify_read_consumed(
+        &mut self,
+        request: &[u8],
+        cleanup: crate::authority_read::Acknowledgement,
+        deadline: u64,
+    ) {
+        if !self.read_acknowledgements() || self.cleanup_receipt.is_some() {
+            return;
+        }
+        let Some(remaining) = boot_time_ms()
+            .ok()
+            .and_then(|now| deadline.checked_sub(now))
+        else {
+            return;
+        };
+        if remaining == 0
+            || request.len() > crate::authority_read::Acknowledgement::MAXIMUM
+            || !exchange_reservation(
+                request.len(),
+                crate::authority_read::Acknowledgement::MAXIMUM,
+            )
+            .is_ok_and(|bytes| self.reusable_exchange(remaining, bytes))
+        {
+            return;
+        }
+        let inner = self.stream.as_mut().expect("supported live session");
+        inner.sock.sock.operation_deadline = Some(deadline);
+        inner.sock.sock.opportunistic = true;
+        let result = (|| -> Result<()> {
+            let mut frame = Vec::with_capacity(4 + request.len());
+            frame.extend_from_slice(&(request.len() as u32).to_be_bytes());
+            frame.extend_from_slice(request);
+            ensure!(inner.write(&frame)? == frame.len(), "partial cleanup frame");
+            inner.flush()?;
+            ensure!(
+                !inner.conn.wants_write() && !inner.sock.conn.wants_write(),
+                "cleanup frame remains buffered"
+            );
+            inner.sock.sock.check()?;
+            Ok(())
+        })();
+        inner.sock.sock.opportunistic = false;
+        inner.sock.sock.operation_deadline = None;
+        if result.is_ok() {
+            self.cleanup_receipt = Some(cleanup);
+        } else {
+            // A partial frame cannot remain on an ordinary reusable stream.
+            // The already consumed result remains successful.
+            self.stream.take();
+        }
     }
     #[allow(
         dead_code,

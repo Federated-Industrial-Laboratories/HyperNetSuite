@@ -83,16 +83,23 @@ fn discover_once(
         )?;
         let verified = exchange.evidence.attach_read(store, verified)?;
         if verified.result.disposition != Disposition::Permit {
-            store.observe_read(verified, session, &mut clock, 0)?;
+            let consumed = store.observe_read_consumed(verified, session, &mut clock, 0)?;
+            exchange
+                .control
+                .acknowledge_read(&consumed, signer, exchange.deadline);
             bail!("policy discovery refused");
         }
         let (p, r) = pair.context("certified policy pair absent")?;
         // Candidate bytes precede the floor so interruption cannot hide a learned contract.
         retain_cached_pair(store, PENDING, &p, &r)?;
-        store.accept_read(verified, session, &mut clock, 0, |_, store| {
-            retain_pair(store, &p, &r)
-        })?;
+        let ((), consumed) =
+            store.accept_read_consumed(verified, session, &mut clock, 0, |_, store| {
+                retain_pair(store, &p, &r)
+            })?;
         remaining(exchange.deadline)?;
+        exchange
+            .control
+            .acknowledge_read(&consumed, signer, exchange.deadline);
         Ok(())
     })();
     if result.is_err() {
