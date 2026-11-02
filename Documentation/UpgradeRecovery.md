@@ -7,6 +7,17 @@ identity files, mail vaults, recovery files and downloads outside an installed
 software prefix. Package removal never revokes network grants or deletes those
 external files.
 
+## Consumed-read cleanup candidate 0.10.1
+
+The current source candidate adds optional cleanup without changing the retained
+state contract or permission semantics. Preserve exact pending operations and all
+trust floors. Replace stopped software and renew local artifact consent before
+resuming services; restart companions after selecting the new Suite executable.
+Use Core 0.10.2 with Suite 0.10.1 for the complete cleanup path. Legacy peers remain
+compatible and retain unacknowledged reads until their original expiry. Consult
+[the candidate release notes](ReleaseNotes.md) before preparing an exact signed
+target; the version number does not authorise a target sequence or publication.
+
 ## Application context 0.10.0
 
 Use matching Core endpoints and Suite companions for the opt-in version 2 checks.
@@ -82,8 +93,9 @@ python3 Tools/Bundle.py TrustInit --trust-directory /Private/SuitePackageTrust \
 
 The state contract is fixed by this product; an arbitrary operator-supplied label
 cannot mark incompatible state as compatible. Core uses a different contract and
-trust directory. The current Linux release is version 0.10.0. Signed update sequences identify exact
-builds and cannot move backwards. Earlier development packages do not become
+trust directory. The published Linux release is version 0.10.0; the source
+candidate is 0.10.1. Signed update sequences identify exact builds and cannot move
+backwards. Earlier development packages do not become
 release packages when a version label changes. Use independently accepted release
 trust and the signed target for the new package; retain existing state and floors.
 

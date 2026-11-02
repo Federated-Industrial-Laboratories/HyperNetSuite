@@ -39,6 +39,10 @@ Version 0.9.1 fixes overlapping stream and sealed-page permission scopes.
 Read [the migration guide](Documentation/PermissionScopes.md) before upgrading;
 network-wide grants no longer authorise those effects.
 
+The 0.10.1 source candidate adds optional consumed-read cleanup and preserves
+the original application preparation deadline. See the
+[release candidate notes](Documentation/ReleaseNotes.md) for compatibility and scope.
+
 ## Features
 
 | Capability | What you can do |
@@ -135,8 +139,8 @@ the client never silently selects a direct connection.
 
 ## Documentation
 
-The [release notes](Documentation/ReleaseNotes.md) describe the 0.10.0 scope and
-known limits. The [documentation index](Documentation/ReadMe.md) separates reader and author
+The [release notes](Documentation/ReleaseNotes.md) describe the 0.10.1 candidate,
+earlier release scope and known limits. The [documentation index](Documentation/ReadMe.md) separates reader and author
 guides, operator workflows and protocol references. Start with
 [installation](Documentation/Installation.md), [client use](Documentation/Usage.md)
 and the viewer of your choice.

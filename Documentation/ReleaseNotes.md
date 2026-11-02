@@ -2,6 +2,50 @@
 
 [Documentation](ReadMe.md) | [Project](../ReadMe.md)
 
+## Linux 0.10.1 release candidate
+
+Version 0.10.1 completes optional consumed-read cleanup in native Suite clients
+and preserves the original application preparation deadline. This source candidate
+is not a published package. Package signing, installed qualification and native
+load results must identify their exact artifacts separately from earlier releases.
+
+### Changes and compatibility
+
+- Policy-context and domain reads acknowledge only successful verified consumption,
+  including a verified refusal, after durable publication and the final one-use
+  check. Cleanup binds the exact original scope, read, statement, result and expiry.
+- Cleanup makes one nonblocking send through the existing supported authority
+  transport. At most one bounded receipt waits for correlation before the next
+  ordinary exchange. A failed cleanup cannot change the consumed outcome, retry
+  authority or create another session. Legacy peers receive no unsupported packet.
+- Relay admission, final-service readiness and application acceptance share the
+  caller's original preparation deadline. Successful handoff clears only that
+  operation bound; the separately authorised active-stream lifetime remains.
+- The Python application-stream SDK and package manifest advance together to
+  0.10.1. Existing IPC version 1 and version 2 contracts remain compatible.
+
+Use Suite 0.10.1 with Core 0.10.2 to release completed reads promptly. Older Core
+endpoints remain usable; unsupported cleanup is skipped and the original read
+expiry applies. Freshness, retained-read capacity and requester recovery rules do
+not change. See [authority transport](AuthorityConnector.md) and
+[application streams](ApplicationStreams.md) for the exact bounds.
+
+### Upgrade and qualification scope
+
+The target remains native Ubuntu 24.04 x86_64 with GNU libc 2.39. Source-bound
+checks cover actual Core collection removal after Suite consumption over admitted
+TLS, legacy reuse, delayed and misbound receipts, and preparation versus active
+stream lifetime. These checks do not establish application throughput, a
+concurrent-user target or another supported platform. Earlier native and graphics
+results retain their original source and artifact identities.
+
+Stop active client work before selecting the new executable and restart native
+companions. Preserve profiles, requester journals, private identities, package
+trust and all retained floors. The package contract remains
+`HyperNet080Client1`; no grant or private-state migration is introduced. Use an
+independently authenticated signed target for the exact package and preserve the
+existing product trust directory. See [upgrade and recovery](UpgradeRecovery.md).
+
 ## Linux 0.10.0 application context and authority checks
 
 Version 0.10.0 adds explicit current-authority observations and transport context

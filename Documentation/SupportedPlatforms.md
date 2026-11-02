@@ -2,7 +2,7 @@
 
 [Documentation](ReadMe.md) | [Project README](../ReadMe.md)
 
-The 0.10.0 release target remains native Ubuntu 24.04 x86_64 with GNU libc 2.39.
+The 0.10.1 candidate target remains native Ubuntu 24.04 x86_64 with GNU libc 2.39.
 Earlier platform and graphics observations retain their original binary and
 package identities. See the
 [release notes](ReleaseNotes.md) for the release changes and measured scope.
