@@ -215,6 +215,10 @@ enqueued: the lesser of the admitted idle allowance and five seconds. Queue wait
 consumes that budget. Expired cleanup starts no new authority work. A signed
 operation with an unknown outcome remains durable for subsequent exact recovery;
 local cleanup expiry does not retire an authoritative slot or reset its generation.
+After exact pending-work recovery and a deadline check, an unsigned application
+proof needs no remote lookup or Close: application admission was never submitted.
+A signed proof still requires current lookup and exact cleanup, including when
+authentication failed without a confirmed acceptance outcome.
 
 Companion stderr includes finite, content-free timing samples for the first64
 outgoing preparations and first16 queued cleanups per process. Each sample retains

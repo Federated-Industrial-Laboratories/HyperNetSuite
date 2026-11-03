@@ -401,7 +401,19 @@ impl Client {
         let budget = crate::authority_inspection::read_client::RetryBudget::new(deadline, || false);
         budget.check()?;
         self.preparation = Some(budget);
-        let result = self.resume_agent(targets).and_then(|()| self.close(proof));
+        let result = self.resume_agent(targets).and_then(|()| {
+            self.preparation
+                .as_ref()
+                .expect("cleanup budget installed")
+                .check()?;
+            // No application admission was submitted before the proof was signed.
+            // A signed proof can have an unknown outcome and still needs exact cleanup.
+            if proof.envelope.is_empty() {
+                Ok(())
+            } else {
+                self.close(proof)
+            }
+        });
         self.preparation = None;
         result
     }
@@ -474,3 +486,7 @@ pub(super) struct Plan {
     pub endpoint: crate::private_route_client::Endpoint,
     pub key: SigningKey,
 }
+
+#[cfg(test)]
+#[path = "../../Tests/Unit/Applications/ApplicationStreamCleanupTests.rs"]
+mod tests;
