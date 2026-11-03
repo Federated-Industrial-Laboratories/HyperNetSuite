@@ -17,6 +17,8 @@ use std::{
 };
 #[path = "ApplicationStreamChecks.rs"]
 mod checks;
+#[path = "ApplicationStreamQueue.rs"]
+mod queue;
 #[derive(Args)]
 pub struct Arguments {
     #[command(flatten)]
@@ -152,7 +154,7 @@ fn reserve_slot(slots: &mut BTreeSet<(Digest, u64)>, next: &mut u64, service: Di
 fn actor(
     mut client: Client,
     targets: Vec<Target>,
-    receiver: Receiver<Job>,
+    receiver: queue::Receiver,
     ready: SyncSender<Result<()>>,
 ) {
     let initial = client.resume_agent(&targets);
@@ -214,7 +216,7 @@ struct Incoming {
 #[derive(Clone)]
 struct Runtime {
     state: Arc<Mutex<State>>,
-    jobs: SyncSender<Job>,
+    jobs: queue::Sender,
     incoming: Arc<Mutex<Receiver<Incoming>>>,
     targets: Arc<Vec<Target>>,
     binding: Option<streams::local::Binding>,
@@ -754,7 +756,7 @@ pub fn run(a: Arguments) -> Result<()> {
     } else {
         None
     };
-    let (jobs, receiver) = mpsc::sync_channel(16);
+    let (jobs, receiver) = queue::channel();
     let (ready, started) = mpsc::sync_channel(1);
     let actor_targets = targets.clone();
     timing::start();

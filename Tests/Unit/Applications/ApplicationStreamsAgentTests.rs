@@ -78,7 +78,7 @@ fn full_v2_status_fits_one_frame_and_excludes_private_configuration() {
         errors: VecDeque::from([json!({"message":"PRIVATE_DIAGNOSTIC"})]),
         controls: 0,
     };
-    let (jobs, _) = mpsc::sync_channel(1);
+    let (jobs, _) = queue::channel();
     let (_, incoming) = mpsc::sync_channel(1);
     let runtime = Runtime {
         state: Arc::new(Mutex::new(State {

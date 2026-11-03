@@ -170,6 +170,15 @@ that profile exclusively to the running companion. Pending compatible reads,
 closures and its own exact voucher renewal resume before readiness; unrelated
 mutations require their original command. Never delete profile state to recover.
 
+Preparation and cleanup share one queue of at most16 waiting jobs. When both
+classes wait, the actor alternates one preparation and one cleanup, preserving
+arrival order within each class. An idle class does not delay the other. The
+active operation completes before selection; this is a bound in dispatch turns,
+not an elapsed-time guarantee. Every selected operation retains its original
+deadline and exact requester recovery. Unknown signed outcomes still resolve
+before new work, and selecting a preparation does not release a cleanup's local
+slot reservation or establish authoritative retirement.
+
 A read interrupted after its durable floor commits can leave older derived
 domain metadata in the local cache. When no ordinary operation is pending, the
 client discards that superseded domain context in memory and obtains a new

@@ -74,6 +74,22 @@ delay therefore consumes the application's own time budget. The signed
 observation is not rewritten.
 
 One pending check is allowed per connection, with four across the companion.
+The four-check bound includes queued and transmitted work until both its local
+caller and control exchange have released it. The authenticated control channel
+can transmit independent checks before their replies arrive. Each signed receipt
+must match the complete original request; replies may arrive out of order.
+Endpoints that reply sequentially remain compatible. Nonblocking framing retains
+at most four outgoing frames and one incoming frame, each within the existing
+16KiB frame limit; there is no second authority requester or cached permission.
+
+A transmitted check that is cancelled or reaches its original deadline without
+a verified reply discards the control generation, as does a malformed or misbound
+receipt or control-channel loss. All pending checks on that generation fail
+closed. A cancellation is sent only as a best effort before the original end
+and when it cannot interrupt a partial outgoing frame. A replacement connection
+uses a new control generation; a late old receipt cannot satisfy a new request.
+No receipt is delivered beyond its caller deadline. This provides independent
+progress within the original bounds, not a guarantee under channel loss.
 The checks channel consumes none of the existing16 application connection slots.
 An application must make a fresh check for each queued action, then enforce its
 own current policy and operation order before performing that action. A check

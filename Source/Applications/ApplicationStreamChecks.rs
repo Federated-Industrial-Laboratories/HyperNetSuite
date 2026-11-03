@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     io::{ErrorKind, Read, Write},
+    os::fd::AsRawFd,
     os::unix::net::UnixStream,
     sync::{
         Arc, Mutex,
@@ -26,6 +27,7 @@ struct Work {
     cancel: Arc<AtomicBool>,
     connection_cancel: Arc<AtomicBool>,
     reply: SyncSender<contract::Receipt>,
+    _pending: Arc<Pending>,
 }
 #[derive(Clone)]
 struct Session {
@@ -43,7 +45,7 @@ pub(super) struct Checks {
     binding: Binding,
     clock: Arc<Source>,
     instance: [u8; 32],
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
 }
 struct Attached<'a> {
     checks: &'a Checks,
@@ -61,17 +63,21 @@ impl Drop for Attached<'_> {
         }
     }
 }
-struct Pending<'a> {
-    checks: &'a Checks,
+struct Pending {
+    state: Arc<Mutex<State>>,
     id: String,
-    cancel: Arc<AtomicBool>,
 }
-impl Drop for Pending<'_> {
+impl Drop for Pending {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Release);
-        if let Ok(mut state) = self.checks.state.lock() {
+        if let Ok(mut state) = self.state.lock() {
             state.pending.remove(&self.id);
         }
+    }
+}
+struct CancelOnDrop(Arc<AtomicBool>);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 impl Checks {
@@ -80,12 +86,12 @@ impl Checks {
             binding,
             clock,
             instance: crate::route_protocol::random()?,
-            state: Mutex::new(State {
+            state: Arc::new(Mutex::new(State {
                 generation: 0,
                 attached: false,
                 session: None,
                 pending: BTreeSet::new(),
-            }),
+            })),
         })
     }
     pub fn status(&self) -> Value {
@@ -163,7 +169,9 @@ impl Checks {
             .lock()
             .map_err(|_| anyhow::anyhow!("check channel state failed"))?
             .session = Some(session.clone());
-        self.exchange(&mut stream, &session, receiver)
+        let result = self.exchange(&mut stream, &session, receiver);
+        session.alive.store(false, Ordering::Release);
+        result
     }
     fn exchange(
         &self,
@@ -171,61 +179,96 @@ impl Checks {
         session: &Session,
         receiver: Receiver<Work>,
     ) -> Result<()> {
+        stream.set_nonblocking(true)?;
+        let mut pending: Vec<Flight> = Vec::with_capacity(contract::MAXIMUM_PENDING);
+        let mut input = FrameInput::default();
         while session.alive.load(Ordering::Acquire) && !crate::private_route_client::cancelled() {
-            ensure!(!ipc::disconnected(stream)?, "check endpoint disconnected");
-            let work = match receiver.recv_timeout(Duration::from_millis(50)) {
-                Ok(w) => w,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(e) => return Err(e.into()),
-            };
-            let cancelled = || {
-                !session.alive.load(Ordering::Acquire)
-                    || work.cancel.load(Ordering::Acquire)
-                    || work.connection_cancel.load(Ordering::Acquire)
-                    || crate::private_route_client::cancelled()
-            };
-            if cancelled() || boot_time_ms()? >= work.request.caller_deadline_boot_ms {
-                continue;
-            }
-            ensure!(
-                self.clock.verified_boot()? == session.ready.challenge.kernel_boot,
-                "check clock boot changed"
-            );
-            write_bounded(
-                stream,
-                &contract::encode(&work.request)?,
-                work.request.caller_deadline_boot_ms,
-                &cancelled,
-            )?;
-            let bytes = match read_bounded(stream, work.request.caller_deadline_boot_ms, &cancelled)
-            {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    // Cancel exactly this correlation and discard the channel; a late receipt is never reused.
+            let now = boot_time_ms()?;
+            if let Some(stale) = pending.iter().find(|flight| {
+                flight.cancelled() || now >= flight.work.request.caller_deadline_boot_ms
+            }) {
+                // Keep the existing fail-closed generation boundary. A partial
+                // request frame cannot be followed by another record safely.
+                if now < stale.work.request.caller_deadline_boot_ms
+                    && pending.iter().all(Flight::sent)
+                {
                     let cancel = contract::Cancel {
-                        request: work.request.clone(),
+                        request: stale.work.request.clone(),
                     };
-                    let _ = write_bounded(
-                        stream,
-                        &contract::encode(&cancel)?,
-                        work.request.caller_deadline_boot_ms,
-                        &|| false,
-                    );
-                    return Err(e);
+                    let _ = stream.write(&frame(&contract::encode(&cancel)?)?);
                 }
-            };
-            let receipt: contract::Receipt = contract::verify(&bytes, &self.binding)?;
-            ensure!(
-                receipt.request == work.request,
-                "check receipt correlation differs"
-            );
-            ensure!(
-                self.clock.verified_boot()? == session.ready.challenge.kernel_boot,
-                "check receipt clock boot changed"
-            );
-            if !cancelled() {
-                let _ = work.reply.try_send(receipt);
+                anyhow::bail!(
+                    "application check cancelled or expired; control generation discarded"
+                );
             }
+            while pending.len() < contract::MAXIMUM_PENDING {
+                let work = match receiver.try_recv() {
+                    Ok(work) => work,
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(error) => return Err(error.into()),
+                };
+                if work.cancel.load(Ordering::Acquire)
+                    || work.connection_cancel.load(Ordering::Acquire)
+                    || boot_time_ms()? >= work.request.caller_deadline_boot_ms
+                {
+                    continue;
+                }
+                ensure!(
+                    self.clock.verified_boot()? == session.ready.challenge.kernel_boot,
+                    "check clock boot changed"
+                );
+                let bytes = frame(&contract::encode(&work.request)?)?;
+                pending.push(Flight {
+                    work,
+                    bytes,
+                    written: 0,
+                });
+            }
+            for flight in &mut pending {
+                if flight.sent() {
+                    continue;
+                }
+                if flight.cancelled()
+                    || boot_time_ms()? >= flight.work.request.caller_deadline_boot_ms
+                {
+                    break;
+                }
+                match stream.write(&flight.bytes[flight.written..]) {
+                    Ok(0) => anyhow::bail!("application check channel closed"),
+                    Ok(count) => flight.written += count,
+                    Err(error) if retry_io(&error) => break,
+                    Err(error) => return Err(error.into()),
+                }
+                if !flight.sent() {
+                    break;
+                }
+            }
+            if let Some(bytes) = input.read(stream)? {
+                let receipt: contract::Receipt = contract::verify(&bytes, &self.binding)?;
+                let index = pending
+                    .iter()
+                    .position(|flight| flight.sent() && receipt.request == flight.work.request)
+                    .context("check receipt correlation differs")?;
+                ensure!(
+                    self.clock.verified_boot()? == session.ready.challenge.kernel_boot,
+                    "check receipt clock boot changed"
+                );
+                let flight = pending.remove(index);
+                if session.alive.load(Ordering::Acquire)
+                    && !flight.cancelled()
+                    && boot_time_ms()? < flight.work.request.caller_deadline_boot_ms
+                {
+                    let _ = flight.work.reply.try_send(receipt);
+                }
+            }
+            wait_io(
+                stream,
+                pending.iter().any(|flight| !flight.sent()),
+                pending
+                    .iter()
+                    .map(|flight| flight.work.request.caller_deadline_boot_ms)
+                    .min(),
+            )?;
         }
         Ok(())
     }
@@ -256,11 +299,11 @@ impl Checks {
             state.pending.insert(input.id.into());
             session
         };
-        let _pending = Pending {
-            checks: self,
+        let pending = Arc::new(Pending {
+            state: self.state.clone(),
             id: input.id.into(),
-            cancel: cancel.clone(),
-        };
+        });
+        let _cancel = CancelOnDrop(cancel.clone());
         if self.clock.verified_boot().ok().as_deref() != Some(&session.ready.challenge.kernel_boot)
         {
             return Ok(input.result("unavailable"));
@@ -286,28 +329,36 @@ impl Checks {
                 cancel,
                 connection_cancel: connection_cancel.clone(),
                 reply,
+                _pending: pending.clone(),
             })
             .is_err()
         {
             return Ok(input.result("unavailable"));
         }
-        loop {
+        let ended = || -> Result<Option<&'static str>> {
             if connection_cancel.load(Ordering::Acquire) || ipc::disconnected(caller)? {
-                return Ok(input.result("notActive"));
+                return Ok(Some("notActive"));
             }
             if boot_time_ms()? >= input.deadline {
-                return Ok(input.result("expired"));
+                return Ok(Some("expired"));
             }
             if !session.alive.load(Ordering::Acquire) {
-                return Ok(input.result("unavailable"));
+                return Ok(Some("unavailable"));
             }
-            match receiver.recv_timeout(Duration::from_millis(20)) {
+            Ok(None)
+        };
+        loop {
+            if let Some(disposition) = ended()? {
+                return Ok(input.result(disposition));
+            }
+            let received = receiver.recv_timeout(Duration::from_millis(20));
+            // A cancelled exchange can drop its reply sender while this caller
+            // waits. Classify the original context before any receive outcome.
+            if let Some(disposition) = ended()? {
+                return Ok(input.result(disposition));
+            }
+            match received {
                 Ok(receipt) => {
-                    if connection_cancel.load(Ordering::Acquire)
-                        || !session.alive.load(Ordering::Acquire)
-                    {
-                        return Ok(input.result("notActive"));
-                    }
                     if receipt.authority.is_some() && boot_time_ms()? >= receipt.not_after_boot_ms {
                         return Ok(input.result("expired"));
                     }
@@ -337,15 +388,103 @@ impl Checks {
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Ok(input.result(if boot_time_ms()? >= input.deadline {
-                        "expired"
-                    } else {
-                        "unavailable"
-                    }));
+                    return Ok(input.result("unavailable"));
                 }
             }
         }
     }
+}
+struct Flight {
+    work: Work,
+    bytes: Vec<u8>,
+    written: usize,
+}
+impl Flight {
+    fn sent(&self) -> bool {
+        self.written == self.bytes.len()
+    }
+    fn cancelled(&self) -> bool {
+        self.work.cancel.load(Ordering::Acquire)
+            || self.work.connection_cancel.load(Ordering::Acquire)
+            || crate::private_route_client::cancelled()
+    }
+}
+fn frame(bytes: &[u8]) -> Result<Vec<u8>> {
+    ensure!(
+        !bytes.is_empty() && bytes.len() <= contract::MAXIMUM_FRAME,
+        "application check frame exceeds its bound"
+    );
+    let mut frame = Vec::with_capacity(bytes.len() + 4);
+    frame.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    frame.extend_from_slice(bytes);
+    Ok(frame)
+}
+fn retry_io(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+    )
+}
+
+#[derive(Default)]
+struct FrameInput {
+    header: [u8; 4],
+    header_used: usize,
+    body: Vec<u8>,
+    body_used: usize,
+}
+impl FrameInput {
+    // At most two nonblocking reads per turn; fragmented frames cannot hold dispatch.
+    fn read(&mut self, stream: &mut UnixStream) -> Result<Option<Vec<u8>>> {
+        if self.header_used < self.header.len() {
+            match stream.read(&mut self.header[self.header_used..]) {
+                Ok(0) => anyhow::bail!("application check channel closed"),
+                Ok(count) => self.header_used += count,
+                Err(error) if retry_io(&error) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            }
+            if self.header_used != self.header.len() {
+                return Ok(None);
+            }
+            let length = u32::from_be_bytes(self.header) as usize;
+            ensure!(
+                length > 0 && length <= contract::MAXIMUM_FRAME,
+                "application check frame exceeds its bound"
+            );
+            self.body = vec![0; length];
+        }
+        match stream.read(&mut self.body[self.body_used..]) {
+            Ok(0) => anyhow::bail!("application check channel closed"),
+            Ok(count) => self.body_used += count,
+            Err(error) if retry_io(&error) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        if self.body_used != self.body.len() {
+            return Ok(None);
+        }
+        self.header_used = 0;
+        self.body_used = 0;
+        Ok(Some(std::mem::take(&mut self.body)))
+    }
+}
+fn wait_io(stream: &UnixStream, writable: bool, deadline: Option<u64>) -> Result<()> {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN | if writable { libc::POLLOUT } else { 0 },
+        revents: 0,
+    };
+    let timeout = match deadline {
+        Some(deadline) => deadline.saturating_sub(boot_time_ms()?).min(5) as i32,
+        None => 5,
+    };
+    // The descriptor remains borrowed and the one pollfd is valid for this call.
+    if unsafe { libc::poll(&mut descriptor, 1, timeout) } < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
+    Ok(())
 }
 pub(super) struct Input<'a> {
     pub id: &'a str,
