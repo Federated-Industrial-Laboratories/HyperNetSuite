@@ -192,6 +192,15 @@ A successfully consumed result may retain its admitted authority connection afte
 clearing the completed call's bound. The connection's original lifetime, byte
 allowance and current-authority requirements remain unchanged.
 
+Each configured target retains one local slot-selection cursor, with at most16
+cursors. A successful plan reservation advances to the following slot; a failed
+plan leaves the cursor unchanged. Each plan examines at most16 slots, wrapping
+once and skipping locally reserved slots. Every remaining candidate still requires
+a fresh certified lookup before selection. The cursor retains no permission or
+retirement evidence. A failed reply releases its local reservation without
+rewinding the cursor. Exhausting all candidates still reports `Capacity` within
+the original preparation budget.
+
 Best-effort caller cleanup has one deadline captured when its completion is
 enqueued: the lesser of the admitted idle allowance and five seconds. Queue wait
 consumes that budget. Expired cleanup starts no new authority work. A signed

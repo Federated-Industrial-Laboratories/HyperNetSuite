@@ -145,6 +145,10 @@ enum Job {
     ),
     Done(Box<streams::Proof>, u64, timing::Timing),
 }
+fn reserve_slot(slots: &mut BTreeSet<(Digest, u64)>, next: &mut u64, service: Digest, slot: u64) {
+    slots.insert((service, slot));
+    *next = (slot + 1) % streams::SLOTS;
+}
 fn actor(
     mut client: Client,
     targets: Vec<Target>,
@@ -158,18 +162,27 @@ fn actor(
         return;
     }
     let mut slots = BTreeSet::new();
+    let mut next_slots = targets
+        .iter()
+        .map(|target| (target.service.clone(), 0))
+        .collect::<BTreeMap<_, _>>();
     while let Ok(job) = receiver.recv() {
         match job {
             Job::Plan(target, budget, timing, reply) => {
                 timing.event("Dequeue", "Complete");
                 let result = if crate::private_route_client::cancelled() {
                     Err(anyhow::anyhow!("application agent is stopping"))
+                } else if let Some(start) = next_slots.get(&target.service) {
+                    client.plan(&target, &slots, *start, budget, &targets, &timing)
                 } else {
-                    client.plan(&target, &slots, budget, &targets, &timing)
+                    Err(anyhow::anyhow!("application target is not configured"))
                 };
                 timing.event("Plan", if result.is_ok() { "Complete" } else { "Failed" });
                 if let Ok(plan) = &result {
-                    slots.insert((plan.proof.service.id, plan.proof.slot));
+                    let next = next_slots
+                        .get_mut(&target.service)
+                        .expect("successful plan has a configured target");
+                    reserve_slot(&mut slots, next, plan.proof.service.id, plan.proof.slot);
                 }
                 if let Err(mpsc::SendError(Ok(plan))) = reply.send(result) {
                     slots.remove(&(plan.proof.service.id, plan.proof.slot));
@@ -976,3 +989,7 @@ fn status_privacy(value: Value) -> Value {
 #[cfg(test)]
 #[path = "../../Tests/Unit/Applications/ApplicationStreamsAgentTests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../Tests/Unit/Applications/ApplicationStreamSlotTests.rs"]
+mod slot_tests;

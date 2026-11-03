@@ -248,6 +248,7 @@ impl Client {
         &mut self,
         target: &Target,
         used: &BTreeSet<(Digest, u64)>,
+        start_slot: u64,
         budget: crate::authority_inspection::read_client::RetryBudget,
         targets: &[Target],
         timing: &timing::Timing,
@@ -256,7 +257,7 @@ impl Client {
         self.preparation = Some(budget);
         let result = timing
             .run("Resume", || self.resume_agent(targets))
-            .and_then(|()| self.plan_inner(target, used, timing))
+            .and_then(|()| self.plan_inner(target, used, start_slot, timing))
             .and_then(|plan| {
                 self.preparation
                     .as_ref()
@@ -271,15 +272,13 @@ impl Client {
         &mut self,
         target: &Target,
         used: &BTreeSet<(Digest, u64)>,
+        start_slot: u64,
         timing: &timing::Timing,
     ) -> Result<Plan> {
         let service = id(&target.service)?;
         let endpoint = timing.run("Endpoint", || self.endpoint(target))?;
         let grant = self.grant(&target.grant)?;
-        for slot in 0..streams::SLOTS {
-            if used.contains(&(service, slot)) {
-                continue;
-            }
+        select_slot(service, used, start_slot, |slot| {
             let result = timing.run("SlotLookup", || {
                 self.stream(
                     Some(grant.clone()),
@@ -320,7 +319,7 @@ impl Client {
                     endpoint.route.incarnation,
                 )?;
                 if !old_session.retired && now < old_session.proof.expires {
-                    continue;
+                    return Ok(None);
                 }
                 old.reference
                     .generation
@@ -382,17 +381,16 @@ impl Client {
                         "notAfterBootMs":result.deadline_boot_ms
                     })
                 });
-            return Ok(Plan {
+            Ok(Some(Plan {
                 endpoint_provenance,
                 proof,
                 binding: registered.registration.binding,
                 owner: registered.registration.owner,
                 endpoint_key: route_service.profile.service,
-                endpoint,
+                endpoint: endpoint.clone(),
                 key: self.key.clone(),
-            });
-        }
-        anyhow::bail!(Capacity::Slots)
+            }))
+        })
     }
     pub fn cleanup(
         &mut self,
@@ -436,6 +434,23 @@ impl Client {
         }
         Ok(())
     }
+}
+// Ordering is local only: every unreserved candidate must complete a fresh lookup.
+pub(super) fn select_slot<T>(
+    service: Digest,
+    used: &BTreeSet<(Digest, u64)>,
+    start: u64,
+    mut lookup: impl FnMut(u64) -> Result<Option<T>>,
+) -> Result<T> {
+    for offset in 0..streams::SLOTS {
+        let slot = (start % streams::SLOTS + offset) % streams::SLOTS;
+        if !used.contains(&(service, slot))
+            && let Some(plan) = lookup(slot)?
+        {
+            return Ok(plan);
+        }
+    }
+    anyhow::bail!(Capacity::Slots)
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
