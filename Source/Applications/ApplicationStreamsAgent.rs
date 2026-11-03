@@ -112,9 +112,51 @@ fn error(state: &Arc<Mutex<State>>, id: Option<&str>, message: &str) {
         }));
     }
 }
+#[derive(Debug)]
+enum PreparationTransport {
+    Closed,
+    Timeout,
+}
+impl std::fmt::Display for PreparationTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Closed => "application preparation connection closed",
+            Self::Timeout => "application preparation connection timed out",
+        })
+    }
+}
+impl std::error::Error for PreparationTransport {}
+fn preparation_transport(error: anyhow::Error) -> anyhow::Error {
+    // Only connection work calls this classifier. An outer validation I/O error
+    // must not expose an inner transport error as permission to retry.
+    let kind = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .map(std::io::Error::kind);
+    let transport = match kind {
+        Some(
+            ErrorKind::UnexpectedEof
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected,
+        ) => PreparationTransport::Closed,
+        Some(ErrorKind::TimedOut) => PreparationTransport::Timeout,
+        _ => return error,
+    };
+    error.context(transport)
+}
 fn preparation_failure(error: &anyhow::Error, version: u64) -> Value {
     let (code, message) = if error.is::<Capacity>() {
         ("Capacity", "local application capacity exhausted")
+    } else if let Some(transport) = error.downcast_ref::<PreparationTransport>() {
+        match transport {
+            PreparationTransport::Closed => ("Closed", "application preparation connection closed"),
+            PreparationTransport::Timeout => {
+                ("Timeout", "application preparation connection timed out")
+            }
+        }
     } else {
         ("Refused", "local request was invalid or unavailable")
     };
@@ -416,16 +458,19 @@ fn request(
                         preparation_deadline,
                         &cancelled,
                     )
+                    .map_err(preparation_transport)
                 })?;
                 let admitted = timing.run("Authenticate", || {
-                    session.authenticate_application_before(
-                        plan.endpoint.route.network,
-                        plan.endpoint.route.incarnation,
-                        &mut plan.proof,
-                        plan.binding,
-                        &plan.key,
-                        preparation_deadline,
-                    )
+                    session
+                        .authenticate_application_before(
+                            plan.endpoint.route.network,
+                            plan.endpoint.route.incarnation,
+                            &mut plan.proof,
+                            plan.binding,
+                            &plan.key,
+                            preparation_deadline,
+                        )
+                        .map_err(preparation_transport)
                 })?;
                 let peer = json!({"network":hex::encode(plan.endpoint.route.network),"incarnation":hex::encode(plan.endpoint.route.incarnation),"service":service,"protocol":plan.proof.protocol,"owner":hex::encode(plan.owner),"endpoint":hex::encode(plan.endpoint_key),"route":hex::encode(plan.endpoint.route.destination.service),"session":hex::encode(admitted.id),"generation":admitted.generation,"expiresMs":plan.proof.expires,"maximumBytes":plan.proof.limits.bytes,"durationMs":plan.proof.limits.duration_ms,"idleMs":plan.proof.limits.idle_ms});
                 annotate(&guard, peer.clone())?;

@@ -261,9 +261,16 @@ replays application requests. Applications decide how to resume their own work.
 
 Exhausted local connections, a full preparation queue and unavailable reusable
 session slots return the existing `Capacity` IPC code. Clients can retry within
-their original bounded setup policy after capacity is released. Other invalid or
-unavailable requests remain `Refused`; error text is not a permission decision.
-Version2 responses keep private diagnostic details out of the application reply.
+their original bounded setup policy after capacity is released. During route or
+application authentication, typed connection EOF, reset, refused connection,
+broken pipe, aborted and not-connected errors return `Closed`; typed connection
+timeouts return `Timeout`.
+These codes permit a fresh preparation only within the client's original bounded
+setup policy. They do not renew a deadline or authorise replay of application work.
+Certificate, identity, protocol, configuration and authority failures remain
+`Refused`; error text is not a permission decision. Unknown close outcomes still
+require exact recovery before another authority request. Version2 responses keep
+private diagnostic details out of the application reply.
 
 The endpoint completes retirement after a caller closes its stream. Core 0.10.2
 uses the endpoint-only `StreamRetirementContext` read to obtain the current
