@@ -39,8 +39,9 @@ Version 0.9.1 fixes overlapping stream and sealed-page permission scopes.
 Read [the migration guide](Documentation/PermissionScopes.md) before upgrading;
 network-wide grants no longer authorise those effects.
 
-The 0.10.1 source candidate adds optional consumed-read cleanup and preserves
-the original application preparation deadline. See the
+The 0.10.1 source candidate adds optional consumed-read cleanup, bounded concurrent
+authority checks and fair preparation and cleanup scheduling. Original operation
+deadlines and exact-outcome recovery remain enforced. See the
 [release candidate notes](Documentation/ReleaseNotes.md) for compatibility and scope.
 
 ## Features

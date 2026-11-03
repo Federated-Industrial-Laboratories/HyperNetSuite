@@ -11,6 +11,19 @@ load results must identify their exact artifacts separately from earlier release
 
 ### Changes and compatibility
 
+- The companion pipelines at most four exactly correlated authority checks,
+  with one pending check per connection. Cancellation and original deadlines
+  remain enforced. Preparation and cleanup alternate within one queue of at
+  most 16 waiting jobs; unknown signed outcomes still require exact recovery.
+- Typed connection closure during route preparation or final-service
+  authentication returns `Closed`; a typed timeout returns `Timeout`. Clients
+  can distinguish temporary connection failure from permanent `Refused`
+  outcomes. Certificate, protocol, identity and permission failures remain
+  refusals. Error responses do not disclose the underlying private cause.
+- Cleanup of an unsigned stream proof completes after exact requester recovery
+  and the original deadline check, without a new remote slot lookup or Close.
+  Such a proof has not reached admission. Signed or ambiguous outcomes retain
+  the current lookup and exact Close recovery path.
 - Policy-context and domain reads acknowledge only successful verified consumption,
   including a verified refusal, after durable publication and the final one-use
   check. Cleanup binds the exact original scope, read, statement, result and expiry.
