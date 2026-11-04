@@ -104,6 +104,161 @@ fn reference() -> VersionRef {
     }
 }
 #[test]
+fn accept_hands_off_unknown_privacy_before_any_explicit_action_check() {
+    use super::super::{Incoming, Runtime, State as AgentState, queue, request, reserve};
+    use std::collections::{BTreeMap, VecDeque};
+    use std::sync::atomic::AtomicU64;
+
+    let fixture = Fixture::new();
+    let (mut endpoint, control_worker, ready) = fixture.attach();
+    let state = Arc::new(Mutex::new(AgentState {
+        active: BTreeMap::new(),
+        errors: VecDeque::new(),
+        controls: 0,
+    }));
+    let (guard, cancel) = reserve(&state, "incoming", "service".into()).unwrap();
+    let id = guard.id.clone();
+    let context = json!({"principal":hex::encode([21;32]),"session":hex::encode(reference().id),"generation":reference().generation});
+    {
+        let mut state = state.lock().unwrap();
+        let active = state.active.get_mut(&id).unwrap();
+        active.reference = Some(reference());
+        active.info.peer = context.clone();
+    }
+    let (jobs, _jobs) = queue::channel();
+    let (incoming, receiver) = mpsc::sync_channel(1);
+    let runtime = Runtime {
+        state: state.clone(),
+        jobs,
+        incoming: Arc::new(Mutex::new(receiver)),
+        targets: Arc::new(Vec::new()),
+        binding: Some(fixture.checks.binding.clone()),
+        clock: fixture.checks.clock.clone(),
+        started: Instant::now(),
+        profile: Value::Null,
+        checks: Some(fixture.checks.clone()),
+    };
+    let (forwarded, mut remote) = UnixStream::pair().unwrap();
+    let (acknowledged, acknowledgement) = mpsc::sync_channel(1);
+    incoming
+        .send(Incoming {
+            stream: forwarded,
+            context: context.clone(),
+            bytes: 1024,
+            duration: Duration::from_secs(5),
+            idle: Duration::from_secs(5),
+            guard,
+            cancel,
+            queued: Instant::now(),
+            ready: acknowledgement,
+        })
+        .unwrap();
+    acknowledged.send(Ok(())).unwrap();
+    let (companion, mut caller) = UnixStream::pair().unwrap();
+    caller
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    remote
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let accepting = runtime.clone();
+    let accept_worker = std::thread::spawn(move || {
+        request(
+            companion,
+            accepting,
+            &AtomicBool::new(false),
+            &AtomicU64::new(1),
+        )
+    });
+    ipc::write_json(
+        &mut caller,
+        &json!({"version":2,"action":"accept","timeoutMs":500}),
+    )
+    .unwrap();
+    let accepted: Value = serde_json::from_slice(&ipc::read_frame(&mut caller).unwrap()).unwrap();
+    assert_eq!(accepted["ok"], true);
+    assert_eq!(accepted["id"], id);
+    assert_eq!(accepted["peer"], context);
+    assert_eq!(accepted["checkAuthority"], true);
+    assert_eq!(accepted["privacy"], unknown_incoming());
+    assert!(state.lock().unwrap().active[&id].privacy.is_null());
+    caller.write_all(b"payload").unwrap();
+    let mut payload = [0; 7];
+    remote.read_exact(&mut payload).unwrap();
+    assert_eq!(&payload, b"payload");
+    // No reply is supplied on the ready checks channel until after handoff.
+    // Even a discarded arrival probe would leave its request here.
+    endpoint.set_nonblocking(true).unwrap();
+    assert_eq!(
+        endpoint.read(&mut [0; 1]).unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
+    endpoint.set_nonblocking(false).unwrap();
+
+    let (companion, mut check_caller) = UnixStream::pair().unwrap();
+    check_caller
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let checking = runtime.clone();
+    let check_worker = std::thread::spawn(move || {
+        request(
+            companion,
+            checking,
+            &AtomicBool::new(false),
+            &AtomicU64::new(1),
+        )
+    });
+    ipc::write_json(&mut check_caller, &json!({"version":2,"action":"checkAuthority","id":id,"nonce":hex::encode([10;32]),"actionDigest":hex::encode([11;32]),"timeoutMs":500})).unwrap();
+    let action: contract::Request =
+        contract::parse(&ipc::read_frame(&mut endpoint).unwrap()).unwrap();
+    assert_eq!(action.session, reference());
+    assert_eq!(action.local_connection_id, id);
+    assert_eq!(action.nonce, [10; 32]);
+    assert_eq!(action.action_digest, [11; 32]);
+    let receipt = contract::Receipt {
+        not_after_boot_ms: action.caller_deadline_boot_ms,
+        request: action,
+        disposition: contract::Disposition::Denied,
+        authority: Some(contract::Authority {
+            network: [2; 32],
+            incarnation: [3; 32],
+            configuration: [12; 32],
+            epoch: 1,
+            height: 9,
+            state: [13; 32],
+            statement_digest: [14; 32],
+            evaluated_at_ms: 10000,
+            expires_at_ms: 11000,
+            code: 1,
+        }),
+        privacy: ready.privacy,
+    };
+    ipc::write_frame(
+        &mut endpoint,
+        &contract::sign(&receipt, &fixture.checks.binding, &fixture.key).unwrap(),
+    )
+    .unwrap();
+    let checked: Value =
+        serde_json::from_slice(&ipc::read_frame(&mut check_caller).unwrap()).unwrap();
+    check_worker.join().unwrap().unwrap();
+    assert_eq!(checked["result"]["disposition"], "denied");
+    assert_eq!(checked["result"]["authority"]["code"], 1);
+    assert_eq!(
+        checked["result"]["privacy"]["provenance"],
+        "endpointAttestedArrival"
+    );
+    assert_eq!(
+        state.lock().unwrap().active[&id].privacy,
+        checked["result"]["privacy"]
+    );
+    drop(caller);
+    drop(remote);
+    accept_worker.join().unwrap().unwrap();
+    fixture.checks.stop();
+    drop(endpoint);
+    let _ = control_worker.join();
+}
+#[test]
 fn exact_signed_receipt_and_certified_denial_remain_distinct() {
     let fixture = Fixture::new();
     let (mut endpoint, worker, ready) = fixture.attach();

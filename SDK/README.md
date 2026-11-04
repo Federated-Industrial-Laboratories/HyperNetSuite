@@ -89,7 +89,12 @@ endpoint readiness and each incoming session's check capability are distinct.
 `Stream.privacy` is directional metadata, separate from the verified `peer`.
 Outgoing nested TLS, selected minimum settings and verified assurance are not
 interchangeable. Incoming public-mode relay transit remains unknown; attached
-arrival requires exact-session endpoint attestation.
+arrival requires exact-session endpoint attestation. Version2 `accept()` returns
+explicit unknown arrival provenance without making an optional authority query
+before payload handoff. The verified peer context remains available. Call
+`check_authority` for the next exact application action; its certified receipt
+also updates `Stream.privacy`. Neither acceptance nor retained privacy authorises
+an action, and no automatic background observation is started.
 
 `check_authority(stream, action_digest, timeout=1.0)` requires an open Stream
 created by that Agent and a nonzero32-byte digest. It generates a fresh nonce and

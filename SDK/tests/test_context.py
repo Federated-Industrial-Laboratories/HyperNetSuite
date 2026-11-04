@@ -42,6 +42,33 @@ class ContextTests(unittest.TestCase):
         self.responses.append(right)
         return value, left
 
+    def test_accept_keeps_unknown_privacy_until_explicit_exact_action_check(self):
+        unknown = {"direction": "incoming", "transport": "HyperNet", "transportAuthenticated": True,
+                   "relayPath": "unknown", "provenance": "unavailable",
+                   "physicalIndependenceVerified": False, "profileCurrentnessAsserted": False,
+                   "endToEndMessageEncryption": "applicationDefined"}
+        response = {"version": 2, "ok": True, "id": self.connection.id,
+                    "peer": self.connection.peer, "privacy": unknown, "checkAuthority": True}
+        with patch.object(self.agent, "_request", return_value=(response, self.left)) as request:
+            self.connection = self.agent.accept(timeout=1)
+            request.assert_called_once_with("accept", timeout=1)
+        self.assertEqual(self.connection.privacy, unknown)
+        self.assertTrue(self.connection.check_authority)
+        self.connection.sendall(b"payload")
+        self.assertEqual(self.right.recv(7), b"payload")
+
+        def denied(*args, **kwargs):
+            return self.response(*args, disposition="denied",
+                                 mutate=lambda r: r["result"]["privacy"].update(provenance="endpointAttestedArrival"),
+                                 **kwargs)
+        with patch.object(self.agent, "_request", side_effect=denied) as request:
+            result = self.agent.check_authority(self.connection, b"a"*32)
+            self.assertEqual(request.call_count, 1)
+        self.assertIs(result.disposition, Disposition.DENIED)
+        self.assertFalse(result.permitted)
+        self.assertEqual(result.action_digest, (b"a"*32).hex())
+        self.assertEqual(self.connection.privacy["provenance"], "endpointAttestedArrival")
+
     def test_denial_and_availability_are_typed_without_reading_messages(self):
         for disposition in Disposition:
             with self.subTest(disposition=disposition), patch.object(self.agent, "_request", side_effect=lambda *a, **kw: self.response(*a, disposition=disposition.value, **kw)):

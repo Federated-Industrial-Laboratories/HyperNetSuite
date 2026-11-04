@@ -135,11 +135,15 @@ current forever. `certifiedRelayProfile` remains null when no matching current
 relay-profile observation was established. The metadata contains no profile file
 paths, addresses or private key material.
 
-A version2 accept attempts one bounded exact-session metadata check to obtain
-arrival provenance. If that observation is unavailable, privacy remains unknown;
-payload compatibility does not depend on checks readiness. Later successful
-checks can supply the missing metadata. Status discards incoming provenance after
-an observed control-generation change. No historical sidecar is consulted.
+A version2 accept returns explicit unknown arrival provenance without issuing an
+optional authority check before payload handoff. Its verified peer context and
+bounded stream remain unchanged; checks readiness is a capability, not permission
+for an application action. Payload compatibility does not depend on that readiness.
+The application calls `checkAuthority` for its exact next action after handoff. A
+certified exact-session result also supplies arrival metadata; it does not grant
+a different action or replace application policy checks. Status discards incoming
+provenance after an observed control-generation change. No historical sidecar is
+consulted.
 
 `physicalIndependenceVerified` and `profileCurrentnessAsserted` are false unless a
 separately supported verifier establishes those properties. TLS transport

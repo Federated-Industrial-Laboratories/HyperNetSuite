@@ -561,50 +561,9 @@ fn request(
                             response["checkAuthority"] =
                                 json!(runtime.checks.as_ref().is_some_and(|c| c.ready()));
                             response["privacy"] = checks::unknown_incoming();
-                            // Bind arrival information to this exact signed session, never just a binding-wide ready record.
-                            let reference = runtime
-                                .state
-                                .lock()
-                                .map_err(|_| anyhow::anyhow!("agent state failed"))?
-                                .active
-                                .get(&incoming.guard.id)
-                                .and_then(|a| a.reference.clone());
-                            if let (Some(checks), Some(reference)) = (&runtime.checks, reference) {
-                                let started = crate::authority_challenge::boot_time_ms()?;
-                                let remaining = deadline
-                                    .saturating_duration_since(Instant::now())
-                                    .as_millis()
-                                    .min(5000)
-                                    as u64;
-                                if remaining >= 100 {
-                                    let input = checks::Input {
-                                        id: &incoming.guard.id,
-                                        nonce: crate::route_protocol::random()?,
-                                        action_digest: wire::digest(
-                                            b"ApplicationTransportObservation/v2",
-                                        ),
-                                        started,
-                                        deadline: started + remaining,
-                                    };
-                                    let result = checks.check(
-                                        &input,
-                                        reference,
-                                        incoming.cancel.clone(),
-                                        &stream,
-                                    )?;
-                                    if !result["result"]["privacy"].is_null() {
-                                        response["privacy"] = result["result"]["privacy"].clone();
-                                        if let Ok(mut state) = runtime.state.lock()
-                                            && let Some(a) =
-                                                state.active.get_mut(&incoming.guard.id)
-                                        {
-                                            a.privacy = response["privacy"].clone();
-                                            a.privacy_generation =
-                                                result["result"]["controlGeneration"].as_u64();
-                                        }
-                                    }
-                                }
-                            }
+                            // Arrival does not spend the caller's accept deadline on an
+                            // optional probe. Exact-session provenance comes from a
+                            // subsequent caller-triggered action check.
                         }
                         let duration = incoming.duration.saturating_sub(incoming.queued.elapsed());
                         ensure!(
