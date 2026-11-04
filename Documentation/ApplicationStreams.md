@@ -226,7 +226,14 @@ one process-local number and its original deadline. Enqueue, dequeue, exact
 recovery, endpoint preparation, each service-slot lookup, relay setup,
 application authentication and handoff have separate stages. Monotonic boot and
 elapsed milliseconds distinguish queue wait from operation cost; samples from
-different processes are not causal request identifiers. At most3152 records,
+different processes are not causal request identifiers. A failed outgoing
+recovery replaces its `Resume` failure record with `ResumeRefusalStatus` for
+requester refusal-status resolution, or `ResumeRetainedOperation` for loading,
+validating and recovering an exact pending ordinary operation. Its fixed `reason`
+reports a recognised typed expiry, unavailability or I/O category; other errors
+remain `Other`, including untyped authority refusals. These diagnostic categories
+do not classify an error as retryable or change the public preparation error.
+Successful recovery retains `Resume` begin and completion records. At most3152 records,
 each below256 bytes, are added per process. No account, session, target, message,
 signed payload or error text is recorded. Clock and output errors do not replace
 operation results. One separate writer has a nonblocking queue of64 records

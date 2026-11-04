@@ -14,6 +14,55 @@ static PLANS: AtomicU64 = AtomicU64::new(0);
 static CLEANUPS: AtomicU64 = AtomicU64::new(0);
 static OUTPUT: OnceLock<Option<SyncSender<Vec<u8>>>> = OnceLock::new();
 
+#[derive(Clone, Copy)]
+pub(super) enum ResumeStage {
+    RefusalStatus,
+    RetainedOperation,
+}
+impl ResumeStage {
+    fn phase(self) -> &'static str {
+        match self {
+            Self::RefusalStatus => "ResumeRefusalStatus",
+            Self::RetainedOperation => "ResumeRetainedOperation",
+        }
+    }
+}
+
+fn resume_failure_reason(error: &anyhow::Error) -> &'static str {
+    if error.is::<crate::authority_local_transport::RequestDeadlineExpired>()
+        || error.is::<crate::route_connector::OperationDeadlineExpired>()
+    {
+        "DeadlineExpired"
+    } else if error.is::<crate::authority_clock::ObservationExpired>() {
+        "ClockObservationExpired"
+    } else if error.is::<crate::authority_challenge::ChallengeExpired>() {
+        "ChallengeExpired"
+    } else if error.is::<crate::authority_challenge::ValidityExpired>() {
+        "ValidityExpired"
+    } else if error.is::<crate::authority_floor::ReadExpired>() {
+        "ReadExpired"
+    } else if error.is::<crate::authority_local_transport::ReadUnavailable>() {
+        "ReadUnavailable"
+    } else {
+        match error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<io::Error>())
+            .map(io::Error::kind)
+        {
+            Some(io::ErrorKind::TimedOut) => "IoTimeout",
+            Some(io::ErrorKind::UnexpectedEof) => "IoEof",
+            Some(io::ErrorKind::ConnectionReset) => "IoReset",
+            Some(io::ErrorKind::ConnectionAborted) => "IoAborted",
+            Some(io::ErrorKind::ConnectionRefused) => "IoRefused",
+            Some(io::ErrorKind::BrokenPipe) => "IoBrokenPipe",
+            Some(io::ErrorKind::NotConnected) => "IoNotConnected",
+            Some(io::ErrorKind::PermissionDenied) => "IoPermissionDenied",
+            Some(_) => "IoOther",
+            None => "Other",
+        }
+    }
+}
+
 pub(super) fn start() {
     OUTPUT.get_or_init(|| writer(io::stderr()));
 }
@@ -93,6 +142,40 @@ impl Timing {
         {
             let mut record = Vec::with_capacity(256);
             self.write(&mut record, boot, phase, state);
+            if let Some(Some(send)) = OUTPUT.get() {
+                submit(send, record);
+            }
+        }
+    }
+
+    fn write_resume_failure(
+        &self,
+        output: &mut impl Write,
+        boot: u64,
+        stage: ResumeStage,
+        error: &anyhow::Error,
+    ) {
+        if let Some(sample) = self.sample {
+            let _ = writeln!(
+                output,
+                "ApplicationTiming class={} sample={} phase={} state=Failed reason={} bootMs={} elapsedMs={} deadlineBootMs={}",
+                self.class,
+                sample,
+                stage.phase(),
+                resume_failure_reason(error),
+                boot,
+                self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                self.deadline,
+            );
+        }
+    }
+
+    pub fn resume_failure(&self, stage: ResumeStage, error: &anyhow::Error) {
+        if self.sample.is_some()
+            && let Ok(boot) = crate::authority_challenge::boot_time_ms()
+        {
+            let mut record = Vec::with_capacity(256);
+            self.write_resume_failure(&mut record, boot, stage, error);
             if let Some(Some(send)) = OUTPUT.get() {
                 submit(send, record);
             }

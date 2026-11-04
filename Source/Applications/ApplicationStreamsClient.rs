@@ -110,51 +110,72 @@ impl Client {
         Ok(())
     }
     pub fn resume_agent(&mut self, targets: &[Target]) -> Result<()> {
-        stream_client::resolve_refusal_local_with_budget(
-            &self.store.descriptor().clone(),
-            &self.socket,
-            &self.key,
-            &mut self.store,
-            &mut self.session,
-            || match &self.preparation {
-                Some(budget) => budget.clock(|| self.clock.health()),
-                None => self.clock.health(),
-            },
-            self.preparation.as_ref().map(|budget| budget.transport()),
-        )?;
-        if let Some(pending) = self.store.resume_ordinary()? {
-            let intent = Intent::from_signed(pending.signed())?;
-            ensure!(
-                intent.action == "AuthorityDomain",
-                "another exact requester operation needs resolution before starting the agent"
-            );
-            let operation = domain::Operation::parse(&intent)?;
-            let allowed = match &operation.command {
-                domain::Command::Stream(c) => {
-                    !c.mutation() || matches!(c, streams::Command::Close { .. })
-                }
-                domain::Command::Route(domain::routes::Command::Issue { id, .. }) => {
-                    targets.iter().any(|t| {
-                        crate::private_route_client::Endpoint::load(&t.route).is_ok_and(|e| {
-                            domain::Record::parse(
-                                &e.route.voucher,
-                                e.route.network,
-                                e.route.incarnation,
-                            )
-                            .is_ok_and(|r| r.reference.id == *id)
-                        })
-                    })
-                }
-                domain::Command::Route(c) => !c.mutation(),
-                _ => false,
-            };
-            ensure!(
-                allowed,
-                "another exact mutation needs resolution before starting the agent"
-            );
-            self.execute(operation.grant, operation.command)?;
+        self.resume_agent_observed(targets, None)
+    }
+    fn resume_agent_observed(
+        &mut self,
+        targets: &[Target],
+        timing: Option<&timing::Timing>,
+    ) -> Result<()> {
+        if let Some(timing) = timing {
+            timing.event("Resume", "Begin");
         }
-        Ok(())
+        let mut stage = timing::ResumeStage::RefusalStatus;
+        let result = (|| {
+            stream_client::resolve_refusal_local_with_budget(
+                &self.store.descriptor().clone(),
+                &self.socket,
+                &self.key,
+                &mut self.store,
+                &mut self.session,
+                || match &self.preparation {
+                    Some(budget) => budget.clock(|| self.clock.health()),
+                    None => self.clock.health(),
+                },
+                self.preparation.as_ref().map(|budget| budget.transport()),
+            )?;
+            stage = timing::ResumeStage::RetainedOperation;
+            if let Some(pending) = self.store.resume_ordinary()? {
+                let intent = Intent::from_signed(pending.signed())?;
+                ensure!(
+                    intent.action == "AuthorityDomain",
+                    "another exact requester operation needs resolution before starting the agent"
+                );
+                let operation = domain::Operation::parse(&intent)?;
+                let allowed = match &operation.command {
+                    domain::Command::Stream(c) => {
+                        !c.mutation() || matches!(c, streams::Command::Close { .. })
+                    }
+                    domain::Command::Route(domain::routes::Command::Issue { id, .. }) => {
+                        targets.iter().any(|t| {
+                            crate::private_route_client::Endpoint::load(&t.route).is_ok_and(|e| {
+                                domain::Record::parse(
+                                    &e.route.voucher,
+                                    e.route.network,
+                                    e.route.incarnation,
+                                )
+                                .is_ok_and(|r| r.reference.id == *id)
+                            })
+                        })
+                    }
+                    domain::Command::Route(c) => !c.mutation(),
+                    _ => false,
+                };
+                ensure!(
+                    allowed,
+                    "another exact mutation needs resolution before starting the agent"
+                );
+                self.execute(operation.grant, operation.command)?;
+            }
+            Ok(())
+        })();
+        if let Some(timing) = timing {
+            match &result {
+                Ok(()) => timing.event("Resume", "Complete"),
+                Err(error) => timing.resume_failure(stage, error),
+            }
+        }
+        result
     }
     fn endpoint(&mut self, target: &Target) -> Result<crate::private_route_client::Endpoint> {
         let mut endpoint = crate::private_route_client::Endpoint::load(&target.route)?;
@@ -255,8 +276,8 @@ impl Client {
     ) -> Result<Plan> {
         budget.check()?;
         self.preparation = Some(budget);
-        let result = timing
-            .run("Resume", || self.resume_agent(targets))
+        let result = self
+            .resume_agent_observed(targets, Some(timing))
             .and_then(|()| self.plan_inner(target, used, start_slot, timing))
             .and_then(|plan| {
                 self.preparation

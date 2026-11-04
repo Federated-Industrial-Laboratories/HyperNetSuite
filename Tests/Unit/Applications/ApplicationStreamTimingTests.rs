@@ -34,9 +34,100 @@ fn diagnostic_output_failure_does_not_replace_the_operation_result() {
     let counter = AtomicU64::new(0);
     let timing = Timing::new(&counter, 1, "Cleanup", 123);
     timing.write(&mut Failed, 100, "Work", "Failed");
+    timing.write_resume_failure(
+        &mut Failed,
+        100,
+        ResumeStage::RefusalStatus,
+        &anyhow::anyhow!("unreported private detail"),
+    );
     let capped = Timing::new(&counter, 1, "Cleanup", 123);
     assert_eq!(capped.run("Work", || Ok::<_, u8>(17)), Ok(17));
     assert_eq!(capped.run("Work", || Err::<u8, _>(19)), Err(19));
+}
+
+#[test]
+fn resume_failure_records_do_not_format_errors_and_obey_the_existing_cap() {
+    #[derive(Debug)]
+    struct PrivateError;
+    impl std::fmt::Display for PrivateError {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("diagnostics must not format private error text")
+        }
+    }
+    impl std::error::Error for PrivateError {}
+    let error = anyhow::Error::new(PrivateError).context("private target and signed payload");
+    let counter = AtomicU64::new(0);
+    let timing = Timing::new(&counter, 1, "Preparation", u64::MAX);
+    for (stage, phase) in [
+        (ResumeStage::RefusalStatus, "ResumeRefusalStatus"),
+        (ResumeStage::RetainedOperation, "ResumeRetainedOperation"),
+    ] {
+        let mut output = Vec::new();
+        timing.write_resume_failure(&mut output, u64::MAX, stage, &error);
+        let record = String::from_utf8(output).unwrap();
+        assert!(record.contains(&format!("phase={phase} state=Failed reason=Other ")));
+        assert!(!record.contains("private"));
+        assert!(!record.contains("payload"));
+        assert_eq!(record.lines().count(), 1);
+        assert!(record.len() < 256);
+    }
+    assert!(error.is::<PrivateError>());
+    let capped = Timing::new(&counter, 1, "Preparation", u64::MAX);
+    let mut output = Vec::new();
+    capped.write_resume_failure(
+        &mut output,
+        u64::MAX,
+        ResumeStage::RetainedOperation,
+        &error,
+    );
+    assert!(output.is_empty());
+    assert_eq!(counter.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn resume_reasons_use_typed_causes_without_interpreting_refusal_text() {
+    let cases = [
+        (
+            anyhow::Error::new(crate::authority_local_transport::RequestDeadlineExpired {
+                deadline: u64::MAX,
+            }),
+            "DeadlineExpired",
+        ),
+        (
+            anyhow::Error::new(crate::authority_clock::ObservationExpired),
+            "ClockObservationExpired",
+        ),
+        (
+            anyhow::Error::new(crate::authority_challenge::ChallengeExpired),
+            "ChallengeExpired",
+        ),
+        (
+            anyhow::Error::new(io::Error::new(io::ErrorKind::UnexpectedEof, "private path")),
+            "IoEof",
+        ),
+        (
+            anyhow::anyhow!("stream control refused with code 3"),
+            "Other",
+        ),
+    ];
+    let counter = AtomicU64::new(0);
+    let timing = Timing::new(&counter, 1, "Preparation", u64::MAX);
+    for (error, reason) in cases {
+        let error = error.context("private recovery context");
+        assert_eq!(resume_failure_reason(&error), reason);
+        let mut output = Vec::new();
+        timing.write_resume_failure(
+            &mut output,
+            u64::MAX,
+            ResumeStage::RetainedOperation,
+            &error,
+        );
+        let record = String::from_utf8(output).unwrap();
+        assert!(record.contains(&format!(" reason={reason} ")));
+        assert!(!record.contains("private"));
+        assert!(!record.contains("code 3"));
+        assert!(record.len() < 256);
+    }
 }
 
 #[test]
