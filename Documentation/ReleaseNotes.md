@@ -11,12 +11,13 @@ load results must identify their exact artifacts separately from earlier release
 
 ### Changes and compatibility
 
-- The native authority connector runs at most two independent exchanges through
+- The native authority connector runs at most four independent exchanges through
   separately admitted sessions to the same pinned authority endpoint. Its shared
   queue remains bounded at16 and each caller retains its original deadline.
-  Selected relay and authority policies must allow both connections alongside
+  Selected relay and authority policies must allow these connections alongside
   application traffic. Exact request/read binding, cleanup capability checks and
-  requester-floor rules remain authoritative.
+  requester-floor rules remain authoritative. Status persistence does not hold
+  the mutex used by active exchanges.
 - The companion pipelines at most four exactly correlated authority checks,
   with one pending check per connection. Cancellation and original deadlines
   remain enforced. Preparation and cleanup alternate within one queue of at

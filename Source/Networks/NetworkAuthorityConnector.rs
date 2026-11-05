@@ -21,7 +21,7 @@ use std::{
 #[path = "AuthorityConnectorPacket.rs"]
 pub(crate) mod packet;
 const DURATION_MS: u64 = 30000;
-const MAXIMUM_EXCHANGES: usize = 2;
+const MAXIMUM_EXCHANGES: usize = 4;
 const MAXIMUM_QUEUED: usize = 16;
 #[derive(Args)]
 pub struct Arguments {
@@ -92,6 +92,25 @@ struct Status {
     refused: u64,
     voucher_expires_ms: u64,
     last_error: Option<String>,
+}
+fn save_status(
+    state: &Mutex<Status>,
+    binding: &Binding,
+    persist: impl FnOnce(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let bytes = {
+        let state = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority connector status lock failed"))?;
+        serde_json::to_vec(
+            &json!({"format":"HyperNetAuthorityConnectorStatus/1","binding":binding,
+            "status":*state,"maximumQueuedConnections":MAXIMUM_QUEUED,
+            "maximumConcurrentExchanges":MAXIMUM_EXCHANGES,"maximumDurationMs":DURATION_MS,
+            "sampleBootMs":boot_time_ms()?}),
+        )?
+    };
+    // Status persistence must not hold the lock needed by active exchanges.
+    persist(&bytes)
 }
 struct Job {
     stream: UnixStream,
@@ -428,20 +447,9 @@ pub fn run(arguments: Arguments) -> Result<()> {
         })
         .collect();
     let save = || -> Result<()> {
-        let state = state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("authority connector status lock failed"))?;
-        files::atomic_at(
-            &root,
-            std::ffi::OsStr::new("Status.json"),
-            &serde_json::to_vec(
-                &json!({"format":"HyperNetAuthorityConnectorStatus/1","binding":binding,
-                "status":*state,"maximumQueuedConnections":MAXIMUM_QUEUED,
-                "maximumConcurrentExchanges":MAXIMUM_EXCHANGES,"maximumDurationMs":DURATION_MS,
-                "sampleBootMs":boot_time_ms()?}),
-            )?,
-            true,
-        )
+        save_status(&state, &binding, |bytes| {
+            files::atomic_at(&root, std::ffi::OsStr::new("Status.json"), bytes, true)
+        })
     };
     let outcome = (|| -> Result<()> {
         save()?;

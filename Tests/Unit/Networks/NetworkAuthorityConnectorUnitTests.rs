@@ -4,6 +4,63 @@ use super::*;
 use crate::{authority_proof::Scope, trust_wire::Value as V};
 
 #[test]
+fn blocked_status_persistence_does_not_block_exchange_state_updates() {
+    let binding = Binding {
+        format: "HyperNetAuthorityConnector/1".into(),
+        network: "01".repeat(32),
+        incarnation: "02".repeat(32),
+        bootstrap_digest: "03".repeat(32),
+        target_digest: "04".repeat(32),
+    };
+    let state = Mutex::new(Status {
+        running: true,
+        active: true,
+        active_exchanges: MAXIMUM_EXCHANGES,
+        completed: 7,
+        ..Status::default()
+    });
+    let (entered, snapshot) = mpsc::sync_channel(1);
+    let (release, blocked) = mpsc::sync_channel(1);
+    thread::scope(|scope| {
+        let state_ref = &state;
+        let binding_ref = &binding;
+        let writer = scope.spawn(move || {
+            save_status(state_ref, binding_ref, |bytes| {
+                entered.send(bytes.to_vec()).unwrap();
+                // The persistence boundary stays blocked until all worker-style
+                // updates finish. The timeout also bounds cleanup after a panic.
+                blocked.recv_timeout(Duration::from_secs(2))?;
+                anyhow::bail!("test persistence failure")
+            })
+        });
+        let bytes = snapshot.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..MAXIMUM_EXCHANGES {
+            let mut current = state.try_lock().expect("persistence retained status lock");
+            current.active_exchanges -= 1;
+            current.active = current.active_exchanges != 0;
+            current.completed += 1;
+        }
+        let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved["status"]["activeExchanges"], MAXIMUM_EXCHANGES);
+        assert_eq!(saved["status"]["completed"], 7);
+        assert_eq!(saved["binding"], serde_json::to_value(&binding).unwrap());
+        assert_eq!(saved["maximumQueuedConnections"], MAXIMUM_QUEUED);
+        assert_eq!(saved["maximumConcurrentExchanges"], MAXIMUM_EXCHANGES);
+        assert_eq!(saved["maximumDurationMs"], DURATION_MS);
+        assert!(saved["sampleBootMs"].as_u64().is_some());
+        release.send(()).unwrap();
+        assert_eq!(
+            writer.join().unwrap().unwrap_err().to_string(),
+            "test persistence failure"
+        );
+    });
+    let current = state.lock().unwrap();
+    assert_eq!(current.active_exchanges, 0);
+    assert!(!current.active);
+    assert_eq!(current.completed, 7 + MAXIMUM_EXCHANGES as u64);
+}
+
+#[test]
 fn blocked_exchange_releases_shared_intake_and_preserves_one_queue_bound() {
     let (sender, receiver) = mpsc::sync_channel(MAXIMUM_QUEUED);
     let receiver = Arc::new(Mutex::new(receiver));
@@ -24,17 +81,20 @@ fn blocked_exchange_releases_shared_intake_and_preserves_one_queue_bound() {
             thread::spawn(move || {
                 let job = next_job(&receiver).unwrap();
                 started.send(job.deadline).unwrap();
-                // Both exchanges must enter before either can complete.
+                // All four exchanges must enter before any can complete.
                 waiting
                     .lock()
                     .unwrap()
                     .recv_timeout(Duration::from_secs(2))
                     .unwrap();
+                let cancelled = ipc::disconnected(&job.stream)
+                    .unwrap()
+                    .then_some(job.deadline);
                 let mut deadlines = vec![job.deadline];
                 while let Some(job) = next_job(&receiver) {
                     deadlines.push(job.deadline);
                 }
-                deadlines
+                (deadlines, cancelled)
             })
         })
         .collect();
@@ -44,7 +104,7 @@ fn blocked_exchange_releases_shared_intake_and_preserves_one_queue_bound() {
         active.push(observed.recv_timeout(Duration::from_secs(2)).unwrap());
     }
     active.sort_unstable();
-    assert_eq!(active, vec![1, 2]);
+    assert_eq!(active, vec![1, 2, 3, 4]);
     for index in 0..MAXIMUM_QUEUED {
         let (stream, peer) = UnixStream::pair().unwrap();
         peers.push(peer);
@@ -63,16 +123,29 @@ fn blocked_exchange_releases_shared_intake_and_preserves_one_queue_bound() {
         }),
         Err(mpsc::TrySendError::Full(_))
     ));
+    // Cancellation belongs to this worker's caller, not the shared receiver or
+    // another worker's independently owned exchange.
+    drop(peers.remove(0));
     drop(sender);
     for _ in 0..MAXIMUM_EXCHANGES {
         release.send(()).unwrap();
     }
-    let mut deadlines: Vec<_> = workers
+    let completed: Vec<_> = workers
         .into_iter()
-        .flat_map(|worker| worker.join().unwrap())
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(completed.len(), MAXIMUM_EXCHANGES);
+    let cancelled: Vec<_> = completed
+        .iter()
+        .filter_map(|(_, cancelled)| *cancelled)
+        .collect();
+    assert_eq!(cancelled, vec![1]);
+    let mut deadlines: Vec<_> = completed
+        .into_iter()
+        .flat_map(|(deadlines, _)| deadlines)
         .collect();
     deadlines.sort_unstable();
-    let mut expected = vec![1, 2];
+    let mut expected = vec![1, 2, 3, 4];
     expected.extend(100..100 + MAXIMUM_QUEUED as u64);
     assert_eq!(deadlines, expected);
     assert!(next_job(&receiver).is_none());

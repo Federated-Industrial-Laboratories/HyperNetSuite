@@ -378,7 +378,7 @@ pause at the earlier deadline. Bytes already released cannot be recalled.
 Private routes establish authenticated transport and current endpoint readiness
 before an application challenge is issued. Submission, polling and history use
 independently admitted finite channels to the same pinned endpoint. The native
-connector has two exchange workers with one shared bounded queue. A continuation
+connector has four exchange workers with one shared bounded queue. A continuation
 retains its exact signed request/read identity and original deadline, and cannot
 move a volatile fresh-read collection to another replica. Transit and endpoint permission are revalidated with their
 own fresh challenges; they do not replace or extend application freshness.
