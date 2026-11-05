@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io::ErrorKind,
-    os::unix::net::UnixStream,
+    os::{fd::AsFd, unix::net::UnixStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -808,29 +808,29 @@ pub fn run(a: Arguments) -> Result<()> {
                 };
                 if !allowed {
                     ipc::failure(&mut stream, "Capacity", "local control capacity exhausted");
-                    continue;
-                }
-                let r = runtime.clone();
-                workers.push(thread::spawn(move || {
-                    let response = stream.try_clone();
-                    let handed_off = AtomicBool::new(false);
-                    let version = AtomicU64::new(1);
-                    let result = request(stream, r.clone(), &handed_off, &version);
-                    if let Err(e) = result
-                        && !handed_off.load(Ordering::Relaxed)
-                    {
-                        error(&r.state, None, &format!("local control preparation: {e:#}"));
-                        if let Ok(mut response) = response {
-                            let _ = ipc::write_json(
-                                &mut response,
-                                &preparation_failure(&e, version.load(Ordering::Relaxed)),
-                            );
+                } else {
+                    let r = runtime.clone();
+                    workers.push(thread::spawn(move || {
+                        let response = stream.try_clone();
+                        let handed_off = AtomicBool::new(false);
+                        let version = AtomicU64::new(1);
+                        let result = request(stream, r.clone(), &handed_off, &version);
+                        if let Err(e) = result
+                            && !handed_off.load(Ordering::Relaxed)
+                        {
+                            error(&r.state, None, &format!("local control preparation: {e:#}"));
+                            if let Ok(mut response) = response {
+                                let _ = ipc::write_json(
+                                    &mut response,
+                                    &preparation_failure(&e, version.load(Ordering::Relaxed)),
+                                );
+                            }
                         }
-                    }
-                    if let Ok(mut s) = r.state.lock() {
-                        s.controls = s.controls.saturating_sub(1);
-                    }
-                }));
+                        if let Ok(mut s) = r.state.lock() {
+                            s.controls = s.controls.saturating_sub(1);
+                        }
+                    }));
+                }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => return Err(e.into()),
@@ -888,7 +888,22 @@ pub fn run(a: Arguments) -> Result<()> {
                 index += 1;
             }
         }
-        thread::sleep(Duration::from_millis(10));
+        let mut readers = [listener.socket.as_fd(); 3];
+        let count = if let Some(helper) = &mapped_ingress {
+            readers[1] = helper.descriptor();
+            2
+        } else if let Some((payload, checks)) = &ingress {
+            readers[1] = payload.socket.as_fd();
+            readers[2] = checks.socket.as_fd();
+            3
+        } else {
+            1
+        };
+        ipc::wait_for_intake(
+            &readers[..count],
+            None,
+            Instant::now() + Duration::from_millis(10),
+        )?;
     }
     if let Ok(s) = state.lock() {
         for active in s.active.values() {

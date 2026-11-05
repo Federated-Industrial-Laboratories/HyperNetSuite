@@ -45,6 +45,14 @@ queued exchange has a30-second maximum and cannot extend Core's own deadline.
 Caller disconnection or process termination cancels an ordinary active exchange. Invalid,
 foreign-network and management packets close without reaching the authority.
 
+Intake waits on the mapped descriptor channel, so queued handoffs wake it without
+a fixed sleep. Each turn accepts at most one connection and retains the16-entry
+queue and serial exchange owner. Idle waiting is bounded by10ms before checking
+termination, worker state and the existing one-second status cadence. The mapped
+helper uses the same readiness contract with a20ms idle ceiling and exact
+descriptor acknowledgement. These waits do not extend an operation deadline or
+change fresh-read quorum polling.
+
 A consumed fresh read can send signed control operation8 as optional cleanup.
 The mapped ingress publishes `ReadAcknowledgements.sock` as a private hard-link
 alias of its existing `Control.sock`. It adds no listener, queue or connection

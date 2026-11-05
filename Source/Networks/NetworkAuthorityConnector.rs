@@ -453,7 +453,11 @@ pub fn run(arguments: Arguments) -> Result<()> {
                 save()?;
                 last = Instant::now();
             }
-            thread::sleep(Duration::from_millis(10));
+            ipc::wait_for_intake(
+                &[ingress.descriptor()],
+                None,
+                Instant::now() + Duration::from_millis(10),
+            )?;
         }
         Ok(())
     })();

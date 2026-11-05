@@ -10,7 +10,7 @@ use std::{
     io::{Read, Write},
     net::Shutdown,
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, BorrowedFd},
         unix::{
             fs::{MetadataExt, PermissionsExt},
             net::{UnixListener, UnixStream},
@@ -23,6 +23,92 @@ use std::{
     time::{Duration, Instant},
 };
 pub const MAXIMUM: usize = 16384;
+
+// Intake owns at most three local descriptors; a wake never consumes their bytes or rights.
+pub(crate) fn wait_for_intake(
+    readers: &[BorrowedFd<'_>],
+    shutdown: Option<BorrowedFd<'_>>,
+    until: Instant,
+) -> std::io::Result<bool> {
+    let count = readers.len() + usize::from(shutdown.is_some());
+    if readers.is_empty() || count > 3 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid local intake descriptor count",
+        ));
+    }
+    let remaining = until
+        .saturating_duration_since(Instant::now())
+        .min(Duration::from_millis(20));
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    let mut descriptors = [libc::pollfd {
+        fd: -1,
+        events: 0,
+        revents: 0,
+    }; 3];
+    for (slot, reader) in descriptors.iter_mut().zip(readers) {
+        slot.fd = reader.as_raw_fd();
+        slot.events = libc::POLLIN;
+    }
+    if let Some(shutdown) = shutdown {
+        // Parent data is consumed only by the exact handoff ACK, never by this idle wait.
+        descriptors[readers.len()].fd = shutdown.as_raw_fd();
+    }
+    let timeout = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: remaining.as_nanos() as libc::c_long,
+    };
+    let result = unsafe {
+        libc::ppoll(
+            descriptors.as_mut_ptr(),
+            count as libc::nfds_t,
+            &timeout,
+            std::ptr::null(),
+        )
+    };
+    intake_ready(
+        if result < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(result as usize)
+        },
+        &descriptors[..count],
+    )
+}
+
+fn intake_ready(
+    result: std::io::Result<usize>,
+    descriptors: &[libc::pollfd],
+) -> std::io::Result<bool> {
+    match result {
+        // Re-enter owner housekeeping after interruption; do not start another idle budget.
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(false),
+        Err(error) => return Err(error),
+        Ok(0) => return Ok(false),
+        Ok(_) => {}
+    }
+    if descriptors
+        .iter()
+        .any(|fd| fd.revents & libc::POLLNVAL != 0)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid local intake descriptor",
+        ));
+    }
+    if descriptors.iter().any(|fd| fd.revents & libc::POLLERR != 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "local intake descriptor failed",
+        ));
+    }
+    Ok(descriptors
+        .iter()
+        .any(|fd| fd.revents & (libc::POLLIN | libc::POLLHUP) != 0))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {

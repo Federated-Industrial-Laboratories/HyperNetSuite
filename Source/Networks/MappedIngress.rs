@@ -8,7 +8,7 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     os::{
-        fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
+        fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd},
         unix::{
             fs::{MetadataExt, PermissionsExt},
             net::UnixStream,
@@ -95,6 +95,9 @@ impl Ingress {
         );
         result.channel.set_nonblocking(true)?;
         Ok(result)
+    }
+    pub(crate) fn descriptor(&self) -> BorrowedFd<'_> {
+        self.channel.as_fd()
     }
     pub fn accept(&mut self) -> Result<Option<UnixStream>> {
         self.accept_tagged()?
@@ -435,7 +438,18 @@ pub fn run(a: Arguments) -> Result<()> {
             }
         }
         if !accepted {
-            std::thread::sleep(Duration::from_millis(20));
+            let mut readers = [listener.socket.as_fd(); 2];
+            let count = if let Some(checks) = &checks {
+                readers[1] = checks.socket.as_fd();
+                2
+            } else {
+                1
+            };
+            ipc::wait_for_intake(
+                &readers[..count],
+                Some(channel.as_fd()),
+                Instant::now() + Duration::from_millis(20),
+            )?;
         }
     }
     Ok(())

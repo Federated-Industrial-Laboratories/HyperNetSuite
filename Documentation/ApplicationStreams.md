@@ -140,6 +140,14 @@ applications use the host-owned SDK socket. A companion already running under
 that mapped account can explicitly select `--ingress-mode local`; this does not
 relax any owner or mode check.
 
+The companion waits for descriptor readiness between bounded intake turns, with
+at most10ms of idle waiting before cancellation and queue housekeeping. The
+mapped helper waits at most20ms when neither listener has work; new arrivals or
+parent closure wake that wait. Readiness consumes neither payload nor descriptor
+rights. Each handoff still requires its exact acknowledgement before the helper
+accepts another descriptor. Exhausted control capacity does not skip the companion's
+ingress and cleanup turn. Stream, worker and fresh-check limits are unchanged.
+
 For an outgoing companion, omit `--binding` and provide `--targets` with a private
 JSON file. A single companion can both connect and accept. Each target references
 a saved private endpoint whose route profile contains the current independent
