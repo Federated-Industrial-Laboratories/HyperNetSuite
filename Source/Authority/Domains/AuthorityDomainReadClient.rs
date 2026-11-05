@@ -60,13 +60,14 @@ pub(super) fn local(
                 store,
                 session,
                 &mut || budget.clock(&mut *clock),
+                Some(budget.transport()),
             )
         })
     } else {
         policy::refresh_before_request(bootstrap, path, signer, store, session, &mut *clock)?;
         let prior = Cache::load(bootstrap, store)?;
         local_once(
-            bootstrap, &request, &prior, path, signer, store, session, clock,
+            bootstrap, &request, &prior, path, signer, store, session, clock, None,
         )
     }
 }
@@ -81,17 +82,19 @@ fn local_once(
     store: &mut Store,
     session: &mut Session,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
 ) -> Result<ResultState> {
     let expected = vec![policy::current_reference(bootstrap, store)?];
     let operation = request.operation(store, &expected)?;
     let descriptor = store.descriptor().clone();
-    let exchange = crate::authority_inspection::read_client::exchange(
+    let exchange = crate::authority_inspection::read_client::exchange_with_budget(
         Query::Domain(operation),
         path,
         signer,
         store,
         session,
         clock,
+        caller,
     )?;
     let result = (|| {
         let mut candidate = None;
@@ -129,7 +132,10 @@ fn local_once(
         let verified = exchange.evidence.attach_read(store, verified)?;
         if verified.result.disposition != Disposition::Permit {
             let code = verified.result.code;
-            store.observe_read(verified, session, clock, 0)?;
+            let consumed = store.observe_read_consumed(verified, session, clock, 0)?;
+            exchange
+                .control
+                .acknowledge_read(&consumed, signer, exchange.deadline);
             return Err(Refusal { code }.into());
         }
         let candidate = candidate.context("permitted fresh read lacks validated context")?;
@@ -147,24 +153,29 @@ fn local_once(
             b(&exchange.reply.node),
         ]))?;
         remaining(exchange.deadline)?;
-        store.accept_read(verified, session, clock, 0, |_, store| {
-            let cache = Cache {
-                state: candidate.state,
-                records: candidate.records,
-            };
-            cache.save(store)?;
-            policy::retain_records(bootstrap, store, &cache.records)?;
-            remaining(exchange.deadline)?;
-            Ok(ResultState {
-                value: candidate.value,
-                prefix,
-                cache,
-                evaluated_at_ms,
-                expires_at_ms,
-                deadline_boot_ms: exchange.deadline,
-                receipt,
-            })
-        })
+        let (value, consumed) =
+            store.accept_read_consumed(verified, session, clock, 0, |_, store| {
+                let cache = Cache {
+                    state: candidate.state,
+                    records: candidate.records,
+                };
+                cache.save(store)?;
+                policy::retain_records(bootstrap, store, &cache.records)?;
+                remaining(exchange.deadline)?;
+                Ok(ResultState {
+                    value: candidate.value,
+                    prefix,
+                    cache,
+                    evaluated_at_ms,
+                    expires_at_ms,
+                    deadline_boot_ms: exchange.deadline,
+                    receipt,
+                })
+            })?;
+        exchange
+            .control
+            .acknowledge_read(&consumed, signer, exchange.deadline);
+        Ok(value)
     })();
     if result.is_err() {
         session.discard(&exchange.challenge)?;

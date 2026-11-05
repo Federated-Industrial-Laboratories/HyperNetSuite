@@ -63,6 +63,12 @@ client verifies ancestry, current authorization and accepted policy minima befor
 durably retaining the authority and record floors. The fresh evaluation time is
 separate from the anchor's historical commit time. Reopening verifies the retained
 read certificate as authority evidence; it does not revive its expired permission.
+The signed request minimum records the floor known at issue. A concurrent read
+can certify the same newer prefix already published by another read. Acceptance
+still verifies its actual certified result against the current prefix, history
+and generation floors; it does not reject solely because the request's lower
+bound predates that publication. Stale results and history from an older retained
+prefix remain unavailable.
 
 These reads do not allocate an ordinary stream sequence, acknowledge an effect or
 resolve an uncertain operation. Pending effects and fences require their existing

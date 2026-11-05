@@ -94,10 +94,52 @@ pub(crate) fn response(
 
 #[test]
 fn fresh_policy_roundtrip_preserves_stream_and_anchor_on_reopen() {
+    consumed_roundtrip(false, false);
+}
+
+#[test]
+fn consumed_policy_read_sends_exact_cleanup_without_waiting_for_a_receipt() {
+    consumed_roundtrip(true, false);
+}
+
+#[test]
+fn consumed_domain_refusal_sends_exact_cleanup_without_changing_ordinary_state() {
+    consumed_roundtrip(true, true);
+}
+
+fn assert_cleanup(listener: &UnixListener, request: &[u8], challenge: &[u8], reply: &[u8]) {
+    let (_stream, bytes) = receive_control(listener);
+    let packet = wire::decode(&bytes).unwrap();
+    let packet = packet.array(5).unwrap();
+    assert_eq!(packet[3], V::Uint(8));
+    let parsed = read::Request::from_signed(request).unwrap();
+    let (payload, signatures) = wire::envelope(packet[4].bytes().unwrap(), 1).unwrap();
+    let value = wire::decode(&payload).unwrap();
+    let fields = value.array(7).unwrap();
+    let reply = wire::decode(reply).unwrap();
+    let reply = reply.array(10).unwrap();
+    let (statement, _) = wire::envelope(reply[7].bytes().unwrap(), 3).unwrap();
+    let parsed_statement = read::Statement::parse(&statement).unwrap();
+    assert_eq!(signatures[0].0, parsed.requester);
+    assert_eq!(packet[2], parsed.scope.value());
+    assert_eq!(fields[0], V::Uint(63));
+    assert_eq!(fields[1], V::Uint(1));
+    assert_eq!(fields[2], parsed.scope.value());
+    assert_eq!(fields[3], b(&read::read_id(request, challenge).unwrap()));
+    assert_eq!(fields[4], b(&wire::digest(&statement)));
+    assert_eq!(fields[5], b(&wire::digest(reply[8].bytes().unwrap())));
+    assert!(fields[6].uint().unwrap() <= parsed_statement.expires_at_ms);
+    // Closing without a receipt cannot change the consumed result.
+}
+
+fn consumed_roundtrip(cleanup: bool, domain: bool) {
     let mut f = Fixture::new();
     let socket = f.directory.0.join("Read.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    if cleanup {
+        std::fs::hard_link(&socket, f.directory.0.join("ReadAcknowledgements.sock")).unwrap();
+    }
     let prefix = f.store.prefix().clone();
     let metadata = f
         .store
@@ -139,34 +181,80 @@ fn fresh_policy_roundtrip_preserves_stream_and_anchor_on_reopen() {
             read::Request::from_signed(&request).unwrap().query,
             Query::PolicyContext
         ));
-        send_control(
-            stream,
-            &response(
+        let reply = response(
+            &request,
+            &challenge,
+            &node,
+            state,
+            value,
+            evaluated,
+            u64::MAX,
+            0,
+        );
+        send_control(stream, &reply);
+        if cleanup {
+            assert_cleanup(&listener, &request, &challenge, &reply);
+        }
+        if domain {
+            let (stream, bytes) = receive_control(&listener);
+            let (request, challenge) = submitted(&bytes);
+            assert!(matches!(
+                read::Request::from_signed(&request).unwrap().query,
+                Query::Domain(_)
+            ));
+            let reply = response(
                 &request,
                 &challenge,
                 &node,
                 state,
-                value,
+                a(vec![]),
                 evaluated,
                 u64::MAX,
-                0,
-            ),
-        );
+                3,
+            );
+            send_control(stream, &reply);
+            assert_cleanup(&listener, &request, &challenge, &reply);
+        }
     });
     let mut first = true;
-    policy::discover(
-        &f.bootstrap,
-        &socket,
-        &f.signer,
-        &mut f.store,
-        &mut f.session,
-        || {
-            let health = if first { f.issued } else { f.current };
-            first = false;
-            Ok(health)
-        },
-    )
-    .unwrap();
+    let clock = || {
+        let health = if first { f.issued } else { f.current };
+        first = false;
+        Ok(health)
+    };
+    if domain {
+        let error = crate::authority_inspection::domain_client::local(
+            &f.bootstrap,
+            crate::authority_inspection::domain_client::Request {
+                command: crate::authority_domains::routes::Command::Lookup { service: [88; 32] }
+                    .into(),
+                grant: None,
+            },
+            &socket,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            clock,
+        )
+        .err()
+        .expect("verified domain refusal required");
+        assert!(
+            error
+                .downcast_ref::<crate::authority_inspection::domain_client::Refusal>()
+                .is_some_and(|refusal| refusal.code == 3),
+            "{error:#}"
+        );
+    } else {
+        policy::discover(
+            &f.bootstrap,
+            &socket,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            clock,
+        )
+        .unwrap();
+    }
     server.join().unwrap();
     assert_eq!(f.store.prefix(), &prefix);
     assert_eq!(
@@ -673,4 +761,64 @@ fn preparation_read_reissue_is_single_bounded_and_never_accepts_other_failures()
     assert!(result.is_err());
     assert_eq!(calls, 1);
     assert!(!budget.reissued);
+}
+
+#[test]
+fn preparation_budget_stops_blocked_policy_reply_without_reissuing() {
+    use std::{
+        io::Read,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+    for cancelled in [false, true] {
+        let mut f = Fixture::new();
+        let path = f.directory.0.join("BoundedPolicy.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let signal = Arc::new(AtomicBool::new(false));
+        let observed = signal.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, bytes) = receive_control(&listener);
+            let (request, _) = submitted(&bytes);
+            assert!(matches!(
+                read::Request::from_signed(&request).unwrap().query,
+                Query::PolicyContext
+            ));
+            if cancelled {
+                signal.store(true, Ordering::Release);
+            }
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            assert_eq!(stream.read(&mut [0; 1]).unwrap(), 0);
+            listener.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        });
+        let end = crate::authority_challenge::boot_time_ms().unwrap()
+            + if cancelled { 5000 } else { 250 };
+        let mut budget = RetryBudget::new(end, move || observed.load(Ordering::Acquire));
+        let prefix = f.store.prefix().clone();
+        let error = policy::refresh_before_request_with_budget(
+            &f.bootstrap,
+            &path,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            || Ok(f.current),
+            &mut budget,
+        )
+        .unwrap_err();
+        assert!(!budget.reissued);
+        assert!(f.store.resume_ordinary().unwrap().is_none());
+        assert_eq!(f.store.prefix(), &prefix);
+        assert!(crate::authority_challenge::boot_time_ms().unwrap() < end + 500);
+        if cancelled {
+            assert!(format!("{error:#}").contains("application preparation cancelled"));
+        }
+        server.join().unwrap();
+    }
 }

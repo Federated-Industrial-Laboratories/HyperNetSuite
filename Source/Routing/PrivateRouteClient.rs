@@ -158,6 +158,15 @@ impl Endpoint {
         Ok(endpoint)
     }
     pub fn prepare(self) -> Result<Prepared> {
+        self.prepare_with_budget(None)
+    }
+    pub(crate) fn prepare_with_budget(
+        self,
+        caller: Option<crate::route_connector::OperationBudget>,
+    ) -> Result<Prepared> {
+        if let Some(caller) = &caller {
+            caller.check()?;
+        }
         check_cancelled()?;
         let key = crate::networks::route_key(&self.profile, &self.route)?;
         let authority = {
@@ -179,6 +188,7 @@ impl Endpoint {
         if let Some(pool) = authority.upgrade()
             && let Some(route) = AuthorityPool::take(&pool, &self)?
         {
+            route.session.borrow_mut().bind_caller(caller)?;
             return Ok(route);
         }
         let deadline = crate::authority_challenge::boot_time_ms()?
@@ -193,9 +203,15 @@ impl Endpoint {
             6 => "Bridge",
             _ => "Unknown",
         };
-        let session =
-            crate::route_connector::Session::connect(&self.route, &key, deadline, &cancelled)
-                .with_context(|| format!("prepare private {protocol} route"))?;
+        let session = crate::route_connector::Session::connect_with_budget(
+            &self.route,
+            &key,
+            deadline,
+            deadline,
+            &cancelled,
+            caller,
+        )
+        .with_context(|| format!("prepare private {protocol} route"))?;
         Ok(Prepared {
             endpoint: self,
             deadline,
@@ -253,6 +269,9 @@ impl Prepared {
             Option<crate::authority_history::TreeHead>,
         )>,
     ) {
+        if self.session.borrow_mut().complete_caller().is_err() {
+            return;
+        }
         if cancelled() || !self.session.borrow().reusable() {
             return;
         }
@@ -300,6 +319,16 @@ impl Prepared {
         )?;
         self.observed.set(true);
         Ok(bytes)
+    }
+    pub(crate) fn acknowledge_read(
+        &self,
+        packet: &[u8],
+        acknowledgement: crate::authority_read::Acknowledgement,
+        deadline: u64,
+    ) {
+        if let Ok(mut session) = self.session.try_borrow_mut() {
+            session.notify_read_consumed(packet, acknowledgement, deadline);
+        }
     }
 }
 pub(crate) fn observation_path(profile: &Path) -> Result<PathBuf> {

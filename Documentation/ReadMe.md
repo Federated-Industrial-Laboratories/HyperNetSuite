@@ -2,7 +2,7 @@
 
 [Project README](../ReadMe.md) | [Installation](Installation.md) | [Security](Security.md)
 
-[Linux 0.10.0 release and downloads](ReleaseNotes.md)
+[Linux 0.10.1 release and earlier downloads](ReleaseNotes.md)
 
 [0.9.1 permission scopes and migration](PermissionScopes.md)
 

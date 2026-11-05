@@ -34,6 +34,7 @@ fn discover_once(
     store: &mut Store,
     session: &mut Session,
     mut clock: impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
 ) -> Result<()> {
     ensure!(
         bootstrap.fully_accepted()
@@ -47,13 +48,14 @@ fn discover_once(
     }
     let descriptor = store.descriptor().clone();
     let scope = descriptor.scope();
-    let exchange = crate::authority_inspection::read_client::exchange(
+    let exchange = crate::authority_inspection::read_client::exchange_with_budget(
         crate::authority_read::Query::PolicyContext,
         path,
         signer,
         store,
         session,
         &mut clock,
+        caller,
     )?;
     let result = (|| {
         let mut pair = None;
@@ -83,16 +85,23 @@ fn discover_once(
         )?;
         let verified = exchange.evidence.attach_read(store, verified)?;
         if verified.result.disposition != Disposition::Permit {
-            store.observe_read(verified, session, &mut clock, 0)?;
+            let consumed = store.observe_read_consumed(verified, session, &mut clock, 0)?;
+            exchange
+                .control
+                .acknowledge_read(&consumed, signer, exchange.deadline);
             bail!("policy discovery refused");
         }
         let (p, r) = pair.context("certified policy pair absent")?;
         // Candidate bytes precede the floor so interruption cannot hide a learned contract.
         retain_cached_pair(store, PENDING, &p, &r)?;
-        store.accept_read(verified, session, &mut clock, 0, |_, store| {
-            retain_pair(store, &p, &r)
-        })?;
+        let ((), consumed) =
+            store.accept_read_consumed(verified, session, &mut clock, 0, |_, store| {
+                retain_pair(store, &p, &r)
+            })?;
         remaining(exchange.deadline)?;
+        exchange
+            .control
+            .acknowledge_read(&consumed, signer, exchange.deadline);
         Ok(())
     })();
     if result.is_err() {
@@ -112,7 +121,7 @@ pub fn discover(
     session: &mut Session,
     clock: impl FnMut() -> Result<ClockHealth>,
 ) -> Result<()> {
-    discover_once(bootstrap, path, signer, store, session, clock)
+    discover_once(bootstrap, path, signer, store, session, clock, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -126,9 +135,15 @@ pub(crate) fn refresh_before_request_with_budget(
     budget: &mut crate::authority_inspection::read_client::RetryBudget,
 ) -> Result<()> {
     budget.run(|budget| {
-        discover_once(bootstrap, path, signer, store, session, || {
-            budget.clock(&mut clock)
-        })
+        discover_once(
+            bootstrap,
+            path,
+            signer,
+            store,
+            session,
+            || budget.clock(&mut clock),
+            Some(budget.transport()),
+        )
     })?;
     require_accepted(bootstrap, store)
 }
@@ -143,5 +158,19 @@ pub fn refresh_before_request(
     clock: impl FnMut() -> Result<ClockHealth>,
 ) -> Result<()> {
     discover(bootstrap, path, signer, store, session, clock)?;
+    require_accepted(bootstrap, store)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn refresh_before_request_with_transport(
+    bootstrap: &Verified,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    clock: impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
+) -> Result<()> {
+    discover_once(bootstrap, path, signer, store, session, clock, caller)?;
     require_accepted(bootstrap, store)
 }

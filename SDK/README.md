@@ -3,7 +3,7 @@
 This Linux Python package uses the private HyperNetSuite companion. The companion
 owns HyperNet cryptography, permission checks, requester floors and route renewal.
 The package has no runtime dependencies. Install the included wheel with
-`python3 -m pip install --no-index SDK/hypernet_streams-0.10.0-py3-none-any.whl`.
+`python3 -m pip install --no-index SDK/hypernet_streams-0.10.1-py3-none-any.whl`.
 A source checkout also supports `python3 -m pip install ./SDK`, or adding the SDK
 directory to `PYTHONPATH`. Build a wheel offline with
 `python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir dist ./SDK` from
@@ -89,7 +89,12 @@ endpoint readiness and each incoming session's check capability are distinct.
 `Stream.privacy` is directional metadata, separate from the verified `peer`.
 Outgoing nested TLS, selected minimum settings and verified assurance are not
 interchangeable. Incoming public-mode relay transit remains unknown; attached
-arrival requires exact-session endpoint attestation.
+arrival requires exact-session endpoint attestation. Version2 `accept()` returns
+explicit unknown arrival provenance without making an optional authority query
+before payload handoff. The verified peer context remains available. Call
+`check_authority` for the next exact application action; its certified receipt
+also updates `Stream.privacy`. Neither acceptance nor retained privacy authorises
+an action, and no automatic background observation is started.
 
 `check_authority(stream, action_digest, timeout=1.0)` requires an open Stream
 created by that Agent and a nonzero32-byte digest. It generates a fresh nonce and

@@ -140,6 +140,14 @@ applications use the host-owned SDK socket. A companion already running under
 that mapped account can explicitly select `--ingress-mode local`; this does not
 relax any owner or mode check.
 
+The companion waits for descriptor readiness between bounded intake turns, with
+at most10ms of idle waiting before cancellation and queue housekeeping. The
+mapped helper waits at most20ms when neither listener has work; new arrivals or
+parent closure wake that wait. Readiness consumes neither payload nor descriptor
+rights. Each handoff still requires its exact acknowledgement before the helper
+accepts another descriptor. Exhausted control capacity does not skip the companion's
+ingress and cleanup turn. Stream, worker and fresh-check limits are unchanged.
+
 For an outgoing companion, omit `--binding` and provide `--targets` with a private
 JSON file. A single companion can both connect and accept. Each target references
 a saved private endpoint whose route profile contains the current independent
@@ -170,6 +178,15 @@ that profile exclusively to the running companion. Pending compatible reads,
 closures and its own exact voucher renewal resume before readiness; unrelated
 mutations require their original command. Never delete profile state to recover.
 
+Preparation and cleanup share one queue of at most16 waiting jobs. When both
+classes wait, the actor alternates one preparation and one cleanup, preserving
+arrival order within each class. An idle class does not delay the other. The
+active operation completes before selection; this is a bound in dispatch turns,
+not an elapsed-time guarantee. Every selected operation retains its original
+deadline and exact requester recovery. Unknown signed outcomes still resolve
+before new work, and selecting a preparation does not release a cleanup's local
+slot reservation or establish authoritative retirement.
+
 A read interrupted after its durable floor commits can leave older derived
 domain metadata in the local cache. When no ordinary operation is pending, the
 client discards that superseded domain context in memory and obtains a new
@@ -182,7 +199,68 @@ local persistence. The replacement is a new certified read within the caller's
 original preparation deadline; the learned floor remains retained. This allowance
 is shared across policy discovery and service lookup. It does not replay an
 ordinary command, extend a certificate, retry a refusal or hide invalid clock or
-identity evidence. Closing or cancelling the local request stops preparation.
+identity evidence. The same original preparation deadline bounds relay admission,
+final-service readiness and application acceptance. Successful handoff clears
+only that preparation bound; the separately authorised stream lifetime remains.
+Closing or cancelling the local request stops preparation. The same bound covers
+cold authority-route admission, history preparation, certified exchanges and
+exact-outcome recovery; time spent waiting for the serial actor consumes it.
+A successfully consumed result may retain its admitted authority connection after
+clearing the completed call's bound. The connection's original lifetime, byte
+allowance and current-authority requirements remain unchanged.
+
+Each configured target retains one local slot-selection cursor, with at most16
+cursors. A successful plan reservation advances to the following slot; a failed
+plan leaves the cursor unchanged. Each plan examines at most16 slots, wrapping
+once and skipping locally reserved slots. Every remaining candidate still requires
+a fresh certified lookup before selection. The cursor retains no permission or
+retirement evidence. A failed reply releases its local reservation without
+rewinding the cursor. Exhausting all candidates still reports `Capacity` within
+the original preparation budget.
+
+Best-effort caller cleanup has one deadline captured when its completion is
+enqueued: the lesser of the admitted idle allowance and five seconds. Queue wait
+consumes that budget. Expired cleanup starts no new authority work. A signed
+operation with an unknown outcome remains durable for subsequent exact recovery;
+local cleanup expiry does not retire an authoritative slot or reset its generation.
+After exact pending-work recovery and a deadline check, an unsigned application
+proof needs no remote lookup or Close: application admission was never submitted.
+A signed proof still requires current lookup and exact cleanup, including when
+authentication failed without a confirmed acceptance outcome.
+
+If exact retained-operation recovery returns a newly certified domain refusal,
+preparation resolves its authenticated own-stream status once within the same
+caller deadline and cancellation budget. Planning continues only when that status
+resolves the retained operation. An unknown original outcome or an earlier permit
+whose result remains unconsumed still blocks planning. This does not retry the
+effect, clear an unknown request, or retry a refusal from the new connection plan.
+
+Companion stderr includes finite, content-free timing samples for the first64
+outgoing preparations and first16 queued cleanups per process. Each sample retains
+one process-local number and its original deadline. Enqueue, dequeue, exact
+recovery, endpoint preparation, each service-slot lookup, relay setup,
+application authentication and handoff have separate stages. Monotonic boot and
+elapsed milliseconds distinguish queue wait from operation cost; samples from
+different processes are not causal request identifiers. A failed outgoing
+recovery replaces its `Resume` failure record with `ResumeRefusalStatus` for
+requester refusal-status resolution, or `ResumeRetainedOperation` for loading,
+validating and recovering an exact pending ordinary operation. Its fixed `reason`
+reports a recognised typed expiry, unavailability or I/O category; other errors
+remain `Other`, including untyped authority refusals. A verified domain refusal
+has the fixed category `AuthorityRefusal`. Before exact retained execution, a
+`ResumeRetained` record uses only the command's static name as its phase.
+These diagnostic categories
+do not classify an error as retryable or change the public preparation error.
+Successful recovery retains `Resume` begin and completion records. At most3216 records,
+each below256 bytes, are added per process. No account, session, target, message,
+signed payload or error text is recorded. Clock and output errors do not replace
+operation results. One separate writer has a nonblocking queue of64 records
+(at most16 KiB of record buffers plus one in-flight record and queue metadata).
+Full or closed queues drop records;
+missing stages can therefore mean dropped diagnostics. A stalled log consumer
+cannot block authority work. Sampling does not change permission or preparation
+deadlines.
+
 If an otherwise authenticated clock observation expires, preparation waits for
 a fresh valid observation within that same deadline. Every replacement is fully
 validated. Waiting does not replay an authority command, extend an existing
@@ -209,6 +287,27 @@ Generation fencing and endpoint retirement prevent reuse of a still-live slot.
 Service/session expiry, byte budget, idle timeout, current revocation and explicit
 cancellation close forwarding. A restart never restores spent allowance or
 replays application requests. Applications decide how to resume their own work.
+
+Exhausted local connections, a full preparation queue and unavailable reusable
+session slots return the existing `Capacity` IPC code. Clients can retry within
+their original bounded setup policy after capacity is released. During route or
+application authentication, typed connection EOF, reset, refused connection,
+broken pipe, aborted and not-connected errors return `Closed`; typed connection
+timeouts return `Timeout`.
+These codes permit a fresh preparation only within the client's original bounded
+setup policy. They do not renew a deadline or authorise replay of application work.
+Certificate, identity, protocol, configuration and authority failures remain
+`Refused`; error text is not a permission decision. Unknown close outcomes still
+require exact recovery before another authority request. Version2 responses keep
+private diagnostic details out of the application reply.
+
+The endpoint completes retirement after a caller closes its stream. Core 0.10.2
+uses the endpoint-only `StreamRetirementContext` read to obtain the current
+record after a competing close. It retires only the original signed proof and
+generation, including after grant revocation or proof expiry; the read grants no
+forwarding permission. An unknown close outcome must resolve before another
+retirement is prepared. This recovery requires a supporting authority committee;
+older replicas refuse the new query without an ordinary-mutation fallback.
 
 ## Use the SDK and file example
 

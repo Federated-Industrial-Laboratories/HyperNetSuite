@@ -6,7 +6,13 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 
-pub fn validate(network: Digest, incarnation: Digest, packet: &[u8]) -> Result<()> {
+pub(crate) use crate::authority_read::Acknowledgement as Cleanup;
+
+pub(crate) fn validate(
+    network: Digest,
+    incarnation: Digest,
+    packet: &[u8],
+) -> Result<Option<Cleanup>> {
     let value = wire::decode(packet)?;
     let fields = value.array(5)?;
     let scope = Scope::parse(&fields[2])?;
@@ -15,7 +21,7 @@ pub fn validate(network: Digest, incarnation: Digest, packet: &[u8]) -> Result<(
             && fields[1].uint()? == 1
             && scope.network == network
             && scope.incarnation == incarnation
-            && matches!(fields[3].uint()?, 0..=4 | 6 | 7),
+            && matches!(fields[3].uint()?, 0..=4 | 6 | 7 | 8),
         "authority endpoint refuses management or foreign control frames"
     );
     let body = if matches!(fields[3].uint()?, 1 | 7) {
@@ -73,7 +79,8 @@ pub fn validate(network: Digest, incarnation: Digest, packet: &[u8]) -> Result<(
             );
             crate::authority_read::read_id(body[0].bytes()?, body[1].bytes()?)?;
         }
+        8 => return Cleanup::parse(fields[4].bytes()?, &scope).map(Some),
         _ => unreachable!(),
     }
-    Ok(())
+    Ok(None)
 }

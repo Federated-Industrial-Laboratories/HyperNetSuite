@@ -241,7 +241,7 @@ fn drip_reads_do_not_extend_the_original_transport_deadline() {
     });
     let start = boot_time_ms().unwrap();
     let mut bytes = [0; 10];
-    assert!(read_all(&mut client, &mut bytes, start + 55).is_err());
+    assert!(read_all(&mut client, &mut bytes, start + 55, None).is_err());
     assert!(boot_time_ms().unwrap() - start < 500);
     drop(client);
     sender.join().unwrap();

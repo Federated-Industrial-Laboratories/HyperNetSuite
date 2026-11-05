@@ -174,7 +174,19 @@ pub fn status_local(
     signer: &SigningKey,
     store: &mut Store,
     session: &mut Session,
+    clock: impl FnMut() -> Result<ClockHealth>,
+) -> Result<OwnStreamMetadata> {
+    status_local_with_budget(descriptor, path, signer, store, session, clock, None)
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn status_local_with_budget(
+    descriptor: &TrustDescriptor,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
     mut clock: impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
 ) -> Result<OwnStreamMetadata> {
     store.require_requester(signer.verifying_key().to_bytes())?;
     let request = wire::sign_envelope(
@@ -190,7 +202,7 @@ pub fn status_local(
         ]))?,
         signer,
     )?;
-    let control = LocalControl::prepare_authority(path, store)?;
+    let control = LocalControl::prepare_authority_with_budget(path, store, caller)?;
     let prepared =
         ControlPrepared::new(descriptor, request, None, signer, store, session, clock()?)?;
     match prepared.local(&control, store, session, &mut clock)? {
@@ -257,7 +269,19 @@ pub(crate) fn resolve_refusal_local(
     signer: &SigningKey,
     store: &mut Store,
     session: &mut Session,
+    clock: impl FnMut() -> Result<ClockHealth>,
+) -> Result<()> {
+    resolve_refusal_local_with_budget(descriptor, path, signer, store, session, clock, None)
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_refusal_local_with_budget(
+    descriptor: &TrustDescriptor,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
     mut clock: impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
 ) -> Result<()> {
     store.require_requester(signer.verifying_key().to_bytes())?;
     ensure!(
@@ -265,7 +289,7 @@ pub(crate) fn resolve_refusal_local(
         "an unresolved explicit fence must be resumed first"
     );
     if store.refusal_needs_status()? {
-        status_local(descriptor, path, signer, store, session, &mut clock)?;
+        status_local_with_budget(descriptor, path, signer, store, session, &mut clock, caller)?;
     }
     Ok(())
 }
@@ -278,6 +302,18 @@ pub(super) fn ensure_stream(
     session: &mut Session,
     clock: &mut impl FnMut() -> Result<ClockHealth>,
 ) -> Result<()> {
+    ensure_stream_with_budget(descriptor, path, signer, store, session, clock, None)
+}
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ensure_stream_with_budget(
+    descriptor: &TrustDescriptor,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    clock: &mut impl FnMut() -> Result<ClockHealth>,
+    caller: Option<crate::route_connector::OperationBudget>,
+) -> Result<()> {
     store.require_requester(signer.verifying_key().to_bytes())?;
     ensure!(
         store.resume_fence()?.is_none(),
@@ -288,7 +324,7 @@ pub(super) fn ensure_stream(
         "stream descriptor differs from the current requester configuration"
     );
     if store.needs_stream_status()? {
-        status_local(descriptor, path, signer, store, session, clock)?;
+        status_local_with_budget(descriptor, path, signer, store, session, clock, caller)?;
     }
     Ok(())
 }

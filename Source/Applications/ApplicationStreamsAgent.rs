@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io::ErrorKind,
-    os::unix::net::UnixStream,
+    os::{fd::AsFd, unix::net::UnixStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -17,6 +17,8 @@ use std::{
 };
 #[path = "ApplicationStreamChecks.rs"]
 mod checks;
+#[path = "ApplicationStreamQueue.rs"]
+mod queue;
 #[derive(Args)]
 pub struct Arguments {
     #[command(flatten)]
@@ -67,10 +69,7 @@ fn reserve(
     let mut locked = state
         .lock()
         .map_err(|_| anyhow::anyhow!("agent connection state failed"))?;
-    ensure!(
-        locked.active.len() < 16,
-        "application connection capacity exhausted"
-    );
+    ensure!(locked.active.len() < 16, Capacity::Connections);
     let id = hex::encode(crate::route_protocol::random()?);
     let cancel = Arc::new(AtomicBool::new(false));
     locked.active.insert(
@@ -113,6 +112,61 @@ fn error(state: &Arc<Mutex<State>>, id: Option<&str>, message: &str) {
         }));
     }
 }
+#[derive(Debug)]
+enum PreparationTransport {
+    Closed,
+    Timeout,
+}
+impl std::fmt::Display for PreparationTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Closed => "application preparation connection closed",
+            Self::Timeout => "application preparation connection timed out",
+        })
+    }
+}
+impl std::error::Error for PreparationTransport {}
+fn preparation_transport(error: anyhow::Error) -> anyhow::Error {
+    // Only connection work calls this classifier. An outer validation I/O error
+    // must not expose an inner transport error as permission to retry.
+    let kind = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .map(std::io::Error::kind);
+    let transport = match kind {
+        Some(
+            ErrorKind::UnexpectedEof
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected,
+        ) => PreparationTransport::Closed,
+        Some(ErrorKind::TimedOut) => PreparationTransport::Timeout,
+        _ => return error,
+    };
+    error.context(transport)
+}
+fn preparation_failure(error: &anyhow::Error, version: u64) -> Value {
+    let (code, message) = if error.is::<Capacity>() {
+        ("Capacity", "local application capacity exhausted")
+    } else if let Some(transport) = error.downcast_ref::<PreparationTransport>() {
+        match transport {
+            PreparationTransport::Closed => ("Closed", "application preparation connection closed"),
+            PreparationTransport::Timeout => {
+                ("Timeout", "application preparation connection timed out")
+            }
+        }
+    } else {
+        ("Refused", "local request was invalid or unavailable")
+    };
+    let message = if version == 2 {
+        message.into()
+    } else {
+        format!("{error:#}")
+    };
+    json!({"version":version,"ok":false,"error":{"code":code,"message":message}})
+}
 fn annotate(guard: &Guard, peer: Value) -> Result<()> {
     let mut state = guard
         .state
@@ -130,14 +184,19 @@ enum Job {
     Plan(
         Target,
         crate::authority_inspection::read_client::RetryBudget,
+        timing::Timing,
         SyncSender<Result<Plan>>,
     ),
-    Done(Box<streams::Proof>),
+    Done(Box<streams::Proof>, u64, timing::Timing),
+}
+fn reserve_slot(slots: &mut BTreeSet<(Digest, u64)>, next: &mut u64, service: Digest, slot: u64) {
+    slots.insert((service, slot));
+    *next = (slot + 1) % streams::SLOTS;
 }
 fn actor(
     mut client: Client,
     targets: Vec<Target>,
-    receiver: Receiver<Job>,
+    receiver: queue::Receiver,
     ready: SyncSender<Result<()>>,
 ) {
     let initial = client.resume_agent(&targets);
@@ -147,26 +206,38 @@ fn actor(
         return;
     }
     let mut slots = BTreeSet::new();
+    let mut next_slots = targets
+        .iter()
+        .map(|target| (target.service.clone(), 0))
+        .collect::<BTreeMap<_, _>>();
     while let Ok(job) = receiver.recv() {
         match job {
-            Job::Plan(target, budget, reply) => {
+            Job::Plan(target, budget, timing, reply) => {
+                timing.event("Dequeue", "Complete");
                 let result = if crate::private_route_client::cancelled() {
                     Err(anyhow::anyhow!("application agent is stopping"))
+                } else if let Some(start) = next_slots.get(&target.service) {
+                    client.plan(&target, &slots, *start, budget, &targets, &timing)
                 } else {
-                    client.plan(&target, &slots, budget, &targets)
+                    Err(anyhow::anyhow!("application target is not configured"))
                 };
+                timing.event("Plan", if result.is_ok() { "Complete" } else { "Failed" });
                 if let Ok(plan) = &result {
-                    slots.insert((plan.proof.service.id, plan.proof.slot));
+                    let next = next_slots
+                        .get_mut(&target.service)
+                        .expect("successful plan has a configured target");
+                    reserve_slot(&mut slots, next, plan.proof.service.id, plan.proof.slot);
                 }
                 if let Err(mpsc::SendError(Ok(plan))) = reply.send(result) {
                     slots.remove(&(plan.proof.service.id, plan.proof.slot));
                 }
             }
-            Job::Done(proof) => {
+            Job::Done(proof, deadline, timing) => {
+                timing.event("Dequeue", "Complete");
                 if !crate::private_route_client::cancelled() {
-                    let _ = client
-                        .resume_agent(&targets)
-                        .and_then(|()| client.close(&proof));
+                    let _ = timing.run("Work", || client.cleanup(&proof, deadline, &targets));
+                } else {
+                    timing.event("Work", "Cancelled");
                 }
                 slots.remove(&(proof.service.id, proof.slot));
             }
@@ -187,7 +258,7 @@ struct Incoming {
 #[derive(Clone)]
 struct Runtime {
     state: Arc<Mutex<State>>,
-    jobs: SyncSender<Job>,
+    jobs: queue::Sender,
     incoming: Arc<Mutex<Receiver<Incoming>>>,
     targets: Arc<Vec<Target>>,
     binding: Option<streams::local::Binding>,
@@ -349,13 +420,23 @@ fn request(
                         || ipc::disconnected(&preparation_caller).unwrap_or(true)
                 },
             );
-            runtime
-                .jobs
-                .try_send(Job::Plan(target, budget, reply))
-                .map_err(|_| anyhow::anyhow!("authority request queue is full"))?;
-            let mut plan = receive
-                .recv_timeout(timeout)
-                .context("authority connection preparation timed out")??;
+            let timing = timing::Timing::plan(preparation_deadline);
+            timing.run("Enqueue", || {
+                runtime
+                    .jobs
+                    .try_send(Job::Plan(target, budget, timing, reply))
+                    .map_err(|error| match error {
+                        mpsc::TrySendError::Full(_) => anyhow::Error::new(Capacity::Requests),
+                        mpsc::TrySendError::Disconnected(_) => {
+                            anyhow::anyhow!("authority request worker is unavailable")
+                        }
+                    })
+            })?;
+            let mut plan = timing.run("Wait", || {
+                receive
+                    .recv_timeout(timeout)
+                    .context("authority connection preparation timed out")?
+            })?;
             let outcome = (|| -> Result<()> {
                 let caller = stream.try_clone()?;
                 let cancelled = || {
@@ -369,19 +450,28 @@ fn request(
                 let deadline = crate::authority_challenge::boot_time_ms()?
                     .checked_add(plan.proof.limits.duration_ms)
                     .context("stream deadline overflow")?;
-                let mut session = crate::route_connector::Session::connect(
-                    &plan.endpoint.route,
-                    &possession,
-                    deadline,
-                    &cancelled,
-                )?;
-                let admitted = session.authenticate_application(
-                    plan.endpoint.route.network,
-                    plan.endpoint.route.incarnation,
-                    &mut plan.proof,
-                    plan.binding,
-                    &plan.key,
-                )?;
+                let mut session = timing.run("Route", || {
+                    crate::route_connector::Session::connect_with_deadlines(
+                        &plan.endpoint.route,
+                        &possession,
+                        deadline,
+                        preparation_deadline,
+                        &cancelled,
+                    )
+                    .map_err(preparation_transport)
+                })?;
+                let admitted = timing.run("Authenticate", || {
+                    session
+                        .authenticate_application_before(
+                            plan.endpoint.route.network,
+                            plan.endpoint.route.incarnation,
+                            &mut plan.proof,
+                            plan.binding,
+                            &plan.key,
+                            preparation_deadline,
+                        )
+                        .map_err(preparation_transport)
+                })?;
                 let peer = json!({"network":hex::encode(plan.endpoint.route.network),"incarnation":hex::encode(plan.endpoint.route.incarnation),"service":service,"protocol":plan.proof.protocol,"owner":hex::encode(plan.owner),"endpoint":hex::encode(plan.endpoint_key),"route":hex::encode(plan.endpoint.route.destination.service),"session":hex::encode(admitted.id),"generation":admitted.generation,"expiresMs":plan.proof.expires,"maximumBytes":plan.proof.limits.bytes,"durationMs":plan.proof.limits.duration_ms,"idleMs":plan.proof.limits.idle_ms});
                 annotate(&guard, peer.clone())?;
                 let privacy = json!({"direction":"outgoing","transport":"HyperNet","transportAuthenticated":true,"tls":"TLS1.3","relayPath":"nestedTlsViaRelay","relayService":hex::encode(plan.endpoint.route.relay.service),"destinationService":hex::encode(plan.endpoint.route.destination.service),"selectedMinimum":plan.endpoint.route.minimum_assurance,"configuredAssurance":plan.endpoint.route.assurance,"provenance":"observedAuthenticatedTransport","certifiedEndpointProfile":plan.endpoint_provenance,"certifiedRelayProfile":null,"physicalIndependenceVerified":false,"profileCurrentnessAsserted":false,"endToEndMessageEncryption":"applicationDefined"});
@@ -396,13 +486,31 @@ fn request(
                     response["checkAuthority"] = json!(false);
                 }
                 handed_off.store(true, Ordering::Relaxed);
-                ipc::write_json(&mut stream, &response)?;
+                timing.run("Handoff", || ipc::write_json(&mut stream, &response))?;
                 session.forward_application(stream.try_clone()?, plan.proof.limits.bytes)
             })();
             if let Err(e) = &outcome {
                 error(&runtime.state, Some(&guard.id), &format!("{e:#}"));
             }
-            let _ = runtime.jobs.send(Job::Done(Box::new(plan.proof)));
+            // Best-effort cleanup receives one enqueue-bound budget, never a new
+            // route lifetime when the actor eventually dequeues this completion.
+            let cleanup_deadline = crate::authority_challenge::boot_time_ms()?.saturating_add(
+                plan.proof
+                    .limits
+                    .idle_ms
+                    .min(crate::authority_challenge::MAXIMUM_DURATION_MS),
+            );
+            let cleanup_timing = timing::Timing::cleanup(cleanup_deadline);
+            let _ = cleanup_timing.run("Enqueue", || {
+                runtime
+                    .jobs
+                    .send(Job::Done(
+                        Box::new(plan.proof),
+                        cleanup_deadline,
+                        cleanup_timing,
+                    ))
+                    .map_err(|_| ())
+            });
             outcome
         }
         "accept" => {
@@ -453,50 +561,9 @@ fn request(
                             response["checkAuthority"] =
                                 json!(runtime.checks.as_ref().is_some_and(|c| c.ready()));
                             response["privacy"] = checks::unknown_incoming();
-                            // Bind arrival information to this exact signed session, never just a binding-wide ready record.
-                            let reference = runtime
-                                .state
-                                .lock()
-                                .map_err(|_| anyhow::anyhow!("agent state failed"))?
-                                .active
-                                .get(&incoming.guard.id)
-                                .and_then(|a| a.reference.clone());
-                            if let (Some(checks), Some(reference)) = (&runtime.checks, reference) {
-                                let started = crate::authority_challenge::boot_time_ms()?;
-                                let remaining = deadline
-                                    .saturating_duration_since(Instant::now())
-                                    .as_millis()
-                                    .min(5000)
-                                    as u64;
-                                if remaining >= 100 {
-                                    let input = checks::Input {
-                                        id: &incoming.guard.id,
-                                        nonce: crate::route_protocol::random()?,
-                                        action_digest: wire::digest(
-                                            b"ApplicationTransportObservation/v2",
-                                        ),
-                                        started,
-                                        deadline: started + remaining,
-                                    };
-                                    let result = checks.check(
-                                        &input,
-                                        reference,
-                                        incoming.cancel.clone(),
-                                        &stream,
-                                    )?;
-                                    if !result["result"]["privacy"].is_null() {
-                                        response["privacy"] = result["result"]["privacy"].clone();
-                                        if let Ok(mut state) = runtime.state.lock()
-                                            && let Some(a) =
-                                                state.active.get_mut(&incoming.guard.id)
-                                        {
-                                            a.privacy = response["privacy"].clone();
-                                            a.privacy_generation =
-                                                result["result"]["controlGeneration"].as_u64();
-                                        }
-                                    }
-                                }
-                            }
+                            // Arrival does not spend the caller's accept deadline on an
+                            // optional probe. Exact-session provenance comes from a
+                            // subsequent caller-triggered action check.
                         }
                         let duration = incoming.duration.saturating_sub(incoming.queued.elapsed());
                         ensure!(
@@ -693,9 +760,10 @@ pub fn run(a: Arguments) -> Result<()> {
     } else {
         None
     };
-    let (jobs, receiver) = mpsc::sync_channel(16);
+    let (jobs, receiver) = queue::channel();
     let (ready, started) = mpsc::sync_channel(1);
     let actor_targets = targets.clone();
+    timing::start();
     let actor = thread::spawn(move || actor(c, actor_targets, receiver, ready));
     started.recv().context("authority actor did not start")??;
     let (incoming, queue) = mpsc::sync_channel(16);
@@ -740,28 +808,29 @@ pub fn run(a: Arguments) -> Result<()> {
                 };
                 if !allowed {
                     ipc::failure(&mut stream, "Capacity", "local control capacity exhausted");
-                    continue;
-                }
-                let r = runtime.clone();
-                workers.push(thread::spawn(move || {
-                    let response = stream.try_clone();
-                    let handed_off = AtomicBool::new(false);
-                    let version=AtomicU64::new(1);
-                    let result = request(stream, r.clone(), &handed_off, &version);
-                    if let Err(e) = result
-                        && !handed_off.load(Ordering::Relaxed)
-                    {
-                        error(&r.state, None, &format!("local control preparation: {e:#}"));
-                        if let Ok(mut response) = response {
-                            if version.load(Ordering::Relaxed)==2 {
-                                let _ = ipc::write_json(&mut response,&json!({"version":2,"ok":false,"error":{"code":"Refused","message":"local request was invalid or unavailable"}}));
-                            } else {ipc::failure(&mut response, "Refused", &format!("{e:#}"));}
+                } else {
+                    let r = runtime.clone();
+                    workers.push(thread::spawn(move || {
+                        let response = stream.try_clone();
+                        let handed_off = AtomicBool::new(false);
+                        let version = AtomicU64::new(1);
+                        let result = request(stream, r.clone(), &handed_off, &version);
+                        if let Err(e) = result
+                            && !handed_off.load(Ordering::Relaxed)
+                        {
+                            error(&r.state, None, &format!("local control preparation: {e:#}"));
+                            if let Ok(mut response) = response {
+                                let _ = ipc::write_json(
+                                    &mut response,
+                                    &preparation_failure(&e, version.load(Ordering::Relaxed)),
+                                );
+                            }
                         }
-                    }
-                    if let Ok(mut s) = r.state.lock() {
-                        s.controls = s.controls.saturating_sub(1);
-                    }
-                }));
+                        if let Ok(mut s) = r.state.lock() {
+                            s.controls = s.controls.saturating_sub(1);
+                        }
+                    }));
+                }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => return Err(e.into()),
@@ -819,7 +888,22 @@ pub fn run(a: Arguments) -> Result<()> {
                 index += 1;
             }
         }
-        thread::sleep(Duration::from_millis(10));
+        let mut readers = [listener.socket.as_fd(); 3];
+        let count = if let Some(helper) = &mapped_ingress {
+            readers[1] = helper.descriptor();
+            2
+        } else if let Some((payload, checks)) = &ingress {
+            readers[1] = payload.socket.as_fd();
+            readers[2] = checks.socket.as_fd();
+            3
+        } else {
+            1
+        };
+        ipc::wait_for_intake(
+            &readers[..count],
+            None,
+            Instant::now() + Duration::from_millis(10),
+        )?;
     }
     if let Ok(s) = state.lock() {
         for active in s.active.values() {
@@ -926,3 +1010,7 @@ fn status_privacy(value: Value) -> Value {
 #[cfg(test)]
 #[path = "../../Tests/Unit/Applications/ApplicationStreamsAgentTests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../Tests/Unit/Applications/ApplicationStreamSlotTests.rs"]
+mod slot_tests;

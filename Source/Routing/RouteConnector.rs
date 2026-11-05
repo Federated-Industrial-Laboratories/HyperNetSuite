@@ -12,7 +12,41 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
     os::fd::{AsRawFd, FromRawFd},
+    sync::Arc,
 };
+#[derive(Clone)]
+pub(crate) struct OperationBudget {
+    pub(crate) deadline: u64,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+impl OperationBudget {
+    pub(crate) fn new(deadline: u64, cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            deadline,
+            cancelled: Arc::new(cancelled),
+        }
+    }
+    pub(crate) fn cancelled(&self) -> bool {
+        (self.cancelled)()
+    }
+    pub(crate) fn check(&self) -> io::Result<()> {
+        if self.cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "application preparation cancelled",
+            ));
+        }
+        if boot_time_ms().map_err(io::Error::other)? >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                OperationDeadlineExpired {
+                    deadline: self.deadline,
+                },
+            ));
+        }
+        Ok(())
+    }
+}
 #[derive(Debug)]
 pub(crate) struct OperationDeadlineExpired {
     pub(crate) deadline: u64,
@@ -31,6 +65,7 @@ struct Socket<'a> {
     socket: TcpStream,
     deadline: u64,
     operation_deadline: Option<u64>,
+    caller: Option<OperationBudget>,
     idle_deadline: u64,
     idle_ms: u64,
     remaining_bytes: u64,
@@ -66,6 +101,9 @@ impl Socket<'_> {
         self.remaining_bytes = self.remaining_bytes.min(limits.bytes);
     }
     fn check(&self) -> io::Result<u64> {
+        if let Some(caller) = &self.caller {
+            caller.check()?;
+        }
         if (self.cancelled)() {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
@@ -76,6 +114,7 @@ impl Socket<'_> {
         let deadline = self
             .deadline
             .min(self.operation_deadline.unwrap_or(u64::MAX))
+            .min(self.caller.as_ref().map_or(u64::MAX, |c| c.deadline))
             .min(self.idle_deadline);
         deadline.checked_sub(now).filter(|n| *n > 0).ok_or_else(|| {
             // An exhausted session budget remains terminal, including a tie with operation expiry.
@@ -228,7 +267,11 @@ fn connect(
     address: SocketAddr,
     deadline: u64,
     cancelled: &(dyn Fn() -> bool + Sync),
+    caller: Option<&OperationBudget>,
 ) -> Result<TcpStream> {
+    if let Some(caller) = caller {
+        caller.check()?;
+    }
     ensure!(!cancelled(), "private route cancelled");
     let family = if address.is_ipv4() {
         libc::AF_INET
@@ -281,6 +324,7 @@ fn connect(
         socket,
         deadline,
         operation_deadline: None,
+        caller: caller.cloned(),
         idle_deadline: deadline,
         idle_ms: u64::MAX,
         remaining_bytes: u64::MAX,
@@ -332,6 +376,7 @@ pub(crate) fn exchange_reservation(request: usize, maximum_response: usize) -> R
 /// One admitted connection owns a fixed resource budget; failed exchanges cannot reconnect.
 pub struct Session<'a> {
     stream: Option<Stream<'a>>,
+    cleanup_receipt: Option<crate::authority_read::Acknowledgement>,
 }
 impl<'a> Session<'a> {
     pub fn connect(
@@ -350,6 +395,26 @@ impl<'a> Session<'a> {
         handshake_deadline: u64,
         cancelled: &'a (dyn Fn() -> bool + Sync),
     ) -> Result<Self> {
+        Self::connect_with_budget(
+            profile,
+            possession,
+            session_deadline,
+            handshake_deadline,
+            cancelled,
+            None,
+        )
+    }
+    pub(crate) fn connect_with_budget(
+        profile: &Profile,
+        possession: &SigningKey,
+        session_deadline: u64,
+        handshake_deadline: u64,
+        cancelled: &'a (dyn Fn() -> bool + Sync),
+        caller: Option<OperationBudget>,
+    ) -> Result<Self> {
+        if let Some(caller) = &caller {
+            caller.check()?;
+        }
         profile.validate()?;
         let record =
             domains::Record::parse(&profile.voucher, profile.network, profile.incarnation)?;
@@ -378,9 +443,11 @@ impl<'a> Session<'a> {
                 profile.relay_address,
                 deadline.min(handshake_deadline),
                 cancelled,
+                caller.as_ref(),
             )?,
             deadline,
             operation_deadline: Some(handshake_deadline),
+            caller,
             idle_deadline: start.saturating_add(profile.limits.idle_ms),
             idle_ms: profile.limits.idle_ms,
             remaining_bytes: profile.limits.bytes,
@@ -425,7 +492,7 @@ impl<'a> Session<'a> {
         )?;
         outer.sock.admitted(limits, boot_time_ms()?);
         let connection = ClientConnection::new(
-            route_tls::client(&profile.destination)?,
+            route_tls::endpoint_client(&profile.destination, profile.protocol)?,
             ServerName::try_from(profile.destination.server_name.clone())?,
         )?;
         let mut inner = StreamOwned::new(connection, outer);
@@ -434,7 +501,7 @@ impl<'a> Session<'a> {
             .complete_io(&mut inner.sock)
             .context("authenticate final private service")?;
         ensure!(
-            inner.conn.alpn_protocol() == Some(route_tls::ALPN),
+            route_tls::endpoint_protocol(inner.conn.alpn_protocol()),
             "final service protocol differs"
         );
         protocol::parse_endpoint_ready(
@@ -449,7 +516,36 @@ impl<'a> Session<'a> {
         inner.sock.sock.operation_deadline = None;
         Ok(Self {
             stream: Some(inner),
+            cleanup_receipt: None,
         })
+    }
+    pub(crate) fn bind_caller(&mut self, caller: Option<OperationBudget>) -> Result<()> {
+        let socket = &mut self
+            .stream
+            .as_mut()
+            .context("private route session closed")?
+            .sock
+            .sock;
+        ensure!(
+            socket.caller.is_none(),
+            "private route already belongs to an operation"
+        );
+        if let Some(caller) = &caller {
+            caller.check()?;
+        }
+        socket.caller = caller;
+        Ok(())
+    }
+    pub(crate) fn complete_caller(&mut self) -> Result<()> {
+        let socket = &mut self
+            .stream
+            .as_mut()
+            .context("private route session closed")?
+            .sock
+            .sock;
+        socket.check()?;
+        socket.caller = None;
+        Ok(())
     }
     pub fn exchange(
         &mut self,
@@ -470,6 +566,12 @@ impl<'a> Session<'a> {
                 .context("private route session is closed")?;
             inner.sock.sock.operation_deadline = Some(deadline);
             inner.sock.sock.check()?;
+            if let Some(cleanup) = self.cleanup_receipt.take() {
+                // This bounded receipt grants no authority. Drain its exact frame before
+                // the new request, without retransmitting or extending the old cleanup.
+                let receipt = receive(inner, crate::authority_read::Acknowledgement::MAXIMUM)?;
+                cleanup.receipt(&receipt)?;
+            }
             // Endpoint readiness and both authenticated TLS layers precede every application credential.
             send(inner, request).context("send private application request")?;
             let response =
@@ -480,8 +582,70 @@ impl<'a> Session<'a> {
         })();
         if result.is_err() {
             self.stream.take();
+            self.cleanup_receipt = None;
         }
         result
+    }
+    /// A consumed result never waits for cleanup or gains another transport allowance.
+    pub(crate) fn notify_read_consumed(
+        &mut self,
+        request: &[u8],
+        cleanup: crate::authority_read::Acknowledgement,
+        deadline: u64,
+    ) {
+        if !self.read_acknowledgements() || self.cleanup_receipt.is_some() {
+            return;
+        }
+        let Some(remaining) = boot_time_ms()
+            .ok()
+            .and_then(|now| deadline.checked_sub(now))
+        else {
+            return;
+        };
+        if remaining == 0
+            || request.len() > crate::authority_read::Acknowledgement::MAXIMUM
+            || !exchange_reservation(
+                request.len(),
+                crate::authority_read::Acknowledgement::MAXIMUM,
+            )
+            .is_ok_and(|bytes| self.reusable_exchange(remaining, bytes))
+        {
+            return;
+        }
+        let inner = self.stream.as_mut().expect("supported live session");
+        inner.sock.sock.operation_deadline = Some(deadline);
+        inner.sock.sock.opportunistic = true;
+        let result = (|| -> Result<()> {
+            let mut frame = Vec::with_capacity(4 + request.len());
+            frame.extend_from_slice(&(request.len() as u32).to_be_bytes());
+            frame.extend_from_slice(request);
+            ensure!(inner.write(&frame)? == frame.len(), "partial cleanup frame");
+            inner.flush()?;
+            ensure!(
+                !inner.conn.wants_write() && !inner.sock.conn.wants_write(),
+                "cleanup frame remains buffered"
+            );
+            inner.sock.sock.check()?;
+            Ok(())
+        })();
+        inner.sock.sock.opportunistic = false;
+        inner.sock.sock.operation_deadline = None;
+        if result.is_ok() {
+            self.cleanup_receipt = Some(cleanup);
+        } else {
+            // A partial frame cannot remain on an ordinary reusable stream.
+            // The already consumed result remains successful.
+            self.stream.take();
+        }
+    }
+    #[allow(
+        dead_code,
+        reason = "The native authority connector uses this negotiated optional capability."
+    )]
+    pub(crate) fn read_acknowledgements(&self) -> bool {
+        self.stream
+            .as_ref()
+            .is_some_and(|stream| stream.conn.alpn_protocol() == Some(route_tls::READ_ACK_ALPN))
     }
     /// Preparation may reuse the remaining admission, never renew its budgets.
     pub(crate) fn reusable(&self) -> bool {

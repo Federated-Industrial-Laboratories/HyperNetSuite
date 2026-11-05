@@ -14,6 +14,9 @@ use std::{
 #[path = "AuthorityFloorClockTests.rs"]
 mod clock;
 
+#[path = "AuthorityReadFloorTests.rs"]
+mod read;
+
 fn health() -> ClockHealth {
     ClockHealth::new(
         SystemTime::now()

@@ -19,8 +19,10 @@ use std::{
     time::{Duration, Instant},
 };
 #[path = "AuthorityConnectorPacket.rs"]
-mod packet;
+pub(crate) mod packet;
 const DURATION_MS: u64 = 30000;
+const MAXIMUM_EXCHANGES: usize = 2;
+const MAXIMUM_QUEUED: usize = 16;
 #[derive(Args)]
 pub struct Arguments {
     #[arg(long)]
@@ -83,6 +85,7 @@ impl Binding {
 struct Status {
     running: bool,
     active: bool,
+    active_exchanges: usize,
     completed: u64,
     connections: u64,
     reused_exchanges: u64,
@@ -90,9 +93,35 @@ struct Status {
     voucher_expires_ms: u64,
     last_error: Option<String>,
 }
+fn save_status(
+    state: &Mutex<Status>,
+    binding: &Binding,
+    persist: impl FnOnce(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let bytes = {
+        let state = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority connector status lock failed"))?;
+        serde_json::to_vec(
+            &json!({"format":"HyperNetAuthorityConnectorStatus/1","binding":binding,
+            "status":*state,"maximumQueuedConnections":MAXIMUM_QUEUED,
+            "maximumConcurrentExchanges":MAXIMUM_EXCHANGES,"maximumDurationMs":DURATION_MS,
+            "sampleBootMs":boot_time_ms()?}),
+        )?
+    };
+    // Status persistence must not hold the lock needed by active exchanges.
+    persist(&bytes)
+}
 struct Job {
     stream: UnixStream,
     deadline: u64,
+}
+type Jobs = Arc<Mutex<mpsc::Receiver<Job>>>;
+
+fn next_job(receiver: &Jobs) -> Option<Job> {
+    // The shared receive lock ends before any caller or transport work. One
+    // blocked exchange must not retain ownership of the other worker's intake.
+    receiver.lock().ok()?.recv().ok()
 }
 fn ready(stream: &UnixStream, events: i16, deadline: u64) -> Result<()> {
     loop {
@@ -162,12 +191,38 @@ fn endpoint(path: &Path, binding: &Binding, bootstrap: &trust::Verified) -> Resu
     );
     Ok(endpoint)
 }
+fn deliver_reply(
+    stream: &mut UnixStream,
+    reply: &[u8],
+    deadline: u64,
+    cleanup: Option<&packet::Cleanup>,
+) -> Result<()> {
+    if let Some(cleanup) = cleanup {
+        cleanup.receipt(reply)?;
+        if ipc::disconnected(stream)? {
+            return Ok(());
+        }
+    }
+    write(stream, &(reply.len() as u32).to_be_bytes(), deadline)?;
+    write(stream, reply, deadline)
+}
+pub(crate) fn exchange_cleanup(
+    session: Option<&mut Session<'_>>,
+    request: &[u8],
+    deadline: u64,
+    cleanup: &packet::Cleanup,
+) -> Result<Vec<u8>> {
+    let Some(session) = session.filter(|session| session.read_acknowledgements()) else {
+        return cleanup.not_released();
+    };
+    session.exchange(request, deadline, packet::Cleanup::MAXIMUM)
+}
 fn actor(
-    receiver: mpsc::Receiver<Job>,
+    receiver: Jobs,
     selected: PathBuf,
     clock: PathBuf,
     binding: Binding,
-    bootstrap: trust::Verified,
+    bootstrap: Arc<trust::Verified>,
     status: Arc<Mutex<Status>>,
 ) {
     let current: Mutex<Option<UnixStream>> = Mutex::new(None);
@@ -181,13 +236,15 @@ fn actor(
     };
     let mut session = None;
     let mut retained = None;
-    while let Ok(mut job) = receiver.recv() {
+    while let Some(mut job) = next_job(&receiver) {
         if transport::cancelled() {
             break;
         }
         if let Ok(mut state) = status.lock() {
-            state.active = true;
+            state.active_exchanges += 1;
+            state.active = state.active_exchanges != 0;
         }
+        let mut cleanup = false;
         let result = (|| -> Result<()> {
             job.stream.set_nonblocking(true)?;
             *current
@@ -205,8 +262,32 @@ fn actor(
             let mut request = vec![0; length];
             read(&mut job.stream, &mut request, initial)?;
             let route = endpoint(&selected, &binding, &bootstrap)?;
-            packet::validate(route.route.network, route.route.incarnation, &request)?;
-            let now = crate::authority_clock::health(&clock)?.observe()?.wall_ms;
+            let acknowledgement =
+                packet::validate(route.route.network, route.route.incarnation, &request)?;
+            let now = crate::authority_clock::health(&clock)?.observe()?;
+            cleanup = acknowledgement.is_some();
+            if let Some(acknowledgement) = &acknowledgement {
+                job.deadline = acknowledgement.deadline(now, job.deadline)?;
+                // A notification sender may already have closed. Only the signed
+                // deadline and the original admitted session bound remote cleanup.
+                *current
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("authority caller lock failed"))? = None;
+                if !session.as_ref().is_some_and(Session::read_acknowledgements) {
+                    let reply = exchange_cleanup(
+                        session.as_mut(),
+                        &request,
+                        job.deadline,
+                        acknowledgement,
+                    )?;
+                    return deliver_reply(
+                        &mut job.stream,
+                        &reply,
+                        job.deadline,
+                        Some(acknowledgement),
+                    );
+                }
+            }
             let record = Record::parse(
                 &route.route.voucher,
                 route.route.network,
@@ -217,19 +298,28 @@ fn actor(
                 state.voucher_expires_ms = voucher.expires;
             }
             ensure!(
-                now < voucher.expires,
+                now.wall_ms < voucher.expires,
                 "authority route voucher expired; retain an explicitly renewed same-target route through an independently valid authority route"
             );
             let remaining = job.deadline.saturating_sub(boot_time_ms()?);
+            let maximum_response = if cleanup {
+                packet::Cleanup::MAXIMUM
+            } else {
+                4 * wire::MAXIMUM
+            };
             let reusable = retained.as_ref() == Some(&route.route)
                 && session.as_ref().is_some_and(|s: &Session<'_>| {
                     s.reusable_exchange(
                         remaining,
-                        route_connector::exchange_reservation(request.len(), 4 * wire::MAXIMUM)
+                        route_connector::exchange_reservation(request.len(), maximum_response)
                             .unwrap_or(u64::MAX),
                     )
                 });
             if !reusable {
+                ensure!(
+                    !cleanup,
+                    "fresh acknowledgement requires the existing admitted session"
+                );
                 session = None;
                 let possession = crate::networks::route_key(&route.profile, &route.route)?;
                 let lifetime = boot_time_ms()?
@@ -249,31 +339,37 @@ fn actor(
             } else if let Ok(mut state) = status.lock() {
                 state.reused_exchanges = state.reused_exchanges.saturating_add(1);
             }
-            let reply = session
-                .as_mut()
-                .context("authority route session absent")?
-                .exchange(&request, job.deadline, 4 * wire::MAXIMUM)?;
-            write(
+            let reply = if let Some(cleanup) = &acknowledgement {
+                exchange_cleanup(session.as_mut(), &request, job.deadline, cleanup)?
+            } else {
+                session
+                    .as_mut()
+                    .context("authority route session absent")?
+                    .exchange(&request, job.deadline, maximum_response)?
+            };
+            deliver_reply(
                 &mut job.stream,
-                &(reply.len() as u32).to_be_bytes(),
+                &reply,
                 job.deadline,
-            )?;
-            write(&mut job.stream, &reply, job.deadline)?;
-            Ok(())
+                acknowledgement.as_ref(),
+            )
         })();
         if let Ok(mut caller) = current.lock() {
             *caller = None;
         }
         if let Ok(mut state) = status.lock() {
-            state.active = false;
+            state.active_exchanges -= 1;
+            state.active = state.active_exchanges != 0;
             match result {
                 Ok(()) => {
                     state.completed = state.completed.saturating_add(1);
                     state.last_error = None;
                 }
                 Err(error) => {
-                    session = None;
-                    retained = None;
+                    if !cleanup {
+                        session = None;
+                        retained = None;
+                    }
                     state.refused = state.refused.saturating_add(1);
                     state.last_error = Some(format!("{error:#}").chars().take(512).collect());
                 }
@@ -335,34 +431,25 @@ pub fn run(arguments: Arguments) -> Result<()> {
         voucher_expires_ms: expires,
         ..Status::default()
     }));
-    let (sender, receiver) = mpsc::sync_channel(16);
+    let (sender, receiver) = mpsc::sync_channel(MAXIMUM_QUEUED);
+    let receiver = Arc::new(Mutex::new(receiver));
     let clock = joined.clock_witness.clone();
-    let actor_state = state.clone();
-    let actor_binding = binding.clone();
-    let worker = thread::spawn(move || {
-        actor(
-            receiver,
-            selected,
-            clock,
-            actor_binding,
-            bootstrap,
-            actor_state,
-        )
-    });
+    let bootstrap = Arc::new(bootstrap);
+    let workers: Vec<_> = (0..MAXIMUM_EXCHANGES)
+        .map(|_| {
+            let receiver = Arc::clone(&receiver);
+            let selected = selected.clone();
+            let clock = clock.clone();
+            let binding = binding.clone();
+            let bootstrap = Arc::clone(&bootstrap);
+            let state = Arc::clone(&state);
+            thread::spawn(move || actor(receiver, selected, clock, binding, bootstrap, state))
+        })
+        .collect();
     let save = || -> Result<()> {
-        let state = state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("authority connector status lock failed"))?;
-        files::atomic_at(
-            &root,
-            std::ffi::OsStr::new("Status.json"),
-            &serde_json::to_vec(
-                &json!({"format":"HyperNetAuthorityConnectorStatus/1","binding":binding,
-                "status":*state,"maximumQueuedConnections":16,"maximumDurationMs":DURATION_MS,
-                "sampleBootMs":boot_time_ms()?}),
-            )?,
-            true,
-        )
+        save_status(&state, &binding, |bytes| {
+            files::atomic_at(&root, std::ffi::OsStr::new("Status.json"), bytes, true)
+        })
     };
     let outcome = (|| -> Result<()> {
         save()?;
@@ -372,7 +459,10 @@ pub fn run(arguments: Arguments) -> Result<()> {
         )?;
         let mut last = Instant::now();
         while !transport::cancelled() {
-            ensure!(!worker.is_finished(), "authority connector actor stopped");
+            ensure!(
+                workers.iter().all(|worker| !worker.is_finished()),
+                "authority connector actor stopped"
+            );
             if let Some(stream) = ingress.accept()? {
                 let job = Job {
                     stream,
@@ -388,19 +478,27 @@ pub fn run(arguments: Arguments) -> Result<()> {
                 save()?;
                 last = Instant::now();
             }
-            thread::sleep(Duration::from_millis(10));
+            ipc::wait_for_intake(
+                &[ingress.descriptor()],
+                None,
+                Instant::now() + Duration::from_millis(10),
+            )?;
         }
         Ok(())
     })();
     transport::request_cancel();
     drop(sender);
     drop(ingress);
-    let joined = worker
-        .join()
-        .map_err(|_| anyhow::anyhow!("authority connector actor failed"));
+    let mut joined = Ok(());
+    for worker in workers {
+        if worker.join().is_err() {
+            joined = Err(anyhow::anyhow!("authority connector actor failed"));
+        }
+    }
     if let Ok(mut state) = state.lock() {
         state.running = false;
         state.active = false;
+        state.active_exchanges = 0;
     }
     let saved = save();
     outcome?;

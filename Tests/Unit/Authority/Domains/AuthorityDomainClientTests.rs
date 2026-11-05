@@ -83,11 +83,34 @@ fn elapsed_health(health: ClockHealth, elapsed: u64) -> ClockHealth {
     .frozen()
 }
 
+// Durable setup precedes a new challenge; frozen wall values still model quorum evaluation.
+fn attempt_clock<'a>(
+    issued: &'a mut ClockHealth,
+    current: &'a mut ClockHealth,
+) -> impl FnMut() -> Result<ClockHealth> + 'a {
+    let before = issued.observe().unwrap();
+    let received = current.observe().unwrap();
+    let gap = received.wall_ms.checked_sub(before.wall_ms).unwrap();
+    move || {
+        let boot = boot_time_ms()?;
+        *issued = ClockHealth::new(before.wall_ms, boot, boot + 30000, 100)?.frozen();
+        *current = ClockHealth::new(received.wall_ms, boot + gap, boot + 30000, 100)?.frozen();
+        eprintln!(
+            "domain fixture clock: prior_boot={} sampled_boot={} deadline={} evaluation_gap={}",
+            before.boot_ms,
+            boot,
+            boot + DURATION,
+            gap
+        );
+        Ok(*issued)
+    }
+}
+
 #[test]
 fn own_backup_metadata_finishes_without_inventing_a_discretionary_policy_dependency() {
     let mut f = Fixture::with_actions(vec![0, 20]);
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
-    let prepared = Prepared::new(
+    let prepared = Prepared::new_with_objects(
         &f.bootstrap,
         Request {
             command: domains::backup::Command::List { after: None }.into(),
@@ -97,9 +120,14 @@ fn own_backup_metadata_finishes_without_inventing_a_discretionary_policy_depende
         &f.signer,
         &mut f.store,
         &mut f.session,
-        f.issued,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
     )
     .unwrap();
+    assert_eq!(
+        prepared.deadline,
+        f.issued.observe().unwrap().boot_ms + DURATION
+    );
     assert!(
         Intent::from_signed(&prepared.intent)
             .unwrap()
@@ -143,16 +171,21 @@ fn page_history_refresh_keeps_exact_intent_and_original_deadline() {
     let mut f = Fixture::with_actions(vec![0, 20]);
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
     let request = page_query(&f);
-    let mut prepared = Prepared::new(
+    let mut prepared = Prepared::new_with_objects(
         &f.bootstrap,
         request,
         cache,
         &f.signer,
         &mut f.store,
         &mut f.session,
-        f.issued,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
     )
     .unwrap();
+    assert_eq!(
+        prepared.deadline,
+        f.issued.observe().unwrap().boot_ms + DURATION
+    );
     let original = prepared.intent.clone();
     let deadline = prepared.deadline;
     let prefix = f.store.prefix().clone();
@@ -498,16 +531,21 @@ fn cache_failure_reopens_and_retries_the_exact_original_domain_request() {
     let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
     assert!(cache.records.is_empty());
     let request = domain_request(&f);
-    let prepared = Prepared::new(
+    let prepared = Prepared::new_with_objects(
         &f.bootstrap,
         request,
         cache,
         &f.signer,
         &mut f.store,
         &mut f.session,
-        f.issued,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
     )
     .unwrap();
+    assert_eq!(
+        prepared.deadline,
+        f.issued.observe().unwrap().boot_ms + DURATION
+    );
     let original = prepared.intent.clone();
     let (certified, evidence) = reply(&prepared, &f);
     let path = f.directory.0.join(CACHE);
@@ -562,16 +600,21 @@ fn cache_failure_reopens_and_retries_the_exact_original_domain_request() {
         .is_err()
     );
     let request = domain_request(&f);
-    let prepared = Prepared::new(
+    let prepared = Prepared::new_with_objects(
         &f.bootstrap,
         request,
         cache,
         &f.signer,
         &mut f.store,
         &mut f.session,
-        f.issued,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
     )
     .unwrap();
+    assert_eq!(
+        prepared.deadline,
+        f.issued.observe().unwrap().boot_ms + DURATION
+    );
     assert_eq!(prepared.intent, original);
     let (certified, evidence) = reply(&prepared, &f);
     prepared
@@ -822,5 +865,103 @@ fn expired_read_preserves_newer_stream_floor_and_reacquires_superseded_cache() {
         files::atomic_at(f.store.profile_directory(), OsStr::new(CACHE), &bytes, true).unwrap();
         assert!(Cache::load(&f.bootstrap, &f.store).is_err());
         assert!(f.store.generations().contains(&current.reference));
+    }
+}
+
+#[test]
+fn preparation_cancellation_and_expired_queue_preserve_exact_unknown_ordinary_request() {
+    use std::{
+        io::Read,
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+    let mut f = Fixture::with_actions(vec![0, 20]);
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    let prepared = Prepared::new(
+        &f.bootstrap,
+        domain_request(&f),
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        f.current,
+    )
+    .unwrap();
+    let original = f
+        .store
+        .resume_ordinary()
+        .unwrap()
+        .unwrap()
+        .signed()
+        .to_vec();
+    f.session.discard(&prepared.challenge).unwrap();
+    let path = f.directory.0.join("BoundedOrdinary.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let observed = cancel.clone();
+    let expected = original.clone();
+    let server = std::thread::spawn(move || {
+        let (mut stream, bytes) = crate::authority_inspection::tests::receive_control(&listener);
+        let packet = wire::decode(&bytes).unwrap();
+        let packet = packet.array(5).unwrap();
+        assert_eq!(packet[3], V::Uint(0));
+        let submission = wire::decode(packet[4].bytes().unwrap()).unwrap();
+        let ordered = wire::decode(submission.array(2).unwrap()[0].bytes().unwrap()).unwrap();
+        assert_eq!(ordered.array(6).unwrap()[3].bytes().unwrap(), expected);
+        cancel.store(true, Ordering::Release);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(stream.read(&mut [0; 1]).unwrap(), 0);
+    });
+    let end = boot_time_ms().unwrap() + 5000;
+    let mut budget = crate::authority_inspection::read_client::RetryBudget::new(end, move || {
+        observed.load(Ordering::Acquire)
+    });
+    let error = local_with_read_budget(
+        &f.bootstrap,
+        domain_request(&f),
+        &path,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        || Ok(f.current),
+        &mut budget,
+    )
+    .err()
+    .expect("cancelled preparation must fail");
+    assert!(
+        format!("{error:#}").contains("application preparation cancelled"),
+        "{error:#}"
+    );
+    server.join().unwrap();
+    assert_eq!(
+        f.store.resume_ordinary().unwrap().unwrap().signed(),
+        original
+    );
+    // A queued completion keeps its enqueue deadline; trailing expired work cannot open a new route.
+    for _ in 0..8 {
+        let mut expired = crate::authority_inspection::read_client::RetryBudget::new(0, || false);
+        assert!(
+            local_with_read_budget(
+                &f.bootstrap,
+                domain_request(&f),
+                &f.directory.0.join("absent"),
+                &f.signer,
+                &mut f.store,
+                &mut f.session,
+                || panic!("expired queue item sampled a new challenge clock"),
+                &mut expired
+            )
+            .is_err()
+        );
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().signed(),
+            original
+        );
     }
 }

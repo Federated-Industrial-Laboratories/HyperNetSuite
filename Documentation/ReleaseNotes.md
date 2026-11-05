@@ -2,6 +2,112 @@
 
 [Documentation](ReadMe.md) | [Project](../ReadMe.md)
 
+## Linux 0.10.1
+
+Version 0.10.1 completes optional consumed-read cleanup in native Suite clients
+and preserves the original application preparation deadline. Download the signed
+[Linux 0.10.1 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.1).
+Package signatures, installed checks and native results identify exact artifacts;
+earlier release evidence retains its original scope.
+
+### Changes and compatibility
+
+- The native authority connector runs at most two independent exchanges through
+  separately admitted sessions to the same pinned authority endpoint. Its shared
+  queue remains bounded at16 and each caller retains its original deadline.
+  Selected relay and authority policies must allow these connections alongside
+  application traffic. Exact request/read binding, cleanup capability checks and
+  requester-floor rules remain authoritative. Status persistence does not hold
+  the mutex used by active exchanges.
+- The companion pipelines at most four exactly correlated authority checks,
+  with one pending check per connection. Cancellation and original deadlines
+  remain enforced. Preparation and cleanup alternate within one queue of at
+  most 16 waiting jobs; unknown signed outcomes still require exact recovery.
+- Companion, connector and mapped-ingress idle waits wake on socket readiness
+  within their existing maximum wait. Finite work turns, original operation
+  deadlines and exact descriptor acknowledgement remain unchanged. Readiness
+  never consumes an incoming descriptor or substitutes for authentication.
+- Typed connection closure during route preparation or final-service
+  authentication returns `Closed`; a typed timeout returns `Timeout`. Clients
+  can distinguish temporary connection failure from permanent `Refused`
+  outcomes. Certificate, protocol, identity and permission failures remain
+  refusals. Error responses do not disclose the underlying private cause.
+- Cleanup of an unsigned stream proof completes after exact requester recovery
+  and the original deadline check, without a new remote slot lookup or Close.
+  Such a proof has not reached admission. Signed or ambiguous outcomes retain
+  the current lookup and exact Close recovery path.
+- A newly certified refusal during exact retained-operation recovery triggers one
+  authenticated status resolution within the original preparation budget. Planning
+  continues only after the retained operation is resolved; unknown outcomes and
+  unconsumed permits remain pending. Refusals from new plans remain terminal.
+- Policy-context and domain reads acknowledge only successful verified consumption,
+  including a verified refusal, after durable publication and the final one-use
+  check. Cleanup binds the exact original scope, read, statement, result and expiry.
+- Cleanup makes one nonblocking send through the existing supported authority
+  transport. At most one bounded receipt waits for correlation before the next
+  ordinary exchange. A failed cleanup cannot change the consumed outcome, retry
+  authority or create another session. Legacy peers receive no unsupported packet.
+- Relay admission, final-service readiness and application acceptance share the
+  caller's original preparation deadline. Successful handoff clears only that
+  operation bound; the separately authorised active-stream lifetime remains.
+- The same caller deadline and cancellation cover cold authority-route admission,
+  history preparation and exact-outcome recovery, including time in the actor queue.
+  Best-effort caller cleanup receives an enqueue-time cap of the lesser of its idle
+  allowance and five seconds. Expiry preserves any unknown signed operation for
+  exact recovery and never reclaims an authoritative stream slot.
+- Exhausted connection, preparation-queue and reusable-slot budgets return the
+  existing `Capacity` IPC code. Clients can apply bounded retry without treating
+  temporary capacity loss as a permanent refusal. Other refusals retain their code.
+- Independent domain verification recognises Core's endpoint-only
+  `StreamRetirementContext` read. It discloses the bounded session/service/route
+  context for same-proof cleanup after concurrent closure, without granting live
+  permission. Supporting authority replicas are required for this new query.
+- The Python application-stream SDK and package manifest advance together to
+  0.10.1. Existing IPC version 1 and version 2 contracts remain compatible.
+
+Use Suite 0.10.1 with Core 0.10.2 to release completed reads promptly. Older Core
+endpoints remain usable; unsupported cleanup is skipped and the original read
+expiry applies. Freshness, retained-read capacity and requester recovery rules do
+not change. See [authority transport](AuthorityConnector.md) and
+[application streams](ApplicationStreams.md) for the exact bounds.
+
+### Upgrade and qualification scope
+
+The target remains native Ubuntu 24.04 x86_64 with GNU libc 2.39. Source-bound
+checks cover actual Core collection removal after Suite consumption over admitted
+TLS, legacy reuse, delayed and misbound receipts, and preparation versus active
+stream lifetime. These checks do not establish application throughput, a
+concurrent-user target or another supported platform. Earlier native and graphics
+results retain their original source and artifact identities.
+
+Stop active client work before selecting the new executable and restart native
+companions. Preserve profiles, requester journals, private identities, package
+trust and all retained floors. The package contract remains
+`HyperNet080Client1`; no grant or private-state migration is introduced. Use an
+independently authenticated signed target for the exact package and preserve the
+existing product trust directory. See [upgrade and recovery](UpgradeRecovery.md).
+
+### Signed package
+
+The release contains `HyperNetSuite-0.10.1-linux-x86_64.tar`, its `.sig`,
+`HyperNetSuite-0.10.1-linux-x86_64.target.json`, its `.sig`, `Publisher.pub`,
+`SHA256SUMS` and `SHA256SUMS.sig`. The signed target uses root generation 1,
+sequence 19 and version floor 0.10.1. Authenticate the publisher independently
+and preserve retained package trust; never lower its sequence or version floor.
+The unchanged corresponding-source archive is `HyperNetSuite-0.10.0-third-party-sources.tar.xz`;
+its older filename identifies the retained dependency inputs, not the runtime version.
+
+Installed qualification covers the final executable on Ubuntu 24.04 x86_64 with
+GNU libc 2.39. The same runtime bytes also participated in an admitted application
+pilot on Ubuntu 26.04 amd64 with GNU libc 2.43: eight interactive clients and four
+support endpoints used twelve receiving streams and two admitted applications.
+The deployment allowed sixteen relay and application connections, eight authority
+endpoint connections and two native connector sessions. This is a bounded topology,
+not qualification of every configured slot, independent host failure domains or
+arbitrary application load. Application-specific throughput and latency results
+belong to that application's qualification report. Earlier GUI and platform
+results retain their original artifact scope; no independent security audit is claimed.
+
 ## Linux 0.10.0 application context and authority checks
 
 Version 0.10.0 adds explicit current-authority observations and transport context

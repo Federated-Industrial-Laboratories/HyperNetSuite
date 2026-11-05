@@ -107,9 +107,12 @@ fn fresh_page_view_precedes_ordered_content_receipt_without_consuming_its_sequen
         }
     });
     let old = v.f.current.observe().unwrap();
-    v.f.current = ClockHealth::new(7000, old.boot_ms + 1000, old.boot_ms + 30000, 100)
-        .unwrap()
-        .frozen();
+    // Finish the prior synthetic observation before starting this new read's real interval.
+    std::thread::sleep(std::time::Duration::from_millis(
+        old.boot_ms.saturating_sub(boot_time_ms().unwrap()),
+    ));
+    let mut current = v.f.current;
+    let mut observed = Vec::new();
     v.result = local(
         &v.f.bootstrap,
         Request {
@@ -120,9 +123,19 @@ fn fresh_page_view_precedes_ordered_content_receipt_without_consuming_its_sequen
         &v.f.signer,
         &mut v.f.store,
         &mut v.f.session,
-        || Ok(v.f.current),
+        || {
+            let boot = boot_time_ms()?;
+            observed.push(boot);
+            current = ClockHealth::new(7000, boot, boot + 30000, 100)?.frozen();
+            Ok(current)
+        },
     )
     .unwrap();
+    v.f.current = current;
+    eprintln!(
+        "page fixture clock: prior_boot={} observed_boot={:?} deadline={}",
+        old.boot_ms, observed, v.result.deadline_boot_ms
+    );
     server.join().unwrap();
     assert_eq!(v.result.prefix, prefix);
     assert_eq!(v.result.evaluated_at_ms, 7000);

@@ -110,7 +110,17 @@ impl Client {
         Ok(())
     }
     pub fn resume_agent(&mut self, targets: &[Target]) -> Result<()> {
-        stream_client::resolve_refusal_local(
+        self.resume_agent_observed(targets, None)
+    }
+    fn resolve_refusal_status(&mut self) -> Result<()> {
+        ensure!(
+            !crate::private_route_client::cancelled(),
+            "application agent is stopping"
+        );
+        if let Some(budget) = &self.preparation {
+            budget.check()?;
+        }
+        stream_client::resolve_refusal_local_with_budget(
             &self.store.descriptor().clone(),
             &self.socket,
             &self.key,
@@ -120,40 +130,94 @@ impl Client {
                 Some(budget) => budget.clock(|| self.clock.health()),
                 None => self.clock.health(),
             },
+            self.preparation.as_ref().map(|budget| budget.transport()),
         )?;
-        if let Some(pending) = self.store.resume_ordinary()? {
-            let intent = Intent::from_signed(pending.signed())?;
-            ensure!(
-                intent.action == "AuthorityDomain",
-                "another exact requester operation needs resolution before starting the agent"
-            );
-            let operation = domain::Operation::parse(&intent)?;
-            let allowed = match &operation.command {
-                domain::Command::Stream(c) => {
-                    !c.mutation() || matches!(c, streams::Command::Close { .. })
-                }
-                domain::Command::Route(domain::routes::Command::Issue { id, .. }) => {
-                    targets.iter().any(|t| {
-                        crate::private_route_client::Endpoint::load(&t.route).is_ok_and(|e| {
-                            domain::Record::parse(
-                                &e.route.voucher,
-                                e.route.network,
-                                e.route.incarnation,
-                            )
-                            .is_ok_and(|r| r.reference.id == *id)
-                        })
-                    })
-                }
-                domain::Command::Route(c) => !c.mutation(),
-                _ => false,
-            };
-            ensure!(
-                allowed,
-                "another exact mutation needs resolution before starting the agent"
-            );
-            self.execute(operation.grant, operation.command)?;
+        if let Some(budget) = &self.preparation {
+            budget.check()?;
         }
+        ensure!(
+            !crate::private_route_client::cancelled(),
+            "application agent is stopping"
+        );
         Ok(())
+    }
+    fn recover_retained_refusal(&mut self, signed: &[u8], error: anyhow::Error) -> Result<()> {
+        if !error.is::<domain_client::Refusal>() {
+            return Err(error);
+        }
+        ensure!(
+            self.store
+                .resume_ordinary()?
+                .is_some_and(|pending| pending.signed() == signed),
+            "retained requester operation changed during recovery"
+        );
+        // A new disclosure refusal does not establish the original outcome. Only
+        // authenticated own-stream status may complete this exact retained request.
+        self.resolve_refusal_status()?;
+        if self.store.resume_ordinary()?.is_none() {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+    fn resume_agent_observed(
+        &mut self,
+        targets: &[Target],
+        timing: Option<&timing::Timing>,
+    ) -> Result<()> {
+        if let Some(timing) = timing {
+            timing.event("Resume", "Begin");
+        }
+        let mut stage = timing::ResumeStage::RefusalStatus;
+        let result = (|| {
+            self.resolve_refusal_status()?;
+            stage = timing::ResumeStage::RetainedOperation;
+            if let Some(pending) = self.store.resume_ordinary()? {
+                let intent = Intent::from_signed(pending.signed())?;
+                ensure!(
+                    intent.action == "AuthorityDomain",
+                    "another exact requester operation needs resolution before starting the agent"
+                );
+                let operation = domain::Operation::parse(&intent)?;
+                let allowed = match &operation.command {
+                    domain::Command::Stream(c) => {
+                        !c.mutation() || matches!(c, streams::Command::Close { .. })
+                    }
+                    domain::Command::Route(domain::routes::Command::Issue { id, .. }) => {
+                        targets.iter().any(|t| {
+                            crate::private_route_client::Endpoint::load(&t.route).is_ok_and(|e| {
+                                domain::Record::parse(
+                                    &e.route.voucher,
+                                    e.route.network,
+                                    e.route.incarnation,
+                                )
+                                .is_ok_and(|r| r.reference.id == *id)
+                            })
+                        })
+                    }
+                    domain::Command::Route(c) => !c.mutation(),
+                    _ => false,
+                };
+                ensure!(
+                    allowed,
+                    "another exact mutation needs resolution before starting the agent"
+                );
+                if let Some(timing) = timing {
+                    timing.event(operation.command.name(), "ResumeRetained");
+                }
+                if let Err(error) = self.execute(operation.grant, operation.command) {
+                    self.recover_retained_refusal(pending.signed(), error)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Some(timing) = timing {
+            match &result {
+                Ok(()) => timing.event("Resume", "Complete"),
+                Err(error) => timing.resume_failure(stage, error),
+            }
+        }
+        result
     }
     fn endpoint(&mut self, target: &Target) -> Result<crate::private_route_client::Endpoint> {
         let mut endpoint = crate::private_route_client::Endpoint::load(&target.route)?;
@@ -247,14 +311,16 @@ impl Client {
         &mut self,
         target: &Target,
         used: &BTreeSet<(Digest, u64)>,
+        start_slot: u64,
         budget: crate::authority_inspection::read_client::RetryBudget,
         targets: &[Target],
+        timing: &timing::Timing,
     ) -> Result<Plan> {
         budget.check()?;
         self.preparation = Some(budget);
         let result = self
-            .resume_agent(targets)
-            .and_then(|()| self.plan_inner(target, used))
+            .resume_agent_observed(targets, Some(timing))
+            .and_then(|()| self.plan_inner(target, used, start_slot, timing))
             .and_then(|plan| {
                 self.preparation
                     .as_ref()
@@ -265,18 +331,23 @@ impl Client {
         self.preparation = None;
         result
     }
-    fn plan_inner(&mut self, target: &Target, used: &BTreeSet<(Digest, u64)>) -> Result<Plan> {
+    fn plan_inner(
+        &mut self,
+        target: &Target,
+        used: &BTreeSet<(Digest, u64)>,
+        start_slot: u64,
+        timing: &timing::Timing,
+    ) -> Result<Plan> {
         let service = id(&target.service)?;
-        let endpoint = self.endpoint(target)?;
+        let endpoint = timing.run("Endpoint", || self.endpoint(target))?;
         let grant = self.grant(&target.grant)?;
-        for slot in 0..streams::SLOTS {
-            if used.contains(&(service, slot)) {
-                continue;
-            }
-            let result = self.stream(
-                Some(grant.clone()),
-                streams::Command::Lookup { service, slot },
-            )?;
+        select_slot(service, used, start_slot, |slot| {
+            let result = timing.run("SlotLookup", || {
+                self.stream(
+                    Some(grant.clone()),
+                    streams::Command::Lookup { service, slot },
+                )
+            })?;
             let r = result.cache.state.record(172, service)?;
             let registered = streams::Service::parse(
                 &r.payload,
@@ -311,7 +382,7 @@ impl Client {
                     endpoint.route.incarnation,
                 )?;
                 if !old_session.retired && now < old_session.proof.expires {
-                    continue;
+                    return Ok(None);
                 }
                 old.reference
                     .generation
@@ -373,17 +444,41 @@ impl Client {
                         "notAfterBootMs":result.deadline_boot_ms
                     })
                 });
-            return Ok(Plan {
+            Ok(Some(Plan {
                 endpoint_provenance,
                 proof,
                 binding: registered.registration.binding,
                 owner: registered.registration.owner,
                 endpoint_key: route_service.profile.service,
-                endpoint,
+                endpoint: endpoint.clone(),
                 key: self.key.clone(),
-            });
-        }
-        anyhow::bail!("all application stream slots remain live")
+            }))
+        })
+    }
+    pub fn cleanup(
+        &mut self,
+        proof: &streams::Proof,
+        deadline: u64,
+        targets: &[Target],
+    ) -> Result<()> {
+        let budget = crate::authority_inspection::read_client::RetryBudget::new(deadline, || false);
+        budget.check()?;
+        self.preparation = Some(budget);
+        let result = self.resume_agent(targets).and_then(|()| {
+            self.preparation
+                .as_ref()
+                .expect("cleanup budget installed")
+                .check()?;
+            // No application admission was submitted before the proof was signed.
+            // A signed proof can have an unknown outcome and still needs exact cleanup.
+            if proof.envelope.is_empty() {
+                Ok(())
+            } else {
+                self.close(proof)
+            }
+        });
+        self.preparation = None;
+        result
     }
     pub fn close(&mut self, proof: &streams::Proof) -> Result<()> {
         let result = self.stream(
@@ -415,6 +510,23 @@ impl Client {
         Ok(())
     }
 }
+// Ordering is local only: every unreserved candidate must complete a fresh lookup.
+pub(super) fn select_slot<T>(
+    service: Digest,
+    used: &BTreeSet<(Digest, u64)>,
+    start: u64,
+    mut lookup: impl FnMut(u64) -> Result<Option<T>>,
+) -> Result<T> {
+    for offset in 0..streams::SLOTS {
+        let slot = (start % streams::SLOTS + offset) % streams::SLOTS;
+        if !used.contains(&(service, slot))
+            && let Some(plan) = lookup(slot)?
+        {
+            return Ok(plan);
+        }
+    }
+    anyhow::bail!(Capacity::Slots)
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Target {
@@ -437,3 +549,7 @@ pub(super) struct Plan {
     pub endpoint: crate::private_route_client::Endpoint,
     pub key: SigningKey,
 }
+
+#[cfg(test)]
+#[path = "../../Tests/Unit/Applications/ApplicationStreamCleanupTests.rs"]
+mod tests;

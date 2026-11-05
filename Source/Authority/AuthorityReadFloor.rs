@@ -3,6 +3,34 @@
 use super::*;
 use crate::authority_read::VerifiedRead;
 
+/// Constructed only after durable publication and final one-use consumption.
+pub(crate) struct ConsumedRead {
+    statement: crate::authority_read::Statement,
+    consumed_at: crate::authority_challenge::Observation,
+}
+impl ConsumedRead {
+    pub(crate) fn acknowledgement(
+        &self,
+        key: &ed25519_dalek::SigningKey,
+        deadline: u64,
+    ) -> Result<(crate::authority_read::Acknowledgement, Vec<u8>)> {
+        let remaining = deadline
+            .checked_sub(self.consumed_at.boot_ms)
+            .filter(|left| *left > 0)
+            .context("consumed read cleanup deadline expired")?;
+        let ceiling = self
+            .consumed_at
+            .wall_ms
+            .saturating_add(remaining)
+            .min(self.statement.expires_at_ms);
+        let signed = crate::authority_read::Acknowledgement::sign(&self.statement, key, ceiling)?;
+        let acknowledgement =
+            crate::authority_read::Acknowledgement::parse(&signed, &self.statement.scope)?;
+        let packet = acknowledgement.packet(&signed)?;
+        Ok((acknowledgement, packet))
+    }
+}
+
 /// Only a fully verified permitted read can produce this recoverable diagnostic.
 #[derive(Debug)]
 pub(crate) struct ReadExpired;
@@ -47,8 +75,7 @@ impl Store {
         );
         ensure!(
             result.request.scope == *self.descriptor.scope()
-                && result.point().prefix().scope() == self.descriptor.scope()
-                && result.request.minimum_height >= self.floor.height(),
+                && result.point().prefix().scope() == self.descriptor.scope(),
             "fresh read context or causal floor differs"
         );
         if let Some(history) = result.history() {
@@ -57,6 +84,8 @@ impl Store {
                 "fresh read history differs from retained prefix"
             );
         }
+        // The signed minimum is the floor at issue, not the certified result's
+        // height. Another pending read may have published the same newer prefix.
         result.extends(&self.floor)
     }
     fn advance_read(&mut self, result: &VerifiedRead, wall: u64) -> Result<()> {
@@ -106,6 +135,10 @@ impl Store {
             result.continuity(),
         )
     }
+    #[allow(
+        dead_code,
+        reason = "Shared callers may retain an unacknowledged result."
+    )]
     pub fn observe_read(
         &mut self,
         result: VerifiedRead,
@@ -113,6 +146,16 @@ impl Store {
         clock: &mut impl FnMut() -> Result<ClockHealth>,
         not_before: u64,
     ) -> Result<()> {
+        self.observe_read_consumed(result, session, clock, not_before)
+            .map(|_| ())
+    }
+    pub(crate) fn observe_read_consumed(
+        &mut self,
+        result: VerifiedRead,
+        session: &mut Session,
+        clock: &mut impl FnMut() -> Result<ClockHealth>,
+        not_before: u64,
+    ) -> Result<ConsumedRead> {
         self.read_ready(&result)?;
         ensure!(
             result.result.disposition == Disposition::Refuse,
@@ -129,11 +172,18 @@ impl Store {
         let consumed = session
             .consume_read(&result, not_before, clock()?)
             .context("fresh refusal validation after persistence failed")?;
-        session
+        let consumed_at = session
             .finish_consumption(consumed, clock()?)
             .context("fresh refusal final validation failed")?;
-        Ok(())
+        Ok(ConsumedRead {
+            statement: result.statement,
+            consumed_at,
+        })
     }
+    #[allow(
+        dead_code,
+        reason = "Shared callers may retain an unacknowledged result."
+    )]
     pub fn accept_read<T>(
         &mut self,
         result: VerifiedRead,
@@ -142,6 +192,17 @@ impl Store {
         not_before: u64,
         publish: impl FnOnce(&OperationResult, &mut Store) -> Result<T>,
     ) -> Result<T> {
+        self.accept_read_consumed(result, session, clock, not_before, publish)
+            .map(|(value, _)| value)
+    }
+    pub(crate) fn accept_read_consumed<T>(
+        &mut self,
+        result: VerifiedRead,
+        session: &mut Session,
+        clock: &mut impl FnMut() -> Result<ClockHealth>,
+        not_before: u64,
+        publish: impl FnOnce(&OperationResult, &mut Store) -> Result<T>,
+    ) -> Result<(T, ConsumedRead)> {
         self.read_ready(&result)?;
         ensure!(
             result.result.disposition == Disposition::Permit,
@@ -164,10 +225,16 @@ impl Store {
             .context("fresh read validation after persistence failed")?;
         let output = publish(&result.result, self)?;
         self.unchanged()?;
-        session
+        let consumed_at = session
             .finish_consumption(consumed, clock()?)
             .map_err(read_expiry)
             .context("fresh read final validation failed")?;
-        Ok(output)
+        Ok((
+            output,
+            ConsumedRead {
+                statement: result.statement,
+                consumed_at,
+            },
+        ))
     }
 }

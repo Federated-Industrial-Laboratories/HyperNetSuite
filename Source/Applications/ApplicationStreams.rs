@@ -15,9 +15,27 @@ use std::path::{Path, PathBuf};
 mod agent;
 #[path = "ApplicationStreamsClient.rs"]
 mod client;
+#[path = "ApplicationStreamTiming.rs"]
+mod timing;
 use crate::{local_stream_ipc as ipc, mapped_ingress as ingress};
 #[path = "ApplicationStreamsOffer.rs"]
 mod offer;
+#[derive(Debug)]
+enum Capacity {
+    Connections,
+    Requests,
+    Slots,
+}
+impl std::fmt::Display for Capacity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Connections => "application connection capacity exhausted",
+            Self::Requests => "authority request queue is full",
+            Self::Slots => "all application stream slots remain live",
+        })
+    }
+}
+impl std::error::Error for Capacity {}
 #[derive(Subcommand)]
 pub enum Command {
     /// Sign an exact finite service offer as its owner.

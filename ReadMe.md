@@ -5,7 +5,7 @@
 <p align="center">Native graphical, terminal and command-line clients for HyperNet.</p>
 
 <p align="center">
-  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.0">Linux 0.10.0</a> |
+  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.1">Linux 0.10.1</a> |
   <a href="Documentation/Installation.md">Install</a> |
   <a href="Documentation/ReadMe.md">Documentation</a> |
   <a href="Documentation/Security.md">Security</a> |
@@ -24,7 +24,7 @@ command line provides publishing and administration; terminal browsing and
 plain output work without a graphical desktop.
 
 > [!NOTE]
-> **Linux 0.10.0** uses the native Ubuntu x86_64 release profile and its documented limits.
+> **Linux 0.10.1** uses the native Ubuntu x86_64 release profile and its documented limits.
 > Other Linux distributions need compatible runtime libraries and graphics
 > support. AArch64, Windows and macOS remain unqualified; SELinux-enabled
 > deployment is also unqualified. This release has no independent security
@@ -38,6 +38,11 @@ payload workflows remain compatible.
 Version 0.9.1 fixes overlapping stream and sealed-page permission scopes.
 Read [the migration guide](Documentation/PermissionScopes.md) before upgrading;
 network-wide grants no longer authorise those effects.
+
+Version 0.10.1 adds optional consumed-read cleanup, bounded concurrent
+authority checks and fair preparation and cleanup scheduling. Original operation
+deadlines and exact-outcome recovery remain enforced. See the
+[release notes](Documentation/ReleaseNotes.md) for compatibility and scope.
 
 ## Features
 
@@ -77,7 +82,7 @@ covers graphical dependencies, a terminal-only build and signed offline packages
 
 ## Install
 
-Download the [Linux 0.10.0 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.0)
+Download the [Linux 0.10.1 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.1)
 and follow [signed offline installation](Documentation/Installation.md#signed-offline-package).
 Authenticate the publisher independently and follow the required update-trust
 procedure before installing a package.
@@ -135,8 +140,8 @@ the client never silently selects a direct connection.
 
 ## Documentation
 
-The [release notes](Documentation/ReleaseNotes.md) describe the 0.10.0 scope and
-known limits. The [documentation index](Documentation/ReadMe.md) separates reader and author
+The [release notes](Documentation/ReleaseNotes.md) describe release 0.10.1,
+earlier release scope and known limits. The [documentation index](Documentation/ReadMe.md) separates reader and author
 guides, operator workflows and protocol references. Start with
 [installation](Documentation/Installation.md), [client use](Documentation/Usage.md)
 and the viewer of your choice.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Private Unix IPC binds one owner and inode before exchanging bounded control frames or raw bytes.
 use crate::transfer_files as files;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use std::{
     io::{Read, Write},
     net::Shutdown,
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, BorrowedFd},
         unix::{
             fs::{MetadataExt, PermissionsExt},
             net::{UnixListener, UnixStream},
@@ -23,6 +23,92 @@ use std::{
     time::{Duration, Instant},
 };
 pub const MAXIMUM: usize = 16384;
+
+// Intake owns at most three local descriptors; a wake never consumes their bytes or rights.
+pub(crate) fn wait_for_intake(
+    readers: &[BorrowedFd<'_>],
+    shutdown: Option<BorrowedFd<'_>>,
+    until: Instant,
+) -> std::io::Result<bool> {
+    let count = readers.len() + usize::from(shutdown.is_some());
+    if readers.is_empty() || count > 3 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid local intake descriptor count",
+        ));
+    }
+    let remaining = until
+        .saturating_duration_since(Instant::now())
+        .min(Duration::from_millis(20));
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    let mut descriptors = [libc::pollfd {
+        fd: -1,
+        events: 0,
+        revents: 0,
+    }; 3];
+    for (slot, reader) in descriptors.iter_mut().zip(readers) {
+        slot.fd = reader.as_raw_fd();
+        slot.events = libc::POLLIN;
+    }
+    if let Some(shutdown) = shutdown {
+        // Parent data is consumed only by the exact handoff ACK, never by this idle wait.
+        descriptors[readers.len()].fd = shutdown.as_raw_fd();
+    }
+    let timeout = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: remaining.as_nanos() as libc::c_long,
+    };
+    let result = unsafe {
+        libc::ppoll(
+            descriptors.as_mut_ptr(),
+            count as libc::nfds_t,
+            &timeout,
+            std::ptr::null(),
+        )
+    };
+    intake_ready(
+        if result < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(result as usize)
+        },
+        &descriptors[..count],
+    )
+}
+
+fn intake_ready(
+    result: std::io::Result<usize>,
+    descriptors: &[libc::pollfd],
+) -> std::io::Result<bool> {
+    match result {
+        // Re-enter owner housekeeping after interruption; do not start another idle budget.
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(false),
+        Err(error) => return Err(error),
+        Ok(0) => return Ok(false),
+        Ok(_) => {}
+    }
+    if descriptors
+        .iter()
+        .any(|fd| fd.revents & libc::POLLNVAL != 0)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid local intake descriptor",
+        ));
+    }
+    if descriptors.iter().any(|fd| fd.revents & libc::POLLERR != 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "local intake descriptor failed",
+        ));
+    }
+    Ok(descriptors
+        .iter()
+        .any(|fd| fd.revents & (libc::POLLIN | libc::POLLHUP) != 0))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
@@ -192,6 +278,7 @@ pub struct Listener {
     pub socket: UnixListener,
     path: PathBuf,
     identity: (u64, u64),
+    acknowledgement: Option<PathBuf>,
 }
 impl Listener {
     pub fn bind(directory: &Path) -> Result<Self> {
@@ -228,11 +315,56 @@ impl Listener {
             socket,
             path,
             identity,
+            acknowledgement: None,
         })
+    }
+    pub(crate) fn with_read_acknowledgements(mut self) -> Result<Self> {
+        let alias = self.path.with_file_name("ReadAcknowledgements.sock");
+        if fs::symlink_metadata(&alias).is_ok() {
+            let before = metadata(&alias)?;
+            let directory = private(
+                self.path.parent().context("agent socket parent absent")?,
+                false,
+            )?;
+            let endpoint = Path::new("/proc/self/fd")
+                .join(directory.as_raw_fd().to_string())
+                .join("ReadAcknowledgements.sock");
+            match UnixStream::connect(endpoint) {
+                Ok(_) => anyhow::bail!("another acknowledgement socket is active"),
+                Err(e) => ensure!(
+                    matches!(
+                        e.raw_os_error(),
+                        Some(libc::ECONNREFUSED) | Some(libc::ENOENT)
+                    ),
+                    "cannot establish that the prior acknowledgement socket is stale"
+                ),
+            }
+            ensure!(
+                metadata(&alias)? == before,
+                "stale acknowledgement socket changed"
+            );
+            fs::remove_file(&alias)?;
+        }
+        ensure!(
+            metadata(&self.path)? == self.identity,
+            "agent socket changed before alias publication"
+        );
+        fs::hard_link(&self.path, &alias)?;
+        self.acknowledgement = Some(alias);
+        ensure!(
+            metadata(self.acknowledgement.as_ref().unwrap())? == self.identity,
+            "acknowledgement alias differs from the agent socket"
+        );
+        Ok(self)
     }
 }
 impl Drop for Listener {
     fn drop(&mut self) {
+        if let Some(path) = &self.acknowledgement
+            && metadata(path).ok() == Some(self.identity)
+        {
+            let _ = fs::remove_file(path);
+        }
         if metadata(&self.path).ok() == Some(self.identity) {
             let _ = fs::remove_file(&self.path);
         }

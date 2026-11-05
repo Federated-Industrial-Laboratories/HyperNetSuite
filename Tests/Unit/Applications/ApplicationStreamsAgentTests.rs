@@ -1,6 +1,137 @@
 // SPDX-License-Identifier: MIT
 use super::*;
 #[test]
+fn exhausted_connections_report_capacity_and_recover_after_release() {
+    let state = Arc::new(Mutex::new(State {
+        active: BTreeMap::new(),
+        errors: VecDeque::new(),
+        controls: 0,
+    }));
+    let mut held = (0..16)
+        .map(|_| reserve(&state, "outgoing", "service".into()).unwrap())
+        .collect::<Vec<_>>();
+    let error = reserve(&state, "outgoing", "service".into())
+        .err()
+        .expect("the seventeenth connection must be refused")
+        .context("local control preparation");
+    for version in [1, 2] {
+        let mut frame = Vec::new();
+        ipc::write_json(&mut frame, &preparation_failure(&error, version)).unwrap();
+        let body = ipc::read_frame(&mut frame.as_slice()).unwrap();
+        let response: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response["version"], version);
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "Capacity");
+    }
+    assert_eq!(state.lock().unwrap().active.len(), 16);
+    let (guard, released) = held.pop().unwrap();
+    drop(guard);
+    assert!(released.load(Ordering::Relaxed));
+    let replacement = reserve(&state, "outgoing", "service".into()).unwrap();
+    assert_eq!(state.lock().unwrap().active.len(), 16);
+    drop(replacement);
+    drop(held);
+    assert!(state.lock().unwrap().active.is_empty());
+}
+
+#[test]
+fn typed_slot_and_queue_capacity_do_not_reclassify_other_refusals() {
+    for capacity in [Capacity::Slots, Capacity::Requests] {
+        let error = anyhow::Error::new(capacity).context("PRIVATE_DIAGNOSTIC");
+        let response = preparation_failure(&error, 2);
+        assert_eq!(response["error"]["code"], "Capacity");
+        assert!(!response.to_string().contains("PRIVATE_DIAGNOSTIC"));
+    }
+    let error = anyhow::anyhow!("PRIVATE_DIAGNOSTIC capacity exhausted by invalid policy");
+    let response = preparation_failure(&error, 2);
+    assert_eq!(response["error"]["code"], "Refused");
+    assert!(!response.to_string().contains("PRIVATE_DIAGNOSTIC"));
+}
+
+#[test]
+fn preparation_connection_eof_preserves_typed_closed_through_ipc() {
+    let (mut local, peer) = UnixStream::pair().unwrap();
+    drop(peer);
+    let error = ipc::read_frame(&mut local).unwrap_err();
+    let error = preparation_transport(error.context("PRIVATE_CONNECTION"))
+        .context("local control preparation");
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        ErrorKind::UnexpectedEof
+    );
+    for version in [1, 2] {
+        let mut frame = Vec::new();
+        ipc::write_json(&mut frame, &preparation_failure(&error, version)).unwrap();
+        let body = ipc::read_frame(&mut frame.as_slice()).unwrap();
+        let response: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response["version"], version);
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "Closed");
+        if version == 2 {
+            assert!(!response.to_string().contains("PRIVATE_CONNECTION"));
+        }
+    }
+}
+
+#[test]
+fn preparation_transport_categories_require_typed_connection_errors() {
+    for (kind, code) in [
+        (ErrorKind::UnexpectedEof, "Closed"),
+        (ErrorKind::ConnectionReset, "Closed"),
+        (ErrorKind::ConnectionRefused, "Closed"),
+        (ErrorKind::BrokenPipe, "Closed"),
+        (ErrorKind::ConnectionAborted, "Closed"),
+        (ErrorKind::NotConnected, "Closed"),
+        (ErrorKind::TimedOut, "Timeout"),
+    ] {
+        let error = anyhow::Error::new(std::io::Error::new(kind, "PRIVATE_CONNECTION"))
+            .context("nested TLS");
+        // An identical error outside Route/Authenticate remains a refusal.
+        assert_eq!(preparation_failure(&error, 2)["error"]["code"], "Refused");
+        let response = preparation_failure(&preparation_transport(error), 2);
+        assert_eq!(response["error"]["code"], code);
+        assert!(!response.to_string().contains("PRIVATE_CONNECTION"));
+    }
+    let budget = crate::route_connector::OperationBudget::new(0, || false);
+    let error = preparation_transport(budget.check().unwrap_err().into());
+    assert_eq!(preparation_failure(&error, 2)["error"]["code"], "Timeout");
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<crate::route_connector::OperationDeadlineExpired>()
+            .unwrap()
+            .deadline,
+        0
+    );
+}
+
+#[test]
+fn preparation_transport_does_not_reclassify_validation_or_denial() {
+    let certificate = rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature);
+    for error in [
+        anyhow::Error::new(std::io::Error::new(ErrorKind::InvalidData, certificate)),
+        anyhow::Error::new(std::io::Error::new(
+            ErrorKind::InvalidData,
+            std::io::Error::new(ErrorKind::ConnectionReset, "PRIVATE_INNER"),
+        )),
+        anyhow::Error::new(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "PRIVATE_POLICY",
+        )),
+        anyhow::anyhow!("PRIVATE_PROTOCOL UnexpectedEof connection reset timeout"),
+        anyhow::anyhow!("PRIVATE_IDENTITY application stream key differs from its principal"),
+        anyhow::anyhow!("PRIVATE_POLICY certified authority refused"),
+    ] {
+        let response = preparation_failure(&preparation_transport(error), 2);
+        assert_eq!(response["error"]["code"], "Refused");
+        assert!(!response.to_string().contains("PRIVATE_"));
+    }
+}
+
+#[test]
 fn full_v2_status_fits_one_frame_and_excludes_private_configuration() {
     let h = "f".repeat(64);
     let n = u64::MAX;
@@ -30,7 +161,7 @@ fn full_v2_status_fits_one_frame_and_excludes_private_configuration() {
         errors: VecDeque::from([json!({"message":"PRIVATE_DIAGNOSTIC"})]),
         controls: 0,
     };
-    let (jobs, _) = mpsc::sync_channel(1);
+    let (jobs, _) = queue::channel();
     let (_, incoming) = mpsc::sync_channel(1);
     let runtime = Runtime {
         state: Arc::new(Mutex::new(State {

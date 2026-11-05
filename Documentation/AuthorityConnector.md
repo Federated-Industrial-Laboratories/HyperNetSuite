@@ -38,14 +38,97 @@ assurance and limits. It excludes the renewable voucher. Core mounts only the
 mapped ingress directory; the native credentials remain outside its container.
 The connector must be ready before setup and remain running while Core needs it.
 
-One authority TLS session is reused while its original transport budget permits.
-At most16 local connections wait for its serial actor. Each connection carries
+Two workers can exchange independent packets concurrently. Each owns at most one
+independently admitted authority TLS session and reuses its original transport
+budget. Both use the same pinned endpoint and replica; matching only a network
+identity is insufficient because fresh-read collections are replica-local.
+The selected relay and authority policies must admit these two connections in
+addition to other application traffic. Admission failure remains explicit.
+Size the registered relay profile, deployment limits and consent for all selected
+application and authority connections, including operator and transition reserves.
+For example,16 application connections, two connector sessions and two other
+authority routes require20 relay slots before transport overlap. Relay capacity
+is a configured service bound, separate from the companion's16-connection limit.
+Core's local authority ingress permits four concurrent requests shared with
+other clients. Connection allocation alone does not establish latency or fairness.
+At most16 local connections wait in one shared queue. Each connection carries
 one bounded request and reply. Intake has a five-second deadline; the whole
 queued exchange has a30-second maximum and cannot extend Core's own deadline.
-Caller disconnection or process termination cancels an active exchange. Invalid,
+Caller disconnection or process termination cancels an ordinary active exchange. Invalid,
 foreign-network and management packets close without reaching the authority.
+An active worker owns only its current caller and session. A slow exchange does
+not hold the other worker's intake lock. Exact signed request/read identifiers
+bind submission, polling and cleanup across the two channels; transport scheduling
+does not replace authority ordering or requester-floor validation.
 
-Status includes the voucher expiry, completed/refused counts, the current bounded
+Intake waits on the mapped descriptor channel, so queued handoffs wake it without
+a fixed sleep. Each turn accepts at most one connection and retains the16-entry
+queue and two bounded exchange owners. Idle waiting is bounded by10ms before checking
+termination, worker state and the existing one-second status cadence. The mapped
+helper uses the same readiness contract with a20ms idle ceiling and exact
+descriptor acknowledgement. These waits do not extend an operation deadline or
+change fresh-read quorum polling.
+
+A consumed fresh read can send signed control operation8 as optional cleanup.
+The mapped ingress publishes `ReadAcknowledgements.sock` as a private hard-link
+alias of its existing `Control.sock`. It adds no listener, queue or connection
+allowance. Core verifies the same owned socket device/inode before sending;
+absence or substitution skips cleanup without contacting a legacy connector.
+Both names share the existing socket's cleanup and replacement checks.
+Its version1 acknowledgement binds the network scope, original read identifier,
+complete statement digest, result digest and deadline. The Core recipient signs
+it only after consuming that exact result. The authority releases only the
+matching completed read; pending and unacknowledged reads retain their original
+expiry and lost-response recovery.
+
+Cleanup uses the same16-entry queue and only its worker's existing admitted TLS session.
+It cannot open a new session, renew a budget or retry a read. Its deadline is
+the earlier of the original queued deadline and the signed deadline translated
+through the healthy clock with the conservative clock margin. That signed
+deadline is bounded by Core's original call and statement expiry. Invalid or
+expired deadlines refuse cleanup. Cleanup requests and receipts are at most1024
+bytes. The connector drains one exact, bound version1 receipt from the remote
+authority. A connected forwarding caller receives the framed receipt; a closed
+notification sender needs no reply. A false receipt can mean cleanup was skipped
+for unsupported transport, or the exact entry was already released or expired.
+
+Only protocol1 final-service TLS offers optional `HyperNetRoute/1+ReadAck1`,
+followed by the existing `HyperNetRoute/1` fallback. The authenticated endpoint's
+selection reports cleanup support. Relay TLS keeps its existing protocol. If
+the final session selected legacy TLS, the connector skips cleanup and returns
+a bound false receipt locally. It sends no probe or unsupported packet and keeps
+the same usable session for ordinary requests.
+
+Core never waits for cleanup, and a cleanup failure cannot change the consumed
+result or reuse its authority. Supported combinations are:
+
+| Consumer and transport | Cleanup behavior |
+| --- | --- |
+| Legacy Core consumer | No cleanup; existing start/poll semantics |
+| Updated Core with legacy local connector | Missing alias skips cleanup without opening a socket |
+| Updated connector with legacy collecting endpoint | Legacy final TLS skips cleanup; ordinary session reuse continues |
+| Updated Core, connector and collecting endpoint | Exact consumed result can release its completed collection |
+
+Suite policy-context and domain reads also acknowledge successful consumption,
+including a verified refusal, after durable publication and the final one-use
+check. Local reads use the same owned socket alias. Private-route reads use only
+their existing authenticated session when its final TLS selection supports
+cleanup. A legacy session receives no cleanup packet.
+
+The direct Suite path makes one nonblocking framed write and never waits for
+cleanup. It retains at most one pending receipt. Before the next ordinary
+exchange, it drains and correlates that bounded receipt under the new exchange's
+original deadline. The receipt grants no authority and does not extend the old
+acknowledgement's signed expiry or send deadline. A partial write or invalid
+receipt closes that transport; the consumed outcome remains unchanged. Cleanup
+cannot create a new challenge, reconnect or replenish the session allowance.
+
+Skipped, lost or failed cleanup leaves the read retained until its original
+expiry. Existing control operations and their reply semantics do not change.
+Process termination still cancels cleanup.
+
+Status includes the active exchange count and two-worker ceiling, voucher expiry,
+completed/refused counts, the current bounded
 error and the observation's boot timestamp. It is a local snapshot, not a claim
 of current remote permission. An expired voucher refuses forwarding. Retain an
 explicitly renewed same-target authority route through an independently valid
@@ -55,6 +138,6 @@ the connector runs. A changed public target requires explicit stopped-service
 reconfiguration and new Core consent. The connector never resets quota, rotates
 identity or uses an expired route to authorise its own renewal.
 
-SIGINT or SIGTERM stops admission, cancels the active exchange, drops queued
+SIGINT or SIGTERM stops admission, cancels active exchanges, drops queued
 connections and reaps the mapped helper. Restart uses the same profile, current
 retained route and binding. It does not replay a Core request on its own.

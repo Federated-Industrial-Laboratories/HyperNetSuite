@@ -59,6 +59,9 @@ def main():
 os.chdir(sys.argv[1]);os.chroot('.');os.chdir('/')
 if sys.argv[2]=='mapped':
  os.setgroups([]);os.setgid(1001);os.setuid(1001)
+if sys.argv[3]=='ReadAcknowledgements.sock':
+ control=os.stat('/Control.sock');alias=os.stat('/ReadAcknowledgements.sock')
+ assert (control.st_dev,control.st_ino)==(alias.st_dev,alias.st_ino)
 s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.settimeout(5);s.connect('/'+sys.argv[3])
 if sys.argv[2]=='other':
  try:
@@ -71,6 +74,8 @@ else:
         tags = [('Control.sock', 1)]
         if args.binding_kind == 'application':
             tags.append(('Checks.sock', 2))
+        else:
+            tags.append(('ReadAcknowledgements.sock', 1))
         for socket_name, tag in tags:
             refused = subprocess.run(['/usr/bin/podman', 'unshare', 'python3', '-S', '-c', script,
                 str(root/'Ingress'), 'other', socket_name], capture_output=True, timeout=10)
