@@ -109,6 +109,10 @@ fn resume_reasons_use_typed_causes_without_interpreting_refusal_text() {
             anyhow::anyhow!("stream control refused with code 3"),
             "Other",
         ),
+        (
+            anyhow::Error::new(crate::authority_inspection::domain_client::Refusal { code: 3 }),
+            "AuthorityRefusal",
+        ),
     ];
     let counter = AtomicU64::new(0);
     let timing = Timing::new(&counter, 1, "Preparation", u64::MAX);
@@ -128,6 +132,31 @@ fn resume_reasons_use_typed_causes_without_interpreting_refusal_text() {
         assert!(!record.contains("code 3"));
         assert!(record.len() < 256);
     }
+}
+
+#[test]
+fn retained_command_timing_uses_static_names_without_request_fields() {
+    let counter = AtomicU64::new(0);
+    let timing = Timing::new(&counter, 1, "Preparation", u64::MAX);
+    let command = crate::authority_domains::streams::Command::RetirementContext {
+        session: crate::authority_proof::VersionRef {
+            kind: 173,
+            id: [91; 32],
+            generation: 123,
+            digest: [92; 32],
+        },
+    };
+    let mut output = Vec::new();
+    timing.write(&mut output, u64::MAX, command.name(), "ResumeRetained");
+    let record = String::from_utf8(output).unwrap();
+    assert!(record.contains("phase=StreamRetirementContext state=ResumeRetained"));
+    assert!(!record.contains(&hex::encode([91; 32])));
+    assert!(!record.contains(&hex::encode([92; 32])));
+    assert!(record.len() < 256);
+    let capped = Timing::new(&counter, 1, "Preparation", u64::MAX);
+    let mut output = Vec::new();
+    capped.write(&mut output, u64::MAX, command.name(), "ResumeRetained");
+    assert!(output.is_empty());
 }
 
 #[test]

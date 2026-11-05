@@ -228,6 +228,13 @@ proof needs no remote lookup or Close: application admission was never submitted
 A signed proof still requires current lookup and exact cleanup, including when
 authentication failed without a confirmed acceptance outcome.
 
+If exact retained-operation recovery returns a newly certified domain refusal,
+preparation resolves its authenticated own-stream status once within the same
+caller deadline and cancellation budget. Planning continues only when that status
+resolves the retained operation. An unknown original outcome or an earlier permit
+whose result remains unconsumed still blocks planning. This does not retry the
+effect, clear an unknown request, or retry a refusal from the new connection plan.
+
 Companion stderr includes finite, content-free timing samples for the first64
 outgoing preparations and first16 queued cleanups per process. Each sample retains
 one process-local number and its original deadline. Enqueue, dequeue, exact
@@ -239,9 +246,12 @@ recovery replaces its `Resume` failure record with `ResumeRefusalStatus` for
 requester refusal-status resolution, or `ResumeRetainedOperation` for loading,
 validating and recovering an exact pending ordinary operation. Its fixed `reason`
 reports a recognised typed expiry, unavailability or I/O category; other errors
-remain `Other`, including untyped authority refusals. These diagnostic categories
+remain `Other`, including untyped authority refusals. A verified domain refusal
+has the fixed category `AuthorityRefusal`. Before exact retained execution, a
+`ResumeRetained` record uses only the command's static name as its phase.
+These diagnostic categories
 do not classify an error as retryable or change the public preparation error.
-Successful recovery retains `Resume` begin and completion records. At most3152 records,
+Successful recovery retains `Resume` begin and completion records. At most3216 records,
 each below256 bytes, are added per process. No account, session, target, message,
 signed payload or error text is recorded. Clock and output errors do not replace
 operation results. One separate writer has a nonblocking queue of64 records

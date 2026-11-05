@@ -686,7 +686,7 @@ use crate::authority_local_transport::{LocalControl, remaining};
 
 #[cfg(test)]
 #[path = "../../Tests/Unit/Authority/AuthorityInspectionTests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[path = "Governance/AuthorityGovernanceClient.rs"]
 mod governance_client;

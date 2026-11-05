@@ -15,6 +15,10 @@ load results must identify their exact artifacts separately from earlier release
   with one pending check per connection. Cancellation and original deadlines
   remain enforced. Preparation and cleanup alternate within one queue of at
   most 16 waiting jobs; unknown signed outcomes still require exact recovery.
+- Companion, connector and mapped-ingress idle waits wake on socket readiness
+  within their existing maximum wait. Finite work turns, original operation
+  deadlines and exact descriptor acknowledgement remain unchanged. Readiness
+  never consumes an incoming descriptor or substitutes for authentication.
 - Typed connection closure during route preparation or final-service
   authentication returns `Closed`; a typed timeout returns `Timeout`. Clients
   can distinguish temporary connection failure from permanent `Refused`
@@ -24,6 +28,10 @@ load results must identify their exact artifacts separately from earlier release
   and the original deadline check, without a new remote slot lookup or Close.
   Such a proof has not reached admission. Signed or ambiguous outcomes retain
   the current lookup and exact Close recovery path.
+- A newly certified refusal during exact retained-operation recovery triggers one
+  authenticated status resolution within the original preparation budget. Planning
+  continues only after the retained operation is resolved; unknown outcomes and
+  unconsumed permits remain pending. Refusals from new plans remain terminal.
 - Policy-context and domain reads acknowledge only successful verified consumption,
   including a verified refusal, after durable publication and the final one-use
   check. Cleanup binds the exact original scope, read, statement, result and expiry.

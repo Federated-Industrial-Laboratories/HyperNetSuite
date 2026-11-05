@@ -29,7 +29,9 @@ impl ResumeStage {
 }
 
 fn resume_failure_reason(error: &anyhow::Error) -> &'static str {
-    if error.is::<crate::authority_local_transport::RequestDeadlineExpired>()
+    if error.is::<crate::authority_inspection::domain_client::Refusal>() {
+        "AuthorityRefusal"
+    } else if error.is::<crate::authority_local_transport::RequestDeadlineExpired>()
         || error.is::<crate::route_connector::OperationDeadlineExpired>()
     {
         "DeadlineExpired"

@@ -112,6 +112,54 @@ impl Client {
     pub fn resume_agent(&mut self, targets: &[Target]) -> Result<()> {
         self.resume_agent_observed(targets, None)
     }
+    fn resolve_refusal_status(&mut self) -> Result<()> {
+        ensure!(
+            !crate::private_route_client::cancelled(),
+            "application agent is stopping"
+        );
+        if let Some(budget) = &self.preparation {
+            budget.check()?;
+        }
+        stream_client::resolve_refusal_local_with_budget(
+            &self.store.descriptor().clone(),
+            &self.socket,
+            &self.key,
+            &mut self.store,
+            &mut self.session,
+            || match &self.preparation {
+                Some(budget) => budget.clock(|| self.clock.health()),
+                None => self.clock.health(),
+            },
+            self.preparation.as_ref().map(|budget| budget.transport()),
+        )?;
+        if let Some(budget) = &self.preparation {
+            budget.check()?;
+        }
+        ensure!(
+            !crate::private_route_client::cancelled(),
+            "application agent is stopping"
+        );
+        Ok(())
+    }
+    fn recover_retained_refusal(&mut self, signed: &[u8], error: anyhow::Error) -> Result<()> {
+        if !error.is::<domain_client::Refusal>() {
+            return Err(error);
+        }
+        ensure!(
+            self.store
+                .resume_ordinary()?
+                .is_some_and(|pending| pending.signed() == signed),
+            "retained requester operation changed during recovery"
+        );
+        // A new disclosure refusal does not establish the original outcome. Only
+        // authenticated own-stream status may complete this exact retained request.
+        self.resolve_refusal_status()?;
+        if self.store.resume_ordinary()?.is_none() {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
     fn resume_agent_observed(
         &mut self,
         targets: &[Target],
@@ -122,18 +170,7 @@ impl Client {
         }
         let mut stage = timing::ResumeStage::RefusalStatus;
         let result = (|| {
-            stream_client::resolve_refusal_local_with_budget(
-                &self.store.descriptor().clone(),
-                &self.socket,
-                &self.key,
-                &mut self.store,
-                &mut self.session,
-                || match &self.preparation {
-                    Some(budget) => budget.clock(|| self.clock.health()),
-                    None => self.clock.health(),
-                },
-                self.preparation.as_ref().map(|budget| budget.transport()),
-            )?;
+            self.resolve_refusal_status()?;
             stage = timing::ResumeStage::RetainedOperation;
             if let Some(pending) = self.store.resume_ordinary()? {
                 let intent = Intent::from_signed(pending.signed())?;
@@ -165,7 +202,12 @@ impl Client {
                     allowed,
                     "another exact mutation needs resolution before starting the agent"
                 );
-                self.execute(operation.grant, operation.command)?;
+                if let Some(timing) = timing {
+                    timing.event(operation.command.name(), "ResumeRetained");
+                }
+                if let Err(error) = self.execute(operation.grant, operation.command) {
+                    self.recover_retained_refusal(pending.signed(), error)?;
+                }
             }
             Ok(())
         })();

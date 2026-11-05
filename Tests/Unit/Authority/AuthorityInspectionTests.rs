@@ -344,7 +344,7 @@ fn certified_outcome(
     )
 }
 #[allow(clippy::too_many_arguments)]
-pub(super) fn certified_request(
+pub(crate) fn certified_request(
     descriptor: &TrustDescriptor,
     request: &[u8],
     challenge: &[u8],
@@ -1186,7 +1186,7 @@ fn delayed_refusal_advances_the_floor_without_a_live_clock_or_payload_output() {
 #[path = "AuthorityHistoryControlTests.rs"]
 mod history_control;
 
-pub(super) fn receive_control(
+pub(crate) fn receive_control(
     listener: &std::os::unix::net::UnixListener,
 ) -> (UnixStream, Vec<u8>) {
     listener.set_nonblocking(true).unwrap();
@@ -1215,13 +1215,13 @@ pub(super) fn receive_control(
     stream.read_exact(&mut bytes).unwrap();
     (stream, bytes)
 }
-pub(super) fn send_control(mut stream: UnixStream, response: &[u8]) {
+pub(crate) fn send_control(mut stream: UnixStream, response: &[u8]) {
     stream
         .write_all(&(response.len() as u32).to_be_bytes())
         .unwrap();
     stream.write_all(response).unwrap();
 }
-pub(super) fn submitted(bytes: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+pub(crate) fn submitted(bytes: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let value = wire::decode(bytes).unwrap();
     let f = record(&value, 41, 5).unwrap();
     assert_eq!(f[3], V::Uint(0));
