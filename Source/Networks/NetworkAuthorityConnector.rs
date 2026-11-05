@@ -21,6 +21,8 @@ use std::{
 #[path = "AuthorityConnectorPacket.rs"]
 pub(crate) mod packet;
 const DURATION_MS: u64 = 30000;
+const MAXIMUM_EXCHANGES: usize = 2;
+const MAXIMUM_QUEUED: usize = 16;
 #[derive(Args)]
 pub struct Arguments {
     #[arg(long)]
@@ -83,6 +85,7 @@ impl Binding {
 struct Status {
     running: bool,
     active: bool,
+    active_exchanges: usize,
     completed: u64,
     connections: u64,
     reused_exchanges: u64,
@@ -93,6 +96,13 @@ struct Status {
 struct Job {
     stream: UnixStream,
     deadline: u64,
+}
+type Jobs = Arc<Mutex<mpsc::Receiver<Job>>>;
+
+fn next_job(receiver: &Jobs) -> Option<Job> {
+    // The shared receive lock ends before any caller or transport work. One
+    // blocked exchange must not retain ownership of the other worker's intake.
+    receiver.lock().ok()?.recv().ok()
 }
 fn ready(stream: &UnixStream, events: i16, deadline: u64) -> Result<()> {
     loop {
@@ -189,11 +199,11 @@ pub(crate) fn exchange_cleanup(
     session.exchange(request, deadline, packet::Cleanup::MAXIMUM)
 }
 fn actor(
-    receiver: mpsc::Receiver<Job>,
+    receiver: Jobs,
     selected: PathBuf,
     clock: PathBuf,
     binding: Binding,
-    bootstrap: trust::Verified,
+    bootstrap: Arc<trust::Verified>,
     status: Arc<Mutex<Status>>,
 ) {
     let current: Mutex<Option<UnixStream>> = Mutex::new(None);
@@ -207,12 +217,13 @@ fn actor(
     };
     let mut session = None;
     let mut retained = None;
-    while let Ok(mut job) = receiver.recv() {
+    while let Some(mut job) = next_job(&receiver) {
         if transport::cancelled() {
             break;
         }
         if let Ok(mut state) = status.lock() {
-            state.active = true;
+            state.active_exchanges += 1;
+            state.active = state.active_exchanges != 0;
         }
         let mut cleanup = false;
         let result = (|| -> Result<()> {
@@ -328,7 +339,8 @@ fn actor(
             *caller = None;
         }
         if let Ok(mut state) = status.lock() {
-            state.active = false;
+            state.active_exchanges -= 1;
+            state.active = state.active_exchanges != 0;
             match result {
                 Ok(()) => {
                     state.completed = state.completed.saturating_add(1);
@@ -400,20 +412,21 @@ pub fn run(arguments: Arguments) -> Result<()> {
         voucher_expires_ms: expires,
         ..Status::default()
     }));
-    let (sender, receiver) = mpsc::sync_channel(16);
+    let (sender, receiver) = mpsc::sync_channel(MAXIMUM_QUEUED);
+    let receiver = Arc::new(Mutex::new(receiver));
     let clock = joined.clock_witness.clone();
-    let actor_state = state.clone();
-    let actor_binding = binding.clone();
-    let worker = thread::spawn(move || {
-        actor(
-            receiver,
-            selected,
-            clock,
-            actor_binding,
-            bootstrap,
-            actor_state,
-        )
-    });
+    let bootstrap = Arc::new(bootstrap);
+    let workers: Vec<_> = (0..MAXIMUM_EXCHANGES)
+        .map(|_| {
+            let receiver = Arc::clone(&receiver);
+            let selected = selected.clone();
+            let clock = clock.clone();
+            let binding = binding.clone();
+            let bootstrap = Arc::clone(&bootstrap);
+            let state = Arc::clone(&state);
+            thread::spawn(move || actor(receiver, selected, clock, binding, bootstrap, state))
+        })
+        .collect();
     let save = || -> Result<()> {
         let state = state
             .lock()
@@ -423,7 +436,8 @@ pub fn run(arguments: Arguments) -> Result<()> {
             std::ffi::OsStr::new("Status.json"),
             &serde_json::to_vec(
                 &json!({"format":"HyperNetAuthorityConnectorStatus/1","binding":binding,
-                "status":*state,"maximumQueuedConnections":16,"maximumDurationMs":DURATION_MS,
+                "status":*state,"maximumQueuedConnections":MAXIMUM_QUEUED,
+                "maximumConcurrentExchanges":MAXIMUM_EXCHANGES,"maximumDurationMs":DURATION_MS,
                 "sampleBootMs":boot_time_ms()?}),
             )?,
             true,
@@ -437,7 +451,10 @@ pub fn run(arguments: Arguments) -> Result<()> {
         )?;
         let mut last = Instant::now();
         while !transport::cancelled() {
-            ensure!(!worker.is_finished(), "authority connector actor stopped");
+            ensure!(
+                workers.iter().all(|worker| !worker.is_finished()),
+                "authority connector actor stopped"
+            );
             if let Some(stream) = ingress.accept()? {
                 let job = Job {
                     stream,
@@ -464,12 +481,16 @@ pub fn run(arguments: Arguments) -> Result<()> {
     transport::request_cancel();
     drop(sender);
     drop(ingress);
-    let joined = worker
-        .join()
-        .map_err(|_| anyhow::anyhow!("authority connector actor failed"));
+    let mut joined = Ok(());
+    for worker in workers {
+        if worker.join().is_err() {
+            joined = Err(anyhow::anyhow!("authority connector actor failed"));
+        }
+    }
     if let Ok(mut state) = state.lock() {
         state.running = false;
         state.active = false;
+        state.active_exchanges = 0;
     }
     let saved = save();
     outcome?;

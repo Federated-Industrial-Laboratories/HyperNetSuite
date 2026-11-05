@@ -4,6 +4,81 @@ use super::*;
 use crate::{authority_proof::Scope, trust_wire::Value as V};
 
 #[test]
+fn blocked_exchange_releases_shared_intake_and_preserves_one_queue_bound() {
+    let (sender, receiver) = mpsc::sync_channel(MAXIMUM_QUEUED);
+    let receiver = Arc::new(Mutex::new(receiver));
+    let (started, observed) = mpsc::channel();
+    let (release, waiting) = mpsc::channel();
+    let waiting = Arc::new(Mutex::new(waiting));
+    let mut peers = Vec::new();
+    for deadline in 1..=MAXIMUM_EXCHANGES as u64 {
+        let (stream, peer) = UnixStream::pair().unwrap();
+        peers.push(peer);
+        sender.send(Job { stream, deadline }).unwrap();
+    }
+    let workers: Vec<_> = (0..MAXIMUM_EXCHANGES)
+        .map(|_| {
+            let receiver = Arc::clone(&receiver);
+            let started = started.clone();
+            let waiting = Arc::clone(&waiting);
+            thread::spawn(move || {
+                let job = next_job(&receiver).unwrap();
+                started.send(job.deadline).unwrap();
+                // Both exchanges must enter before either can complete.
+                waiting
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap();
+                let mut deadlines = vec![job.deadline];
+                while let Some(job) = next_job(&receiver) {
+                    deadlines.push(job.deadline);
+                }
+                deadlines
+            })
+        })
+        .collect();
+    drop(started);
+    let mut active = Vec::new();
+    for _ in 0..MAXIMUM_EXCHANGES {
+        active.push(observed.recv_timeout(Duration::from_secs(2)).unwrap());
+    }
+    active.sort_unstable();
+    assert_eq!(active, vec![1, 2]);
+    for index in 0..MAXIMUM_QUEUED {
+        let (stream, peer) = UnixStream::pair().unwrap();
+        peers.push(peer);
+        sender
+            .try_send(Job {
+                stream,
+                deadline: 100 + index as u64,
+            })
+            .unwrap();
+    }
+    let (stream, _peer) = UnixStream::pair().unwrap();
+    assert!(matches!(
+        sender.try_send(Job {
+            stream,
+            deadline: 0
+        }),
+        Err(mpsc::TrySendError::Full(_))
+    ));
+    drop(sender);
+    for _ in 0..MAXIMUM_EXCHANGES {
+        release.send(()).unwrap();
+    }
+    let mut deadlines: Vec<_> = workers
+        .into_iter()
+        .flat_map(|worker| worker.join().unwrap())
+        .collect();
+    deadlines.sort_unstable();
+    let mut expected = vec![1, 2];
+    expected.extend(100..100 + MAXIMUM_QUEUED as u64);
+    assert_eq!(deadlines, expected);
+    assert!(next_job(&receiver).is_none());
+}
+
+#[test]
 fn authority_connector_binding_and_packet_limits_are_exact() {
     let binding = Binding {
         format: "HyperNetAuthorityConnector/1".into(),
