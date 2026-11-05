@@ -258,7 +258,8 @@ impl Checks {
                     && !flight.cancelled()
                     && boot_time_ms()? < flight.work.request.caller_deadline_boot_ms
                 {
-                    let _ = flight.work.reply.try_send(receipt);
+                    let reply = flight.into_reply();
+                    let _ = reply.try_send(receipt);
                 }
             }
             wait_io(
@@ -400,6 +401,13 @@ struct Flight {
     written: usize,
 }
 impl Flight {
+    fn into_reply(self) -> SyncSender<contract::Receipt> {
+        let reply = self.work.reply.clone();
+        // Release completed control work before the caller can publish its IPC
+        // response and admit another check. The caller still owns its reservation.
+        drop(self);
+        reply
+    }
     fn sent(&self) -> bool {
         self.written == self.bytes.len()
     }

@@ -528,6 +528,91 @@ fn signed_receipt(
 }
 
 #[test]
+fn completed_exchange_releases_its_reservation_before_reply_handoff() {
+    let fixture = Fixture::new();
+    let (mut endpoint, worker, ready) = fixture.attach();
+    let mut held = Vec::new();
+    for id in ["other-1", "other-2", "other-3", "completed"] {
+        assert!(
+            fixture
+                .checks
+                .state
+                .lock()
+                .unwrap()
+                .pending
+                .insert(id.into())
+        );
+        held.push(Arc::new(Pending {
+            state: fixture.checks.state.clone(),
+            id: id.into(),
+        }));
+    }
+    let caller_pending = held.pop().unwrap();
+    let started = boot_time_ms().unwrap();
+    let request = contract::Request {
+        binding_digest: fixture.checks.binding.digest().unwrap(),
+        companion_instance: fixture.checks.instance,
+        endpoint_instance: ready.endpoint_instance,
+        control_generation: ready.challenge.control_generation,
+        local_connection_id: "completed".into(),
+        session: reference(),
+        nonce: [21; 32],
+        action_digest: [22; 32],
+        caller_started_boot_ms: started,
+        caller_deadline_boot_ms: started + 900,
+    };
+    let receipt: contract::Receipt = contract::verify(
+        &signed_receipt(&fixture, &ready, request.clone()),
+        &fixture.checks.binding,
+    )
+    .unwrap();
+    let (reply, receive) = mpsc::sync_channel(1);
+    let flight = Flight {
+        work: Work {
+            request,
+            cancel: Arc::new(AtomicBool::new(false)),
+            connection_cancel: Arc::new(AtomicBool::new(false)),
+            reply,
+            _pending: caller_pending.clone(),
+        },
+        bytes: Vec::new(),
+        written: 0,
+    };
+
+    // Pause the completed exchange at the publication boundary. Only the caller
+    // may still hold this slot, even while the exchange retains its reply sender.
+    let reply = flight.into_reply();
+    assert_eq!(Arc::strong_count(&caller_pending), 1);
+    assert_eq!(fixture.checks.state.lock().unwrap().pending.len(), 4);
+    reply.try_send(receipt).unwrap();
+    assert_eq!(
+        receive.try_recv().unwrap().request.local_connection_id,
+        "completed"
+    );
+    drop(caller_pending);
+    assert_eq!(fixture.checks.state.lock().unwrap().pending.len(), 3);
+
+    let (next, _peer, _) = start_check(&fixture, "completed", 900);
+    let request: contract::Request =
+        contract::parse(&ipc::read_frame(&mut endpoint).unwrap()).unwrap();
+    assert_eq!(request.local_connection_id, "completed");
+    assert_eq!(fixture.checks.state.lock().unwrap().pending.len(), 4);
+    ipc::write_frame(&mut endpoint, &signed_receipt(&fixture, &ready, request)).unwrap();
+    let result = next.join().unwrap();
+    assert_eq!(result["result"]["disposition"], "notActive");
+    assert_eq!(
+        result["result"]["controlGeneration"],
+        ready.challenge.control_generation
+    );
+    drop(reply);
+    drop(held);
+    fixture.checks.stop();
+    drop(endpoint);
+    let _ = worker.join();
+    assert!(fixture.checks.state.lock().unwrap().pending.is_empty());
+}
+
+#[test]
 fn two_checks_pipeline_and_signed_out_of_order_receipts_complete_independently() {
     let fixture = Fixture::new();
     let (mut endpoint, worker, ready) = fixture.attach();

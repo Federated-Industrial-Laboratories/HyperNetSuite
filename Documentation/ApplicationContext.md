@@ -78,6 +78,9 @@ The four-check bound includes queued and transmitted work until both its local
 caller and control exchange have released it. The authenticated control channel
 can transmit independent checks before their replies arrive. Each signed receipt
 must match the complete original request; replies may arrive out of order.
+Completed control work releases its reservation before handing the verified
+receipt to its caller. The caller retains its reservation until the check returns,
+so a subsequent request cannot be refused by the completed exchange's slot.
 Endpoints that reply sequentially remain compatible. Nonblocking framing retains
 at most four outgoing frames and one incoming frame, each within the existing
 16KiB frame limit; there is no second authority requester or cached permission.
