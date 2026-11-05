@@ -81,7 +81,7 @@ fn blocked_exchange_releases_shared_intake_and_preserves_one_queue_bound() {
             thread::spawn(move || {
                 let job = next_job(&receiver).unwrap();
                 started.send(job.deadline).unwrap();
-                // All four exchanges must enter before any can complete.
+                // Both exchanges must enter before either can complete.
                 waiting
                     .lock()
                     .unwrap()
@@ -104,7 +104,7 @@ fn blocked_exchange_releases_shared_intake_and_preserves_one_queue_bound() {
         active.push(observed.recv_timeout(Duration::from_secs(2)).unwrap());
     }
     active.sort_unstable();
-    assert_eq!(active, vec![1, 2, 3, 4]);
+    assert_eq!(active, vec![1, 2]);
     for index in 0..MAXIMUM_QUEUED {
         let (stream, peer) = UnixStream::pair().unwrap();
         peers.push(peer);
@@ -145,7 +145,7 @@ fn blocked_exchange_releases_shared_intake_and_preserves_one_queue_bound() {
         .flat_map(|(deadlines, _)| deadlines)
         .collect();
     deadlines.sort_unstable();
-    let mut expected = vec![1, 2, 3, 4];
+    let mut expected = vec![1, 2];
     expected.extend(100..100 + MAXIMUM_QUEUED as u64);
     assert_eq!(deadlines, expected);
     assert!(next_job(&receiver).is_none());

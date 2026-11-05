@@ -21,7 +21,7 @@ use std::{
 #[path = "AuthorityConnectorPacket.rs"]
 pub(crate) mod packet;
 const DURATION_MS: u64 = 30000;
-const MAXIMUM_EXCHANGES: usize = 4;
+const MAXIMUM_EXCHANGES: usize = 2;
 const MAXIMUM_QUEUED: usize = 16;
 #[derive(Args)]
 pub struct Arguments {

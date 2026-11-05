@@ -38,33 +38,32 @@ assurance and limits. It excludes the renewable voucher. Core mounts only the
 mapped ingress directory; the native credentials remain outside its container.
 The connector must be ready before setup and remain running while Core needs it.
 
-Four workers can exchange independent packets concurrently. Each owns at most one
+Two workers can exchange independent packets concurrently. Each owns at most one
 independently admitted authority TLS session and reuses its original transport
-budget. All use the same pinned endpoint and replica; matching only a network
+budget. Both use the same pinned endpoint and replica; matching only a network
 identity is insufficient because fresh-read collections are replica-local.
-The selected relay and authority policies must admit these four connections in
+The selected relay and authority policies must admit these two connections in
 addition to other application traffic. Admission failure remains explicit.
-For a deployment with16 application connections, four connector sessions and two
-other authority routes, provision at least24 relay connections and8 authority-endpoint
-connections through the normal registered profiles and consent. This allocation
-uses22 relay slots, with two left for transport overlap. Relay capacity is a
-configured service bound; it is separate from the companion's16-connection limit. Core's
-local authority ingress still permits four concurrent requests, shared with
-other authority clients. This contention requires measured qualification;
-four workers do not establish a latency or throughput guarantee.
+Size the registered relay profile, deployment limits and consent for all selected
+application and authority connections, including operator and transition reserves.
+For example,16 application connections, two connector sessions and two other
+authority routes require20 relay slots before transport overlap. Relay capacity
+is a configured service bound, separate from the companion's16-connection limit.
+Core's local authority ingress permits four concurrent requests shared with
+other clients. Connection allocation alone does not establish latency or fairness.
 At most16 local connections wait in one shared queue. Each connection carries
 one bounded request and reply. Intake has a five-second deadline; the whole
 queued exchange has a30-second maximum and cannot extend Core's own deadline.
 Caller disconnection or process termination cancels an ordinary active exchange. Invalid,
 foreign-network and management packets close without reaching the authority.
 An active worker owns only its current caller and session. A slow exchange does
-not hold the other workers' intake lock. Exact signed request/read identifiers
-bind submission, polling and cleanup across the four channels; transport scheduling
+not hold the other worker's intake lock. Exact signed request/read identifiers
+bind submission, polling and cleanup across the two channels; transport scheduling
 does not replace authority ordering or requester-floor validation.
 
 Intake waits on the mapped descriptor channel, so queued handoffs wake it without
 a fixed sleep. Each turn accepts at most one connection and retains the16-entry
-queue and four bounded exchange owners. Idle waiting is bounded by10ms before checking
+queue and two bounded exchange owners. Idle waiting is bounded by10ms before checking
 termination, worker state and the existing one-second status cadence. The mapped
 helper uses the same readiness contract with a20ms idle ceiling and exact
 descriptor acknowledgement. These waits do not extend an operation deadline or
@@ -128,7 +127,7 @@ Skipped, lost or failed cleanup leaves the read retained until its original
 expiry. Existing control operations and their reply semantics do not change.
 Process termination still cancels cleanup.
 
-Status includes the active exchange count and four-worker ceiling, voucher expiry,
+Status includes the active exchange count and two-worker ceiling, voucher expiry,
 completed/refused counts, the current bounded
 error and the observation's boot timestamp. It is a local snapshot, not a claim
 of current remote permission. An expired voucher refuses forwarding. Retain an

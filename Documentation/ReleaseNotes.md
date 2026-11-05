@@ -11,7 +11,7 @@ load results must identify their exact artifacts separately from earlier release
 
 ### Changes and compatibility
 
-- The native authority connector runs at most four independent exchanges through
+- The native authority connector runs at most two independent exchanges through
   separately admitted sessions to the same pinned authority endpoint. Its shared
   queue remains bounded at16 and each caller retains its original deadline.
   Selected relay and authority policies must allow these connections alongside
