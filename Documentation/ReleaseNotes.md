@@ -2,12 +2,13 @@
 
 [Documentation](ReadMe.md) | [Project](../ReadMe.md)
 
-## Linux 0.10.1 release candidate
+## Linux 0.10.1
 
 Version 0.10.1 completes optional consumed-read cleanup in native Suite clients
-and preserves the original application preparation deadline. This source candidate
-is not a published package. Package signing, installed qualification and native
-load results must identify their exact artifacts separately from earlier releases.
+and preserves the original application preparation deadline. Download the signed
+[Linux 0.10.1 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.1).
+Package signatures, installed checks and native results identify exact artifacts;
+earlier release evidence retains its original scope.
 
 ### Changes and compatibility
 
@@ -85,6 +86,27 @@ trust and all retained floors. The package contract remains
 `HyperNet080Client1`; no grant or private-state migration is introduced. Use an
 independently authenticated signed target for the exact package and preserve the
 existing product trust directory. See [upgrade and recovery](UpgradeRecovery.md).
+
+### Signed package
+
+The release contains `HyperNetSuite-0.10.1-linux-x86_64.tar`, its `.sig`,
+`HyperNetSuite-0.10.1-linux-x86_64.target.json`, its `.sig`, `Publisher.pub`,
+`SHA256SUMS` and `SHA256SUMS.sig`. The signed target uses root generation 1,
+sequence 19 and version floor 0.10.1. Authenticate the publisher independently
+and preserve retained package trust; never lower its sequence or version floor.
+The unchanged corresponding-source archive is `HyperNetSuite-0.10.0-third-party-sources.tar.xz`;
+its older filename identifies the retained dependency inputs, not the runtime version.
+
+Installed qualification covers the final executable on Ubuntu 24.04 x86_64 with
+GNU libc 2.39. The same runtime bytes also participated in an admitted application
+pilot on Ubuntu 26.04 amd64 with GNU libc 2.43: eight interactive clients and four
+support endpoints used twelve receiving streams and two admitted applications.
+The deployment allowed sixteen relay and application connections, eight authority
+endpoint connections and two native connector sessions. This is a bounded topology,
+not qualification of every configured slot, independent host failure domains or
+arbitrary application load. Application-specific throughput and latency results
+belong to that application's qualification report. Earlier GUI and platform
+results retain their original artifact scope; no independent security audit is claimed.
 
 ## Linux 0.10.0 application context and authority checks
 
