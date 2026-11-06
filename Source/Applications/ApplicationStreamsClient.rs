@@ -100,14 +100,20 @@ impl Client {
     ) -> Result<domain_client::ResultState> {
         self.execute(grant, domain::Command::Stream(command))
     }
-    pub fn context(&mut self, grant: &VersionRef, service: Digest, action: u64) -> Result<()> {
-        if self.store.resume_ordinary()?.is_none() {
-            self.stream(
-                Some(grant.clone()),
-                streams::Command::Context { service, action },
-            )?;
+    pub fn register(
+        &mut self,
+        grant: VersionRef,
+        registration: streams::Registration,
+        renew: bool,
+    ) -> Result<domain_client::ResultState> {
+        let requests = registration_requests(grant, registration, renew);
+        let pending = self.store.resume_ordinary()?;
+        let start = registration_start(&requests, pending.as_ref().map(|p| p.signed()))?;
+        let mut result = None;
+        for Request { grant, command } in requests.into_iter().skip(start) {
+            result = Some(self.execute(grant, command)?);
         }
-        Ok(())
+        result.context("registration has no operation")
     }
     pub fn resume_agent(&mut self, targets: &[Target]) -> Result<()> {
         self.resume_agent_observed(targets, None)
@@ -510,6 +516,66 @@ impl Client {
         Ok(())
     }
 }
+fn registration_requests(
+    grant: VersionRef,
+    registration: streams::Registration,
+    renew: bool,
+) -> Vec<Request> {
+    let mut requests = Vec::new();
+    if renew {
+        // Disclose the owned record without requiring its old grant or route to remain live.
+        requests.push(Request {
+            grant: None,
+            command: domain::Command::Stream(streams::Command::Lookup {
+                service: registration.id,
+                slot: 0,
+            }),
+        });
+        requests.push(Request {
+            grant: Some(grant.clone()),
+            command: domain::Command::Route(domain::routes::Command::Context {
+                action: streams::MANAGE,
+                scope: (3, registration.id),
+            }),
+        });
+    } else {
+        requests.push(Request {
+            grant: Some(grant.clone()),
+            command: domain::Command::Stream(streams::Command::Context {
+                service: registration.id,
+                action: streams::MANAGE,
+            }),
+        });
+    }
+    requests.push(Request {
+        grant: Some(grant.clone()),
+        command: domain::Command::Route(domain::routes::Command::Lookup {
+            service: registration.route.id,
+        }),
+    });
+    requests.push(Request {
+        grant: Some(grant),
+        command: domain::Command::Stream(streams::Command::Register { registration }),
+    });
+    requests
+}
+fn registration_start(requests: &[Request], pending: Option<&[u8]>) -> Result<usize> {
+    let Some(signed) = pending else {
+        return Ok(0);
+    };
+    let intent = Intent::from_signed(signed)?;
+    ensure!(
+        intent.action == "AuthorityDomain",
+        "another exact operation remains pending before registration"
+    );
+    let operation = domain::Operation::parse(&intent)?;
+    requests
+        .iter()
+        .position(|request| {
+            request.grant == operation.grant && request.command.value() == operation.command.value()
+        })
+        .context("another exact operation remains pending before registration")
+}
 // Ordering is local only: every unreserved candidate must complete a fresh lookup.
 pub(super) fn select_slot<T>(
     service: Digest,
@@ -553,3 +619,7 @@ pub(super) struct Plan {
 #[cfg(test)]
 #[path = "../../Tests/Unit/Applications/ApplicationStreamCleanupTests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../Tests/Unit/Applications/ApplicationStreamRegistrationTests.rs"]
+mod registration_tests;

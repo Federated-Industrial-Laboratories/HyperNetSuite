@@ -98,11 +98,14 @@ impl Inspection {
         crate::media::local_show(
             &document,
             &[metadata.to_string()],
-            false,
-            display.tui,
-            display.ascii,
-            &display.graphics,
-            &display.media,
+            crate::media::PreviewOptions {
+                gui: false,
+                tui: display.tui,
+                ascii: display.ascii,
+                theme_file: None,
+                graphics: &display.graphics,
+                media: &display.media,
+            },
         )
     }
 }

@@ -4,6 +4,14 @@
 
 ## Version 0.10.2
 
+The native Page browser accepts `--gui --theme-file` on `browse`, `pages read`
+and `pages preview` for a private, bounded HyperNet Relay Chat version-1 JSON palette. Shared colours, control
+spacing, outlines and corner cuts apply without changing signed Page content or
+permissions. The original default appearance remains available without this flag.
+Long addresses retain their complete navigation value in a bounded address field;
+link labels truncate and full addresses wrap in tooltips. See
+[Graphical browser](GraphicalBrowser.md#shared-appearance).
+
 `Tools/Bundle.py AdmitInstalled` verifies the exact retained installed package
 and current signed update target without advancing trust. Desktop operators can
 resume a verified installation without accepting a different or expired target.

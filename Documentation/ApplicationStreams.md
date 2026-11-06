@@ -112,11 +112,15 @@ An unchanged generation requires the same route digest; a new digest requires a
 later generation. The new validity cannot start earlier and must expire later.
 The normal finite validity and route checks still apply.
 
-Inspect the new offer, obtain fresh operator acceptance against the current route
-profile, then register it and generate its endpoint configuration using the same
-commands above. Previous operator consent is never copied onto the changed
-offer. Retain the previous accepted artifact until the replacement is accepted
-and activated. This command prepares an inert offer: it does not renew a grant,
+Inspect the new offer and obtain fresh operator acceptance against the current
+route profile. Use `streams register --renew` with the new accepted artifact and
+current MANAGE grant, then generate its endpoint configuration as above.
+Renewal requires an existing service owned by the signer. It can prepare that
+service after its old grant or route has expired; the new registration still
+requires current authority and exact endpoint consent. An absent, foreign or
+withdrawn service cannot be renewed. Previous operator consent is never copied
+onto the changed offer. Retain the previous accepted artifact until the replacement
+is accepted and activated. The offer command prepares an inert artifact: it does not renew a grant,
 change a running endpoint, or restore withdrawn authority. Apply the accepted
 configuration through the supported Core runtime transition.
 

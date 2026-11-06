@@ -13,7 +13,7 @@ fn corner_cut_preserves_fill_stroke_placement_and_nested_shape_order() {
             Shape::Noop,
             RectShape::new(rect, 6, fill, stroke, kind).into(),
         ]);
-        box_outline(&mut shape);
+        box_outline(&mut shape, CORNER_CUT);
         let Shape::Vec(shapes) = shape else {
             panic!("shape grouping changed")
         };
@@ -57,7 +57,7 @@ fn image_brushes_shadows_rotations_and_thin_lines_are_unchanged() {
     for source in sources {
         let original = Shape::Rect(source);
         let mut converted = original.clone();
-        box_outline(&mut converted);
+        box_outline(&mut converted, CORNER_CUT);
         assert_eq!(converted, original);
     }
 }
@@ -65,7 +65,7 @@ fn image_brushes_shadows_rotations_and_thin_lines_are_unchanged() {
 #[test]
 fn end_pass_hook_keeps_clip_rectangles_and_the_small_box_cut_bounded() {
     let ctx = egui::Context::default();
-    apply(&ctx, &mut egui::Style::default());
+    apply(&ctx, &mut egui::Style::default(), CORNER_CUT);
     let clip = Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(80.0, 40.0));
     let rect = Rect::from_min_size(egui::pos2(25.0, 25.0), egui::vec2(6.0, 4.0));
     let output = ctx.run_ui(egui::RawInput::default(), |ui| {

@@ -81,6 +81,9 @@ pub struct Display {
     /// Open the native graphical viewer; requires the gui build feature.
     #[arg(long, conflicts_with = "tui")]
     gui: bool,
+    /// Read one private, bounded JSON palette for the native browser.
+    #[arg(long, requires = "gui")]
+    theme_file: Option<PathBuf>,
     #[arg(long)]
     ascii: bool,
     #[command(flatten)]

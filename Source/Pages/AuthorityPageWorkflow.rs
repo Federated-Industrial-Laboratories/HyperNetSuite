@@ -6,11 +6,14 @@ fn display(bytes: &[u8], metadata: &[String], options: &Display) -> Result<()> {
     crate::media::local_show(
         &document,
         metadata,
-        options.gui,
-        options.tui,
-        options.ascii,
-        &options.graphics,
-        &options.media,
+        crate::media::PreviewOptions {
+            gui: options.gui,
+            tui: options.tui,
+            ascii: options.ascii,
+            theme_file: options.theme_file.as_deref(),
+            graphics: &options.graphics,
+            media: &options.media,
+        },
     )
 }
 pub(super) fn run(command: Command) -> Result<()> {

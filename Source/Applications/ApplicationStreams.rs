@@ -54,6 +54,9 @@ pub enum Command {
         grant: String,
         #[arg(long)]
         accepted: PathBuf,
+        /// Require an existing owned service and prepare its renewed registration.
+        #[arg(long)]
+        renew: bool,
     },
     /// Fetch the current service and one of this principal's bounded session slots.
     Lookup {
@@ -155,6 +158,7 @@ pub fn run(command: Command) -> Result<()> {
             online,
             grant,
             accepted,
+            renew,
         } => {
             let mut c = client::Client::new(&online)?;
             let artifact = offer::Artifact::parse(
@@ -163,22 +167,7 @@ pub fn run(command: Command) -> Result<()> {
                 true,
             )?;
             let grant = c.grant(&grant)?;
-            c.context(&grant, artifact.registration.id, streams::MANAGE)?;
-            // Fetch the exact endorsed route before mutation preflight.
-            if c.store.resume_ordinary()?.is_none() {
-                c.execute(
-                    Some(grant.clone()),
-                    domain::Command::Route(domain::routes::Command::Lookup {
-                        service: artifact.registration.route.id,
-                    }),
-                )?;
-            }
-            emit(&c.stream(
-                Some(grant),
-                streams::Command::Register {
-                    registration: artifact.registration,
-                },
-            )?)
+            emit(&c.register(grant, artifact.registration, renew)?)
         }
         Command::Lookup {
             online,
