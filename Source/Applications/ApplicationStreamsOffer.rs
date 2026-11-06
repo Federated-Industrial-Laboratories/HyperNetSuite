@@ -26,6 +26,9 @@ pub struct Arguments {
     trust: Trust,
     #[arg(long)]
     key: PathBuf,
+    /// Previous accepted service artifact; preserve its exact binding and rights.
+    #[arg(long)]
+    renew_from: Option<PathBuf>,
     #[arg(long)]
     service: String,
     /// Exact registered route ID:generation:digest.
@@ -149,9 +152,17 @@ pub fn create(a: Arguments) -> Result<()> {
     let signer = control::signer(&a.key)?;
     let owner = signer.verifying_key().to_bytes();
     let service = id(&a.service)?;
+    let previous = a
+        .renew_from
+        .as_ref()
+        .map(|path| Artifact::parse(&bootstrap, &files::read_single(path, 16384, true)?, true))
+        .transpose()?;
     let binding = streams::local::Binding {
         version: 1,
-        id: crate::route_protocol::random()?,
+        id: match &previous {
+            Some(accepted) => accepted.binding.id,
+            None => crate::route_protocol::random()?,
+        },
         network: scope.network,
         incarnation: scope.incarnation,
         service,
@@ -174,6 +185,9 @@ pub fn create(a: Arguments) -> Result<()> {
         validity: (a.not_before_ms, a.expires_ms),
         envelope: vec![],
     };
+    if let Some(accepted) = previous {
+        check_renewal(&accepted, &binding, &registration)?;
+    }
     registration.envelope = wire::sign_envelope(
         &registration.payload(scope.network, scope.incarnation)?,
         &signer,
@@ -186,6 +200,35 @@ pub fn create(a: Arguments) -> Result<()> {
     let artifact = Artifact::parse(&bootstrap, &bytes, false)?;
     files::write_new(&a.output, &bytes)?;
     artifact.report("ApplicationServiceOffered")
+}
+fn check_renewal(
+    previous: &Artifact,
+    binding: &streams::local::Binding,
+    registration: &streams::Registration,
+) -> Result<()> {
+    let old = &previous.registration;
+    ensure!(
+        *binding == previous.binding
+            && registration.id == old.id
+            && registration.owner == old.owner
+            && registration.operator == old.operator
+            && registration.protocol == old.protocol
+            && registration.binding == old.binding
+            && registration.limits == old.limits,
+        "service renewal must preserve the accepted binding, identities and limits"
+    );
+    ensure!(
+        registration.route.id == old.route.id
+            && registration.route.generation >= old.route.generation
+            && (registration.route.generation > old.route.generation
+                || registration.route.digest == old.route.digest),
+        "service renewal requires the same route at its existing or a later generation"
+    );
+    ensure!(
+        registration.validity.0 >= old.validity.0 && registration.validity.1 > old.validity.1,
+        "service renewal must advance expiry without backdating validity"
+    );
+    Ok(())
 }
 pub fn inspect(a: Inspection) -> Result<()> {
     let bootstrap = a.trust.load()?;
@@ -287,3 +330,7 @@ pub fn endpoint_config(a: EndpointConfiguration) -> Result<()> {
     files::write_new(&a.output, &serde_json::to_vec(&output)?)?;
     artifact.report("ApplicationEndpointConfigured")
 }
+
+#[cfg(test)]
+#[path = "../../Tests/Unit/Applications/ApplicationStreamsOfferTests.rs"]
+mod tests;

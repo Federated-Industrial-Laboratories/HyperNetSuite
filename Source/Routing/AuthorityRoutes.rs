@@ -10,6 +10,10 @@ mod evaluation;
 pub use evaluation::evaluate;
 pub(crate) use evaluation::evaluate_read;
 
+#[cfg(test)]
+#[path = "../../Tests/Unit/Routing/AuthorityRoutesTests.rs"]
+mod tests;
+
 #[derive(Clone, Debug)]
 pub struct RegisteredProfile {
     pub manifest: crate::runtime_manifest::Manifest,
@@ -77,6 +81,30 @@ fn assurance(value: &V) -> Result<Assurance> {
     })
 }
 impl RegisteredProfile {
+    /// Explicit signed consent may extend the same endpoint; no permanent property is replaced.
+    pub fn successor_of(&self, previous: &Self) -> Result<()> {
+        self.manifest.permits_definition(&previous.manifest)?;
+        ensure!(
+            self.manifest.generation > previous.manifest.generation
+                && self.validity.0 >= previous.validity.0
+                && self.validity.1 > previous.validity.1
+                && self.deployment == previous.deployment
+                && self.service == previous.service
+                && self.operator == previous.operator
+                && self.endpoint == previous.endpoint
+                && self.identity == previous.identity
+                && self.address == previous.address
+                && self.domain == previous.domain
+                && self.protocol == previous.protocol
+                && self.mode == previous.mode
+                && self.relay == previous.relay
+                && self.limits == previous.limits
+                && self.maximum_connections == previous.maximum_connections
+                && self.assurance == previous.assurance,
+            "Route successor must extend signed consent without changing permanent identity, exposure, privacy or budgets"
+        );
+        Ok(())
+    }
     pub fn parse(envelope: &[u8], network: Digest, incarnation: Digest) -> Result<Self> {
         ensure!(envelope.len() <= 32768, "route profile exceeds its bound");
         let (payload, signatures) = wire::envelope(envelope, 1)?;
@@ -383,7 +411,7 @@ pub fn validate_record(
         165 => {
             let s = Service::parse(payload, n, i)?;
             ensure!(
-                lookup == s.profile.identity.service && generation == 1 + u64::from(s.withdrawn),
+                lookup == s.profile.identity.service && generation > u64::from(s.withdrawn),
                 "route service lookup or generation differs"
             );
         }

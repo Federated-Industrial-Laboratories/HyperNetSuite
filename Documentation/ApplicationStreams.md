@@ -87,6 +87,39 @@ using online commands. The [clock instructions](AuthorityInspection.md) cover
 signed clock observations in separate containers. Core runtime setup, preview,
 consent and activation remain explicit operator steps.
 
+## Renew a service
+
+Suite 0.10.2 adds `streams offer --renew-from ServiceAccepted.cbor`. Supply the
+previous owner-and-operator accepted artifact alongside the normal offer
+arguments. The command verifies both signatures and the pinned network context.
+It retains the exact local binding, including its identifier, so an existing
+endpoint does not become another service when its consent is renewed.
+
+```sh
+HyperNetSuite streams offer --bootstrap Bootstrap.cbor \
+  --bootstrap-digest BOOTSTRAP_SHA256 --key Owner.json \
+  --renew-from ServiceAccepted.cbor \
+  --service SERVICE_ID --route ROUTE_ID:GENERATION:DIGEST \
+  --operator OPERATOR_KEY --endpoint ENDPOINT_KEY --protocol example/1 \
+  --not-before-ms NEW_START_MS --expires-ms NEW_END_MS \
+  --maximum-bytes 268435456 --duration-ms 120000 --idle-ms 30000 \
+  --output RenewedServiceOffer.cbor
+```
+
+Owner, operator, service, endpoint, protocol and all three limits must match the
+previous consent. The route ID stays fixed and its generation cannot decrease.
+An unchanged generation requires the same route digest; a new digest requires a
+later generation. The new validity cannot start earlier and must expire later.
+The normal finite validity and route checks still apply.
+
+Inspect the new offer, obtain fresh operator acceptance against the current route
+profile, then register it and generate its endpoint configuration using the same
+commands above. Previous operator consent is never copied onto the changed
+offer. Retain the previous accepted artifact until the replacement is accepted
+and activated. This command prepares an inert offer: it does not renew a grant,
+change a running endpoint, or restore withdrawn authority. Apply the accepted
+configuration through the supported Core runtime transition.
+
 ## Run the companion
 
 For a joined client, use the existing network profile directly:

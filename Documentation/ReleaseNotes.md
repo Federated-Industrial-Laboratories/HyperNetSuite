@@ -2,6 +2,34 @@
 
 [Documentation](ReadMe.md) | [Project](../ReadMe.md)
 
+## Version 0.10.2
+
+`streams offer --renew-from` prepares a new finite offer from a previously
+accepted service artifact. Both prior signatures and the pinned network context
+are verified. The exact local binding, owner, operator, endpoint, protocol and
+limits remain unchanged. Route generations cannot decrease or substitute a
+different digest at the same generation. Validity must advance without backdating.
+
+The owner signs the new offer and the endpoint operator must accept it again.
+Normal registration, current authority checks and endpoint activation still
+apply. Fresh service creation retains its independently generated binding.
+No wire, SDK, grant or private-state migration is introduced. The SDK package
+version advances to match the native package; its implementation is unchanged.
+See [service renewal](ApplicationStreams.md#renew-a-service) for the command path.
+
+With Core 0.10.3, route registration accepts a successor signed deployment
+consent under the same route identifier. Suite independently verifies unchanged
+manager, endpoint identity, exposure, privacy and budgets, fresh permission, and
+advanced validity. The certified route generation advances once. Withdrawal
+remains terminal. See [route registration](PrivateRoutes.md#author-and-register-routes).
+Clients that verify renewed route records need Suite 0.10.2 or later. Older Suite
+versions reject successor route generations; they do not inherit the new expiry.
+
+Focused checks cover retained binding identity, changed rights and route refusal,
+prior signature and scope validation, fresh operator consent, and fresh service
+creation. Existing release qualification below retains its original artifact
+scope; these checks do not establish new throughput or platform claims.
+
 ## Linux 0.10.1
 
 Version 0.10.1 completes optional consumed-read cleanup in native Suite clients
