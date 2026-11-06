@@ -4,6 +4,10 @@
 
 ## Version 0.10.2
 
+`Tools/Bundle.py AdmitInstalled` verifies the exact retained installed package
+and current signed update target without advancing trust. Desktop operators can
+resume a verified installation without accepting a different or expired target.
+
 `streams offer --renew-from` prepares a new finite offer from a previously
 accepted service artifact. Both prior signatures and the pinned network context
 are verified. The exact local binding, owner, operator, endpoint, protocol and
