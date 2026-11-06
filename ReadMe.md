@@ -44,6 +44,10 @@ authority checks and fair preparation and cleanup scheduling. Original operation
 deadlines and exact-outcome recovery remain enforced. See the
 [release notes](Documentation/ReleaseNotes.md) for compatibility and scope.
 
+Version 0.10.2 adds explicit [service consent renewal](Documentation/ApplicationStreams.md#renew-a-service)
+that preserves the accepted endpoint binding and requires fresh operator consent.
+The transport and SDK protocols remain unchanged.
+
 ## Features
 
 | Capability | What you can do |
@@ -153,4 +157,4 @@ For maintenance, use [upgrade and recovery](Documentation/UpgradeRecovery.md),
 [contracts](Documentation/Contracts.md) and
 [dependency licences](Documentation/Dependencies.md).
 
-Licensed under the [MIT License](Licence.txt).
+Licensed under the [MIT License](Licence.txt), with incorporated Apache-2.0 palette validation and dependency notices in [Third-party notices](Documentation/ThirdPartyNotices.txt).

@@ -14,13 +14,15 @@ pub fn run(
     gui: bool,
     tui: bool,
     ascii: bool,
+    theme_file: Option<std::path::PathBuf>,
     work: impl FnOnce(Session) -> Result<()> + Send + 'static,
 ) -> Result<()> {
     ensure!(!(gui && tui), "--gui and --tui cannot be combined");
+    ensure!(gui || theme_file.is_none(), "--theme-file requires --gui");
     if gui {
         #[cfg(feature = "gui")]
         {
-            return crate::graphical::run(work);
+            return crate::graphical::run(theme_file.as_deref(), work);
         }
         #[cfg(not(feature = "gui"))]
         {

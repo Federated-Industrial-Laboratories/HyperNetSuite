@@ -16,6 +16,8 @@ use std::{
 mod chrome;
 #[path = "Common.rs"]
 pub(crate) mod common;
+#[path = "Palette.rs"]
+mod palette;
 #[path = "PageRenderer.rs"]
 mod renderer;
 #[path = "Scrolling.rs"]
@@ -38,7 +40,11 @@ pub fn image_key(asset: &markup::media::Asset) -> String {
     )
 }
 
-pub fn run(work: impl FnOnce(crate::viewer::Session) -> Result<()> + Send + 'static) -> Result<()> {
+pub fn run(
+    theme_file: Option<&std::path::Path>,
+    work: impl FnOnce(crate::viewer::Session) -> Result<()> + Send + 'static,
+) -> Result<()> {
+    let palette = theme_file.map(palette::Palette::load).transpose()?;
     let closed = Arc::new(AtomicBool::new(false));
     let app_closed = closed.clone();
     let outcome = Arc::new(std::sync::Mutex::new(None));
@@ -57,7 +63,7 @@ pub fn run(work: impl FnOnce(crate::viewer::Session) -> Result<()> + Send + 'sta
         "HyperNet Browser",
         options,
         Box::new(move |cc| {
-            chrome::theme(&cc.egui_ctx);
+            chrome::theme_palette(&cc.egui_ctx, palette.as_ref());
             let (sender, receiver) = sync_channel(1);
             let session = Session {
                 sender: sender.clone(),
@@ -331,11 +337,18 @@ impl eframe::App for Browser {
             .frame(
                 egui::Frame::NONE
                     .inner_margin(20.0)
-                    .fill(egui::Color32::from_rgb(20, 23, 26)),
+                    .fill(theme::surface(ui)),
             )
             .show(ui, |ui| {
                 if let Some(error) = &self.error {
-                    ui.colored_label(egui::Color32::from_rgb(239, 150, 133), "Unable to continue");
+                    ui.colored_label(
+                        theme::colour(
+                            ui,
+                            egui::Color32::from_rgb(239, 150, 133),
+                            ui.visuals().error_fg_color,
+                        ),
+                        "Unable to continue",
+                    );
                     ui.label(error);
                 }
                 if let Some(page) = &mut self.page {

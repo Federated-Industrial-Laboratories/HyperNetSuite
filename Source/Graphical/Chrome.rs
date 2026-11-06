@@ -3,8 +3,22 @@
 use super::*;
 
 pub(super) fn theme(ctx: &egui::Context) {
+    theme_palette(ctx, None);
+}
+
+pub(super) fn theme_palette(ctx: &egui::Context, palette: Option<&palette::Palette>) {
+    let light = palette.is_some_and(|p| p.mode == palette::Mode::Light);
+    let selected_theme = if light {
+        egui::Theme::Light
+    } else {
+        egui::Theme::Dark
+    };
     let mut style = egui::Style {
-        visuals: egui::Visuals::dark(),
+        visuals: if light {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        },
         ..Default::default()
     };
     style.visuals.panel_fill = egui::Color32::from_rgb(27, 30, 34);
@@ -16,9 +30,22 @@ pub(super) fn theme(ctx: &egui::Context) {
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     style.spacing.button_padding = egui::vec2(10.0, 6.0);
     style.spacing.interact_size.y = 28.0;
-    super::theme::apply(ctx, &mut style);
-    ctx.set_theme(egui::Theme::Dark);
-    ctx.set_style_of(egui::Theme::Dark, style);
+    if let Some(palette) = palette {
+        palette.apply(&mut style);
+    }
+    let cut = palette.map_or(super::theme::CORNER_CUT, |p| p.display.corner_cut);
+    super::theme::apply(ctx, &mut style, cut);
+    ctx.data_mut(|data| {
+        data.insert_temp(egui::Id::unique("BrowserPalette"), palette.is_some());
+        data.insert_temp(
+            egui::Id::unique("BrowserSurface"),
+            palette.map_or(egui::Color32::from_rgb(20, 23, 26), |p| {
+                p.colors.surface.colour()
+            }),
+        );
+    });
+    ctx.set_theme(selected_theme);
+    ctx.set_style_of(selected_theme, style);
 }
 
 pub(super) fn text_size(ui: &mut egui::Ui, scale: f32) {
@@ -31,6 +58,7 @@ pub(super) fn text_size(ui: &mut egui::Ui, scale: f32) {
 
 pub(super) fn preferences(ui: &mut egui::Ui, preferences: &mut settings::Preferences) -> bool {
     let stacked = ui.available_width() < 400.0 * preferences.text_scale;
+    let right = ui.max_rect().right();
     let mut changed = false;
     egui::Grid::new("Preferences")
         .num_columns(if stacked { 1 } else { 2 })
@@ -53,6 +81,24 @@ pub(super) fn preferences(ui: &mut egui::Ui, preferences: &mut settings::Prefere
             if stacked {
                 ui.end_row();
             }
+            let font = ui.style().drag_value_text_style.resolve(ui.style());
+            let number_width = ui.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap("2.00×".into(), font, egui::Color32::WHITE)
+                    .size()
+                    .x
+            }) + 2.0 * ui.spacing().button_padding.x;
+            let number_width = number_width.max(ui.spacing().interact_size.x);
+            let slider_width = ui.spacing().slider_width;
+            // Reserve the numeric editor as well as the slider inside this grid cell.
+            ui.spacing_mut().slider_width = slider_width.min(
+                (right
+                    - ui.next_widget_position().x
+                    - number_width
+                    - ui.spacing().item_spacing.x
+                    - 2.0)
+                    .max(24.0),
+            );
             let response = ui
                 .add(
                     egui::Slider::new(&mut preferences.text_scale, 0.75..=2.0)
@@ -60,6 +106,7 @@ pub(super) fn preferences(ui: &mut egui::Ui, preferences: &mut settings::Prefere
                         .suffix("×"),
                 )
                 .labelled_by(label.id);
+            ui.spacing_mut().slider_width = slider_width;
             scrolling::reveal_focus(&response);
             changed |= response.changed();
             ui.end_row();
@@ -180,8 +227,9 @@ enum Icon {
 }
 
 fn icon(ui: &mut egui::Ui, kind: Icon, label: &str) -> egui::Response {
+    let side = ui.spacing().interact_size.y.max(30.0);
     let response = ui
-        .add(egui::Button::new("").min_size(egui::vec2(30.0, 30.0)))
+        .add_sized(egui::vec2(side, side), egui::Button::new(""))
         .on_hover_text(label);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let p = ui.painter();
@@ -245,6 +293,11 @@ fn icon(ui: &mut egui::Ui, kind: Icon, label: &str) -> egui::Response {
     response
 }
 
+fn full_address(ui: &mut egui::Ui, address: &str) {
+    ui.set_max_width(480.0);
+    ui.add(egui::Label::new(address).wrap());
+}
+
 impl Browser {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("BrowserToolbar")
@@ -293,15 +346,21 @@ impl Browser {
                     if icon(ui, Icon::Sidebar, "Page links").clicked() {
                         self.sidebar = !self.sidebar;
                     }
-                    let width = (ui.available_width() - 160.0).max(90.0);
+                    let trailing = 4.0
+                        * (ui.spacing().interact_size.y.max(30.0) + ui.spacing().item_spacing.x);
+                    let width = (ui.available_width() - trailing).max(1.0);
                     let address = ui.add_enabled(
                         enabled,
                         egui::TextEdit::singleline(&mut self.address)
                             .id(egui::Id::unique("Address"))
                             .hint_text("HyperNet address")
                             .char_limit(512)
-                            .desired_width(width),
+                            .desired_width(width)
+                            .min_size(egui::vec2(1.0, ui.spacing().interact_size.y.max(30.0))),
                     );
+                    let address = address.on_hover_ui(|ui| {
+                        full_address(ui, &self.address);
+                    });
                     address.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             egui::Role::TextInput,
@@ -337,7 +396,7 @@ impl Browser {
         egui::Panel::bottom("BrowserStatus")
             .resizable(false)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if self.busy {
                         ui.spinner();
                         ui.label("Loading");
@@ -354,8 +413,8 @@ impl Browser {
                         let status = page.status.lines().next().unwrap_or("");
                         if !status.is_empty() && !status.starts_with("Local preview;") {
                             ui.separator();
-                            ui.label(status.chars().take(100).collect::<String>())
-                                .on_hover_text(&page.status);
+                            ui.add(egui::Label::new(status).truncate())
+                                .on_hover_ui(|ui| full_address(ui, &page.status));
                         }
                     }
                     if self.settings_error.is_some() {
@@ -397,9 +456,9 @@ impl Browser {
                             if ui
                                 .add_enabled(
                                     self.can_navigate(),
-                                    egui::Button::new(&link.label).wrap(),
+                                    egui::Button::new(&link.label).truncate(),
                                 )
-                                .on_hover_text(&link.target)
+                                .on_hover_ui(|ui| full_address(ui, &link.target))
                                 .clicked()
                             {
                                 action = Some(reader::Action::Open(index));
@@ -454,7 +513,14 @@ impl Browser {
                             }
                             if let Some(error) = &self.settings_error {
                                 ui.separator();
-                                ui.colored_label(egui::Color32::LIGHT_RED, error);
+                                ui.colored_label(
+                                    theme::colour(
+                                        ui,
+                                        egui::Color32::LIGHT_RED,
+                                        ui.visuals().error_fg_color,
+                                    ),
+                                    error,
+                                );
                             }
                         });
                     });

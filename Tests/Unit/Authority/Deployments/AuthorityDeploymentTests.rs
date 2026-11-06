@@ -61,7 +61,7 @@ fn hex(seed: u8) -> String {
 const N: Key = [20; 32];
 const I: Key = [21; 32];
 const DEPLOYMENT: Key = [60; 32];
-fn leaf(seed: u8) -> Vec<u8> {
+pub(crate) fn leaf(seed: u8) -> Vec<u8> {
     static LEAVES: OnceLock<BTreeMap<u8, Vec<u8>>> = OnceLock::new();
     LEAVES
         .get_or_init(|| {

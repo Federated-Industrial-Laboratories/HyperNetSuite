@@ -176,6 +176,18 @@ A relay additionally requires `RelayTransit6` for its opaque route identifier on
 the same grant. Registration verifies the admitted deployment and operator consent.
 Supply the same signed artifact to Core's installed route service setup.
 
+Core 0.10.3 and Suite 0.10.2 support renewal under the same route identifier.
+First obtain fresh signed consent for a later generation of the same deployment,
+then author and register its route profile using these commands. The original
+manager, operator, endpoint, TLS identity, address, relay, privacy mode and budgets
+must remain unchanged. Validity cannot start earlier and must expire later.
+Registration consumes one new certified route generation and checks current
+management permission and deployment admission. It cannot revive a withdrawn
+route. Use the returned current route reference in dependent service offers and
+client vouchers; the old reference cannot confer the new validity.
+Update participating Suite clients to 0.10.2 before using renewed route records;
+earlier versions reject those successor generations.
+
 Create a client template from the exact signed relay and destination profiles:
 
 ```sh

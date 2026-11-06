@@ -82,6 +82,25 @@ class BundleTests(unittest.TestCase):
     def lifecycle(self, command, success=True):
         return self.call(command, '--prefix', str(self.prefix()), '--public-key', str(self.key) + '.pub', success=success)
 
+    def test_installed_admission_keeps_the_exact_retained_target(self):
+        self.install()
+        trust = self.prefix().with_name(self.prefix().name + 'Trust')
+        before = self.call('TrustInspect', '--trust-directory', str(trust)).stdout
+        arguments = ('AdmitInstalled', '--prefix', str(self.prefix()),
+                     '--public-key', str(self.key) + '.pub', '--trust-directory', str(trust),
+                     '--policy', str(self.policy), '--policy-signature', str(self.policy) + '.sig')
+        admitted = json.loads(self.call(*arguments).stdout)
+        self.assertEqual(admitted['manifest']['version'], Bundle.VERSION)
+        self.assertEqual(admitted['sequence'], 1)
+        self.assertEqual(before, self.call('TrustInspect', '--trust-directory', str(trust)).stdout)
+        with patch.object(PackageTrust.time, 'time', return_value=int(time.time()) + 7200):
+            args = argparse.Namespace(prefix=str(self.prefix()), public_key=str(self.key) + '.pub',
+                                      trust_directory=str(trust), policy=str(self.policy),
+                                      policy_signature=str(self.policy) + '.sig', ssh_keygen='/usr/bin/ssh-keygen')
+            with self.assertRaises(ValueError):
+                Bundle.admit_installed(args)
+        self.assertEqual(before, self.call('TrustInspect', '--trust-directory', str(trust)).stdout)
+
     def modified_archive(self, mutate, namespace='HyperNetSuiteBundle1'):
         path = self.prefix().with_suffix('.tar')
         with tarfile.open(path, 'w', format=tarfile.USTAR_FORMAT) as archive:

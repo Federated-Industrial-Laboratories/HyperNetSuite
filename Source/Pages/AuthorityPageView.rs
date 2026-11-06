@@ -456,51 +456,63 @@ pub(super) fn read(
     output: Option<PathBuf>,
     options: Display,
 ) -> Result<()> {
-    viewer::run(options.gui, options.tui, options.ascii, move |session| {
-        options.interactions.check()?;
-        session.configure_graphics(&options.graphics)?;
-        let Some((c, grant, current, online)) = session.request(move || {
-            let mut c = Client::new(&online)?;
-            let grant = c.grant(capability)?;
-            let current = publication(&mut c, &grant, raw(&page_id)?)?;
-            Ok((c, grant, current, online))
-        })?
-        else {
-            return Ok(());
-        };
-        if let Some(path) = output {
-            files::write_new(&path, &current.publication.as_ref().unwrap().bundle.bytes)?;
-        }
-        view(session, c, grant, current, online, options)
-    })
+    viewer::run(
+        options.gui,
+        options.tui,
+        options.ascii,
+        options.theme_file.clone(),
+        move |session| {
+            options.interactions.check()?;
+            session.configure_graphics(&options.graphics)?;
+            let Some((c, grant, current, online)) = session.request(move || {
+                let mut c = Client::new(&online)?;
+                let grant = c.grant(capability)?;
+                let current = publication(&mut c, &grant, raw(&page_id)?)?;
+                Ok((c, grant, current, online))
+            })?
+            else {
+                return Ok(());
+            };
+            if let Some(path) = output {
+                files::write_new(&path, &current.publication.as_ref().unwrap().bundle.bytes)?;
+            }
+            view(session, c, grant, current, online, options)
+        },
+    )
 }
 pub fn browse(args: Browse) -> Result<()> {
     let mut options = args.display;
     options.tui = !options.gui;
-    viewer::run(options.gui, options.tui, options.ascii, move |session| {
-        options.interactions.check()?;
-        session.configure_graphics(&options.graphics)?;
-        let Some((c, grant, current, online)) = session.request(move || {
-            let mut c = Client::new(&args.online)?;
-            let grant = c.grant(args.capability)?;
-            let current = if let Some(uri) = args.uri {
-                open(&mut c, &grant, &uri)?
-            } else {
-                catalogue(
-                    &mut c,
-                    &grant,
-                    args.namespace
-                        .context("--namespace is required without a Page address")?,
-                    args.after.as_deref().map(id).transpose()?,
-                )?
+    viewer::run(
+        options.gui,
+        options.tui,
+        options.ascii,
+        options.theme_file.clone(),
+        move |session| {
+            options.interactions.check()?;
+            session.configure_graphics(&options.graphics)?;
+            let Some((c, grant, current, online)) = session.request(move || {
+                let mut c = Client::new(&args.online)?;
+                let grant = c.grant(args.capability)?;
+                let current = if let Some(uri) = args.uri {
+                    open(&mut c, &grant, &uri)?
+                } else {
+                    catalogue(
+                        &mut c,
+                        &grant,
+                        args.namespace
+                            .context("--namespace is required without a Page address")?,
+                        args.after.as_deref().map(id).transpose()?,
+                    )?
+                };
+                Ok((c, grant, current, args.online))
+            })?
+            else {
+                return Ok(());
             };
-            Ok((c, grant, current, args.online))
-        })?
-        else {
-            return Ok(());
-        };
-        view(session, c, grant, current, online, options)
-    })
+            view(session, c, grant, current, online, options)
+        },
+    )
 }
 
 #[cfg(test)]

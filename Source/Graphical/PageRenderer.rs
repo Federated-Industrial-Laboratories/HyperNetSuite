@@ -4,7 +4,7 @@
 mod fields;
 #[path = "Markdown.rs"]
 mod markdown;
-use super::scrolling;
+use super::{scrolling, theme};
 use crate::{
     markup::{
         self, BorderStyle, Colour, Document, Fit, Kind, Node, PageAction, Preset, ScrollDirection,
@@ -107,7 +107,14 @@ impl PageRenderer {
                 }
                 frame.nodes(ui, &document.nodes, Style::default());
                 if let Some(message) = &frame.renderer.message {
-                    ui.colored_label(Color32::from_rgb(234, 139, 119), message);
+                    ui.colored_label(
+                        theme::colour(
+                            ui,
+                            Color32::from_rgb(234, 139, 119),
+                            ui.visuals().error_fg_color,
+                        ),
+                        message,
+                    );
                 }
             });
             if let Some(offset) = scrolling::keys(
@@ -399,13 +406,24 @@ impl Render<'_> {
                 let mut border_colour = if self.view.monochrome {
                     Color32::from_gray(130)
                 } else {
-                    colour(style.colour, Color32::from_rgb(78, 85, 91))
+                    colour(
+                        style.colour,
+                        theme::colour(
+                            ui,
+                            Color32::from_rgb(78, 85, 91),
+                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                        ),
+                    )
                 };
                 if let Some((Preset::BorderEmphasis, p)) = effect {
                     border_colour = border_colour.gamma_multiply(0.7 + 0.6 * pulse(p));
                 }
                 let result = egui::Frame::new()
-                    .fill(Color32::from_rgb(29, 32, 35))
+                    .fill(theme::colour(
+                        ui,
+                        Color32::from_rgb(29, 32, 35),
+                        ui.visuals().faint_bg_color,
+                    ))
                     .stroke(Stroke::new(width, border_colour))
                     .corner_radius(radius)
                     .inner_margin(i8::try_from(6 + u16::from(*padding) * 4).unwrap_or(120))
@@ -476,7 +494,14 @@ impl Render<'_> {
                 let border_colour = if self.view.monochrome {
                     Color32::from_gray(130)
                 } else {
-                    colour(style.colour, Color32::from_rgb(78, 85, 91))
+                    colour(
+                        style.colour,
+                        theme::colour(
+                            ui,
+                            Color32::from_rgb(78, 85, 91),
+                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                        ),
+                    )
                 };
                 let width = if matches!(border, BorderStyle::Heavy) {
                     2.0
@@ -563,7 +588,14 @@ impl Render<'_> {
             }
             Kind::Form { label, .. } => {
                 egui::Frame::new()
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(65, 72, 77)))
+                    .stroke(Stroke::new(
+                        1.0,
+                        theme::colour(
+                            ui,
+                            Color32::from_rgb(65, 72, 77),
+                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                        ),
+                    ))
                     .inner_margin(8)
                     .show(ui, |ui| {
                         ui.label(text_style.rich(label).strong());
@@ -808,8 +840,15 @@ pub(super) fn image(
         );
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, alt));
         if ui.is_rect_visible(rect) {
-            ui.painter()
-                .rect_filled(rect, 0, Color32::from_rgb(20, 22, 24));
+            ui.painter().rect_filled(
+                rect,
+                0,
+                theme::colour(
+                    ui,
+                    Color32::from_rgb(20, 22, 24),
+                    ui.visuals().extreme_bg_color,
+                ),
+            );
             let size = Vec2::new(asset.width as f32, asset.height as f32);
             let mut uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
             let destination = if fit == Fit::Contain {
@@ -846,7 +885,11 @@ pub(super) fn image(
         None
     } else {
         egui::Frame::new()
-            .fill(Color32::from_rgb(22, 25, 28))
+            .fill(theme::colour(
+                ui,
+                Color32::from_rgb(22, 25, 28),
+                ui.visuals().faint_bg_color,
+            ))
             .inner_margin(8)
             .show(ui, |ui| {
                 ui.label(alt);

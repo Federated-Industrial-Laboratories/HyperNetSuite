@@ -40,9 +40,48 @@ send Forms. A local media mapping reads only the explicitly named canonical file
 when Reveal is activated. `--gui` and `--tui` cannot be combined. Omitting `--gui`
 keeps the existing terminal and plain-output behavior.
 
+## Shared appearance
+
+A desktop launcher can pass its selected HyperNet Relay Chat version-1 palette:
+
+```sh
+HyperNetSuite network connect --profile /Private/Client/Profile.json -- browse --gui --theme-file /Private/BrowserTheme.json hypernet://NETWORK/AUTHOR/News/PAGE
+```
+
+`pages preview` and `pages read` accept the same option. For a local sample:
+
+```sh
+HyperNetSuite pages preview Examples/GraphicalPage.txt --gui --theme-file /Private/BrowserTheme.json
+```
+
+`--theme-file` requires `--gui`. Suite reads the file once before opening the
+window or starting browser requests. An invalid or unreadable file stops launch
+with an error. Without this option, the original dark appearance is retained.
+The palette changes native colours, control spacing, outlines and corner cuts.
+Page source, signed colours, navigation, media permissions and Forms remain under
+the existing rules. Suite text size, monochrome and animation preferences remain
+independent. Reopen the browser to pick up a different palette.
+
+The UTF-8 JSON file is limited to 16 KiB. It must be a regular file owned by the
+current user, with no group or other permissions and exactly one hard link.
+Symlinks and parent traversal are refused. Suite never writes this file.
+Unknown and repeated fields, scripts, fonts, images, paths and URLs are refused.
+The palette supplies no executable code and triggers no resource downloads.
+
+Version 1 has `version`, `name`, `mode`, `colors` and optional `display` objects.
+`name` has 1-48 ASCII letters, digits, spaces, hyphens or underscores, without
+leading or trailing whitespace. `mode` is `dark` or `light`. The fourteen opaque
+`#RRGGBB` colours are `panel`, `surface`, `window`, `input`, `faint`, `text`,
+`muted`, `accent`, `selection`, `selectionText`, `border`, `button`, `hover` and
+`pressed`. The optional display values are `cornerCut` from 0 to 8 (default 5)
+and `outlineWidth` from 0.5 to 2 (default 1). Background luminance must match the
+mode, text needs at least 4.5:1 contrast, and secondary text and accents need 3:1.
+
 ## Navigation and review
 
 The toolbar provides Back, Refresh, Catalogue, address entry and Page information.
+Long labels and status rows are truncated to fit; address entry retains the full
+editable value, and tooltips wrap complete addresses.
 The Page links sidebar filters links in the current document; filtering sends no
 network query. Catalogue and navigation requests are explicit. HTTPS references
 remain display-only and never launch an external application.

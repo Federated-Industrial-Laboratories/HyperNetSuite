@@ -303,7 +303,11 @@ impl Renderer<'_> {
                         let mut code = String::new();
                         plain(children, &mut code);
                         egui::Frame::new()
-                            .fill(egui::Color32::from_rgb(20, 22, 24))
+                            .fill(crate::graphical::theme::colour(
+                                ui,
+                                egui::Color32::from_rgb(20, 22, 24),
+                                ui.visuals().extreme_bg_color,
+                            ))
                             .inner_margin(8)
                             .show(ui, |ui| {
                                 egui::ScrollArea::horizontal()

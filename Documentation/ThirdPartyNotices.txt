@@ -1,5 +1,13 @@
-Third-party notices for locked Rust dependencies.
+Third-party notices for incorporated source and locked Rust dependencies.
 Upstream licence wording and filenames are retained.
+
+========================================================================
+HyperNet Relay Chat palette validation
+Source: https://github.com/Federated-Industrial-Laboratories/HyperNetRelayChat/blob/2ec7536/Source/Gui/ThemeData.rs
+Incorporated file: Source/Graphical/Palette.rs
+Declared licence: Apache-2.0
+Changes: read-only Suite loading and native browser styling; no theme persistence.
+The full Apache-2.0 licence text is reproduced in the following accesskit notice.
 
 ========================================================================
 accesskit 0.25.1
