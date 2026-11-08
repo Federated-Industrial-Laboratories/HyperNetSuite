@@ -7,6 +7,22 @@ identity files, mail vaults, recovery files and downloads outside an installed
 software prefix. Package removal never revokes network grants or deletes those
 external files.
 
+## Page updates 0.10.3
+
+Use Suite 0.10.3 with Core 0.10.4 for updates to approved Pages. The next content
+revision follows the retained last content revision, independently of the ledger
+record generation. Existing approved publications and earlier revision numbers
+remain retained; the update does not rewrite them or require new Page identities.
+
+Stop new ordered mutations and resolve pending work before replacing software.
+Follow the Core procedure to bring every authority voter fully up to date before
+the committee upgrade. Do not mix old and corrected authority evaluation or
+replay an unapplied old-version suffix under changed rules. Select the verified
+new Suite executable after active client work stops, then restart companions.
+Preserve profiles, keys, requester journals, backups, history and trust floors.
+The package contract remains `HyperNet080Client1`; no private-state migration is
+introduced. An uncertain signed operation still needs its exact recovery path.
+
 ## Consumed-read cleanup 0.10.1
 
 Version 0.10.1 adds optional cleanup without changing the retained

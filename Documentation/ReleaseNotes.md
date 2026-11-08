@@ -2,6 +2,32 @@
 
 [Documentation](ReadMe.md) | [Project](../ReadMe.md)
 
+## Version 0.10.3
+
+Approved Page updates now use the next content revision. Approval changes the
+ledger record generation but does not consume a content revision. Suite accepts
+revision 2 after approved revision 1 and refuses a skipped revision 3. The
+previous publication remains available while its replacement awaits review.
+Approval can publish the replacement; rejection preserves the prior publication.
+
+Use Core 0.10.4 for the matching authority evaluation. Update the participating
+authority committee and Suite clients before submitting replacement revisions;
+older versions can refuse the corrected sequence. Core 0.10.4 also corrects
+relay admission for a legitimately renewed voucher generation. Existing Suite
+route renewal and independently pinned route retention remain the client path.
+
+No wire, grant, SDK protocol or private-state migration is introduced. Keep
+existing identities, requester state, signed history and retained floors. Stop
+active work and resolve pending operations before replacing software. Follow
+[upgrade and recovery](UpgradeRecovery.md#page-updates-0103) and the Core upgrade
+procedure. The SDK package version advances with the native package; its
+implementation is unchanged.
+
+The Page regression covers approval of revision 1, refusal of skipped revision 3,
+submission and approval of revision 2, preservation of earlier revision records,
+and rejection and withdrawal after a later replacement. These source checks do
+not establish new deployment, throughput or platform qualification.
+
 ## Version 0.10.2
 
 The native Page browser accepts `--gui --theme-file` on `browse`, `pages read`

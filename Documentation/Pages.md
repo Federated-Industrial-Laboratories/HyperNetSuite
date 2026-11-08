@@ -63,6 +63,12 @@ next revision. The author signs the exact source hash, revision, capability and
 application policy, if applicable. A pending replacement preserves the previous
 approved publication. Retain the statement and exact source for retries.
 
+Content revisions and ledger record generations are separate. Approval advances
+the ledger generation without advancing the content revision: after revision 1
+is approved, submit revision 2. Suite 0.10.3 and Core 0.10.4 apply this rule to
+updates. Skipped or repeated content revisions are refused. A replacement needs
+its own content placement and review before it becomes the published revision.
+
 Submission commits the author's exact metadata. Before inspection, place the source
 on explicitly selected durable hosts and complete the required copies:
 

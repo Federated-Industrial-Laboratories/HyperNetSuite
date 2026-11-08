@@ -734,7 +734,7 @@ fn page_host_owner_context_prepares_fresh_withdrawal_after_authority_revocation(
     withdraw(&mut f, &hosts[1], &base, 30000);
 }
 #[test]
-fn page_replacement_review_and_withdrawal_preserve_exact_object_history() {
+fn approved_page_updates_follow_content_revisions_and_preserve_history() {
     let mut f = Fixture::new();
     let body = b"HyperNetPage/2\n# Books\n: First approved edition.\n";
     let author = f.author(body, 1);
@@ -768,8 +768,20 @@ fn page_replacement_review_and_withdrawal_preserve_exact_object_history() {
         read.code, 0,
         "completed approval does not expire with its decision deadline"
     );
+    let head = f.state.record(140, author.intent.resource).unwrap();
+    assert_eq!(head.reference.generation, 2);
+    assert_eq!(Ledger::parse(&head.payload).unwrap().last_revision, 1);
     let second = b"HyperNetPage/2\n# Books\n: Replacement awaiting review.\n";
-    let author2 = f.author(second, 3);
+    let skipped = f.author(second, 3);
+    let before = f.state.value();
+    let (_, _, denied, _) = f.evaluate(Command::Submit { author: skipped }, vec![], 11000);
+    assert_eq!(
+        denied.code, 3,
+        "review does not advance the content revision"
+    );
+    assert!(denied.state.is_none());
+    assert_eq!(before, f.state.value());
+    let author2 = f.author(second, 2);
     f.apply(
         Command::Submit {
             author: author2.clone(),
@@ -786,29 +798,70 @@ fn page_replacement_review_and_withdrawal_preserve_exact_object_history() {
         vec![input(Class::PageBundle, &bundle)],
         11000,
     );
-    let reject = f.reviewer(&author2, false, 15000);
+    let review2 = f.reviewer(&author2, true, 15000);
+    let bundle2 = objects::Bundle::encode(second, &author2.bytes, &review2.bytes).unwrap();
+    f.apply(
+        Command::Review {
+            review: review2.clone(),
+            bundle: Some(Reference::for_bytes(Class::PageBundle, &bundle2).unwrap()),
+        },
+        vec![input(Class::PageBundle, &bundle2)],
+        12000,
+    );
+    let head = f.state.record(140, author.intent.resource).unwrap();
+    let ledger = Ledger::parse(&head.payload).unwrap();
+    assert_eq!(head.reference.generation, 4);
+    assert_eq!(ledger.last_revision, 2);
+    assert!(ledger.pending.is_none());
+    let published2 = f
+        .state
+        .record(142, review2.revision.id)
+        .unwrap()
+        .reference
+        .clone();
+    assert_eq!(ledger.published.as_ref(), Some(&published2));
+    assert_eq!(
+        f.state.record(141, old.unwrap().id).unwrap().reference,
+        review.revision
+    );
+    f.apply(
+        Command::Read { page: [71; 16] },
+        vec![input(Class::PageBundle, &bundle2)],
+        13000,
+    );
+    let third = b"HyperNetPage/2\n# Books\n: Rejected replacement.\n";
+    let author3 = f.author(third, 3);
+    f.apply(
+        Command::Submit {
+            author: author3.clone(),
+        },
+        vec![input(Class::PageSource, third)],
+        13000,
+    );
+    let reject = f.reviewer(&author3, false, 18000);
     f.apply(
         Command::Review {
             review: reject,
             bundle: None,
         },
-        vec![input(Class::PageSource, second)],
-        12000,
+        vec![input(Class::PageSource, third)],
+        14000,
     );
     let ledger =
         Ledger::parse(&f.state.record(140, author.intent.resource).unwrap().payload).unwrap();
     assert!(ledger.pending.is_none());
-    assert_eq!(ledger.published, old);
+    assert_eq!(ledger.last_revision, 3);
+    assert_eq!(ledger.published, Some(published2));
     f.apply(
         Command::Withdraw {
             page: [71; 16],
             as_reviewer: false,
         },
         vec![],
-        13000,
+        15000,
     );
     let before = f.state.value();
-    let stale = f.reviewer(&author, true, 18000);
+    let stale = f.reviewer(&author, true, 22000);
     let stale_bundle = objects::Bundle::encode(body, &author.bytes, &stale.bytes).unwrap();
     let (_, _, denied, _) = f.evaluate(
         Command::Review {
@@ -819,7 +872,7 @@ fn page_replacement_review_and_withdrawal_preserve_exact_object_history() {
             input(Class::PageSource, body),
             input(Class::PageBundle, &stale_bundle),
         ],
-        13000,
+        15000,
     );
     assert_ne!(denied.code, 0);
     assert!(denied.state.is_none());

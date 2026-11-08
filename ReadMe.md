@@ -5,7 +5,7 @@
 <p align="center">Native graphical, terminal and command-line clients for HyperNet.</p>
 
 <p align="center">
-  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.2">Linux 0.10.2</a> |
+  <a href="https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.3">Linux 0.10.3</a> |
   <a href="Documentation/Installation.md">Install</a> |
   <a href="Documentation/ReadMe.md">Documentation</a> |
   <a href="Documentation/Security.md">Security</a> |
@@ -24,7 +24,7 @@ command line provides publishing and administration; terminal browsing and
 plain output work without a graphical desktop.
 
 > [!NOTE]
-> **Linux 0.10.2** uses the native Ubuntu x86_64 release profile and its documented limits.
+> **Linux 0.10.3** uses the native Ubuntu x86_64 release profile and its documented limits.
 > Other Linux distributions need compatible runtime libraries and graphics
 > support. AArch64, Windows and macOS remain unqualified; SELinux-enabled
 > deployment is also unqualified. This release has no independent security
@@ -49,6 +49,11 @@ that preserves the accepted endpoint binding and requires fresh operator consent
 The native browser also accepts shared HyperNet Relay Chat JSON themes through
 [`--theme-file`](Documentation/GraphicalBrowser.md).
 The transport and SDK protocols remain unchanged.
+
+Version 0.10.3 fixes updates to approved Pages. Content revision 2 follows
+approved revision 1 even though the review advanced its ledger record generation.
+Use Core 0.10.4 for the matching authority check. Existing published content and
+private state remain intact. See [Page authoring](Documentation/Pages.md#authoring-and-approval).
 
 ## Features
 
@@ -88,7 +93,7 @@ covers graphical dependencies, a terminal-only build and signed offline packages
 
 ## Install
 
-Download the [Linux 0.10.2 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.2)
+Download the [Linux 0.10.3 release](https://github.com/Federated-Industrial-Laboratories/HyperNetSuite/releases/tag/v0.10.3)
 and follow [signed offline installation](Documentation/Installation.md#signed-offline-package).
 Authenticate the publisher independently and follow the required update-trust
 procedure before installing a package.
@@ -146,7 +151,7 @@ the client never silently selects a direct connection.
 
 ## Documentation
 
-The [release notes](Documentation/ReleaseNotes.md) describe release 0.10.2,
+The [release notes](Documentation/ReleaseNotes.md) describe release 0.10.3,
 earlier release scope and known limits. The [documentation index](Documentation/ReadMe.md) separates reader and author
 guides, operator workflows and protocol references. Start with
 [installation](Documentation/Installation.md), [client use](Documentation/Usage.md)
