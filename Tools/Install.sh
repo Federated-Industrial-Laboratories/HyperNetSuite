@@ -1,9 +1,34 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Install a locked release build into a supplied prefix without elevation.
+# Open the verified packaged desktop, or build into an explicit prefix without elevation.
 set -euo pipefail
+if [[ $# == 0 ]]; then
+    package_root=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
+    if [[ ! -d "$package_root/Packages/Core" || ! -d "$package_root/Packages/Suite" ]]; then
+        echo 'This packaged installer needs the complete adjacent Packages/Core and Packages/Suite sets.' >&2
+        exit 2
+    fi
+    suite_executable=$(
+        /usr/bin/python3 -I -S -c 'import sys,runpy; sys.path.insert(0,sys.argv.pop(1)); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")' \
+            "$package_root/Tools" "$package_root/Tools/Bundle.py" Bootstrap --release-directory "$package_root/Packages" |
+        /usr/bin/python3 -I -S -c 'import json,os,sys
+raw=sys.stdin.buffer.read(65537)
+if len(raw)>65536: raise SystemExit("Coordinated installer response exceeds its bound")
+result=json.loads(raw)
+path=result.get("suiteExecutable")
+if result.get("format")!="HyperNetNativeInstallation/1" or result.get("status")!="Ready" or not isinstance(path,str) or not os.path.isabs(path) or os.path.realpath(path)!=path or any(ord(c)<32 or ord(c)==127 for c in path):
+    raise SystemExit("Coordinated installation did not confirm the installed Suite")
+print(path)'
+    )
+    # Bootstrap authenticates this exact final prefix before returning its path.
+    # Link registration uses the installed application's normal per-user command.
+    if ! "$suite_executable" join install; then
+        echo 'The packages are installed, but desktop link registration needs repair. Opening HyperNet directly.' >&2
+    fi
+    exec "$suite_executable" join desktop --application native <<<'{"location":null}'
+fi
 if [[ $# != 1 ]]; then
-    echo 'Usage: bash Tools/Install.sh PREFIX' >&2
+    echo 'Usage: bash Tools/Install.sh [SOURCE_BUILD_PREFIX]' >&2
     exit 2
 fi
 Prefix=$(realpath -m -- "$1")

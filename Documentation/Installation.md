@@ -74,7 +74,7 @@ cargo build --locked --release --no-default-features
 
 Use that executable directly or copy it to a separate chosen binary directory.
 If `CARGO_TARGET_DIR` is set, use its `release/HyperNetSuite` instead.
-`Tools/Install.sh` always builds the default graphical feature set; it does not
+`Tools/Install.sh PREFIX` builds the default graphical feature set; it does not
 install the terminal-only build. A terminal-only executable refuses `--gui`
 before starting a browser connection. CLI, terminal and plain output remain
 available. The `mail gui` and `transfers gui` subcommands require a graphical build.
@@ -103,6 +103,62 @@ to accept trust, join and retain the approved service routes. Installation and
 local preview do not perform those steps.
 
 ## Signed offline package
+
+### Coordinated first installation
+
+The coordinated release supplies `Packages/Core/` and `Packages/Suite/` with the
+signed Core and Suite 0.11.0 archives, archive signatures, signed target policies
+and publisher keys. After authenticating the outer release, run its
+`bash Tools/Install.sh` with no arguments. This entry authenticates the inner
+Suite with the pinned publisher and normal update policy, installs it directly
+into its final private prefix, then runs its coordinated installer. After both
+products verify, it registers the normal per-user desktop/link handler and opens
+**Join a server** through that verified installed Suite. It never executes an
+adjacent unverified `Bin/HyperNetSuite`. If link registration fails, the window
+still opens and the installer reports the registration failure. The earlier
+source-build command with an explicit prefix remains available.
+
+For headless or machine-readable installation without opening a window, an
+already authenticated Suite exposes the same installer directly:
+
+```sh
+/Installed/HyperNetSuite native-installation install \
+  --release-directory /Release/Packages --json
+/Installed/HyperNetSuite native-installation inspect --json
+```
+
+Both commands accept `--directory /Private/Installation`. The default is
+`$XDG_STATE_HOME/HyperNetSuite/Installation`, or
+`$HOME/.local/state/HyperNetSuite/Installation`. No packages are downloaded and
+server links cannot select executables or trust keys. Core's complete package
+is verified and installed without loading its OCI image. Joining therefore does
+not require Podman; hosting later requests the explicit verified image load.
+
+Each product keeps its existing update trust and exact signed target evidence.
+The immutable archive digest selects its installation prefix. An existing exact
+prefix is verified and reused; a different or modified prefix is preserved and
+refused. The private `Installation.json` becomes available atomically only after
+both products pass. If interrupted, retain the directory and retry the same
+release. This preserves accepted update floors and existing identities.
+
+`inspect` verifies all installed files, the historical signed targets and their
+exact binding to retained update trust and the selected pair. Expiry of an update
+policy does not expire already installed software or a separately authorised
+host. Historical verification cannot select or admit a new package: installation,
+software cutover and explicit image loading still require current signed policy.
+
+The machine-readable result has format `HyperNetNativeInstallation/1`, status
+`Ready`, `coreExecutable`, `suiteExecutable`, `coreImage` and the two `packages`.
+Each package records its product, version, prefix, archive/manifest/binary SHA-256,
+publisher root pin/generation, sequence, target/trust digest and state contract.
+`Ready` describes the verified installation, not network or service readiness.
+
+Only `Bin/HyperNetSuite` uses mode 0755 so an explicitly bound isolated registrar
+can execute it. Its installed ancestors remain private 0700; helper executables,
+package evidence and private state keep their existing restricted modes. The
+same verifier still recognises earlier packages' exact 0700 binary mode.
+
+### Individual offline package
 
 Obtain `Tools/Bundle.py` and its adjacent `Tools/PackageTrust.py` from an
 authenticated source and authenticate their contents before executing them. A verifier copied from an untrusted archive cannot establish
