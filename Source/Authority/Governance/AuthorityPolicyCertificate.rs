@@ -25,8 +25,10 @@ pub fn verify(bootstrap: &Verified, bytes: &[u8], now: u64) -> Result<u64> {
     );
     let certificate: Certificate = serde_json::from_slice(bytes)?;
     ensure!(
-        certificate.schema == "HyperNetDiscoveryPolicy/1"
-            && certificate.bootstrap == hex::encode(bootstrap.file_digest())
+        matches!(
+            certificate.schema.as_str(),
+            "HyperNetDiscoveryPolicy/1" | "HyperNetNativeAdmissionProof/1"
+        ) && certificate.bootstrap == hex::encode(bootstrap.file_digest())
             && certificate.ancestry.len() <= 128,
         "policy certificate bootstrap or schema differs"
     );
@@ -62,6 +64,33 @@ pub fn verify(bootstrap: &Verified, bytes: &[u8], now: u64) -> Result<u64> {
             ancestry: &ancestry,
         },
         |request, result, _| {
+            if let crate::authority_read::Query::Admission {
+                policy: policy_id,
+                claim,
+            } = request.query
+            {
+                let d = crate::authority_admission::Disclosure::parse(
+                    &wire::decode(&result.value)?,
+                    descriptor.scope().network,
+                    descriptor.scope().incarnation,
+                    request.requester,
+                    policy_id,
+                    claim,
+                    now,
+                )?;
+                policy = Some(
+                    d.records
+                        .iter()
+                        .find(|bytes| {
+                            wire::decode(bytes).is_ok_and(|v| {
+                                v.list(32).is_ok_and(|f| f[0].uint().ok() == Some(100))
+                            })
+                        })
+                        .context("admission proof omits network policy")?
+                        .clone(),
+                );
+                return Ok(d.versions);
+            }
             ensure!(
                 matches!(request.query, crate::authority_read::Query::PolicyContext),
                 "discovery certificate is not a policy read"

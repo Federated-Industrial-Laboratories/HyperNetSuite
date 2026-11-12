@@ -115,7 +115,20 @@ impl ContextState {
         for version in store.generations().iter().filter(|v| {
             matches!(
                 v.kind,
-                100 | 101 | 102 | 105 | 114 | 117 | 125 | 126 | 127 | 128 | 129 | 130 | 131
+                100 | 101
+                    | 102
+                    | 105
+                    | 114
+                    | 117
+                    | 125
+                    | 126
+                    | 127
+                    | 128
+                    | 129
+                    | 130
+                    | 131
+                    | 180
+                    | 181
             )
         }) {
             if let Some(old) = expected.get(&version.index()) {
@@ -145,7 +158,20 @@ impl ContextState {
         for v in store.generations().iter().filter(|v| {
             matches!(
                 v.kind,
-                100 | 101 | 102 | 105 | 114 | 117 | 125 | 126 | 127 | 128 | 129 | 130 | 131
+                100 | 101
+                    | 102
+                    | 105
+                    | 114
+                    | 117
+                    | 125
+                    | 126
+                    | 127
+                    | 128
+                    | 129
+                    | 130
+                    | 131
+                    | 180
+                    | 181
             )
         }) {
             ensure!(
@@ -657,6 +683,28 @@ fn prepare_ordinary(
     expected: &[VersionRef],
     parameters: &[u8],
 ) -> Result<Vec<u8>> {
+    let signed = sign_ordinary(
+        descriptor, signer, store, action, resource, revision, expected, parameters,
+    )?;
+    Ok(store
+        .prepare_ordinary(store.ordinary_slot()?, &signed)?
+        .signed()
+        .to_vec())
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Signing preserves the ordinary request's explicit protocol fields."
+)]
+fn sign_ordinary(
+    descriptor: &TrustDescriptor,
+    signer: &SigningKey,
+    store: &Store,
+    action: &str,
+    resource: [u8; 32],
+    revision: u64,
+    expected: &[VersionRef],
+    parameters: &[u8],
+) -> Result<Vec<u8>> {
     store.require_requester(signer.verifying_key().to_bytes())?;
     let slot = store.ordinary_slot()?;
     let payload = wire::encode(&a(vec![
@@ -678,8 +726,7 @@ fn prepare_ordinary(
         a(expected.iter().map(version_value).collect()),
         b(parameters),
     ]))?;
-    let signed = wire::sign_envelope(&payload, signer)?;
-    Ok(store.prepare_ordinary(slot, &signed)?.signed().to_vec())
+    wire::sign_envelope(&payload, signer)
 }
 
 use crate::authority_local_transport::{LocalControl, remaining};
@@ -730,3 +777,6 @@ pub(crate) mod transfer_client;
 
 #[cfg(test)]
 include!("../../Tests/Support/Authority/AuthorityInspection.rs");
+
+#[path = "Admission/AdmissionClient.rs"]
+pub(crate) mod admission;

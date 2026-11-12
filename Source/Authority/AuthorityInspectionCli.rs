@@ -61,6 +61,11 @@ impl Location {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Optional scoped self-service enrolment; manual invitations remain available.
+    Admission {
+        #[command(subcommand)]
+        command: admission_cli::Command,
+    },
     /// Manage named encrypted content archives and current-authority restore.
     Backup {
         #[command(subcommand)]
@@ -229,6 +234,7 @@ pub(crate) fn signer(path: &std::path::Path) -> Result<SigningKey> {
 }
 pub fn run(command: Command) -> Result<()> {
     match command {
+        Command::Admission { command } => admission_cli::run(command),
         Command::Grants { command } => grant_cli::run(command),
         Command::Tiers { command } => tier_cli::run(command),
         Command::Policy { command } => policy_cli::run(command),
@@ -436,3 +442,6 @@ mod epoch_cli;
 
 #[path = "../Sealed/AuthoritySealedIdentityCli.rs"]
 pub(crate) mod sealed_cli;
+
+#[path = "Admission/AdmissionCli.rs"]
+pub(crate) mod admission_cli;

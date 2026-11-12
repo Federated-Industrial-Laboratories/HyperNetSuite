@@ -487,6 +487,19 @@ pub fn evaluate(
                 expires,
             } => {
                 let grant = grant(operation)?;
+                c.governance.admission().route_template(
+                    intent.requester,
+                    grant.id,
+                    *id,
+                    *relay,
+                    *destination,
+                    *action,
+                    *scope,
+                    *connections,
+                    *bytes,
+                    *expires,
+                    at,
+                )?;
                 c.capability(grant, intent.requester, *action, *scope)?;
                 let (rr, r) = c.service(*relay, true)?;
                 let (dr, d) = c.service(*destination, true)?;
@@ -870,7 +883,7 @@ pub fn evaluate(
     validate_versions(&versions, 64)?;
     let governance = versions
         .iter()
-        .filter(|r| r.kind < 132)
+        .filter(|r| r.kind < 132 || matches!(r.kind, 180 | 181))
         .map(|r| Ok(b(c.governance.record_bytes(r.kind, r.id)?)))
         .collect::<Result<Vec<_>>>()?;
     let value = a(vec![
@@ -958,7 +971,7 @@ pub(crate) fn evaluate_read(
     validate_versions(&versions, 64)?;
     let governance = versions
         .iter()
-        .filter(|r| r.kind < 132)
+        .filter(|r| r.kind < 132 || matches!(r.kind, 180 | 181))
         .map(|r| Ok(b(c.governance.record_bytes(r.kind, r.id)?)))
         .collect::<Result<Vec<_>>>()?;
     let value = a(vec![

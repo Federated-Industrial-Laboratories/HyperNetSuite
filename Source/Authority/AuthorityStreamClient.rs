@@ -294,7 +294,7 @@ pub(crate) fn resolve_refusal_local_with_budget(
     Ok(())
 }
 
-pub(super) fn ensure_stream(
+pub(crate) fn ensure_stream(
     descriptor: &TrustDescriptor,
     path: &Path,
     signer: &SigningKey,
