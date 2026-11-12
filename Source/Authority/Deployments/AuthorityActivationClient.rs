@@ -12,6 +12,37 @@ pub fn prepare(
     generation: u64,
     health: ClockHealth,
 ) -> Result<activation::Request> {
+    prepare_mode(
+        bootstrap, cache, signer, store, role, generation, health, false,
+    )
+}
+pub fn prepare_persistent(
+    bootstrap: &Verified,
+    cache: &Cache,
+    signer: &SigningKey,
+    store: &mut Store,
+    role: u64,
+    generation: u64,
+    health: ClockHealth,
+) -> Result<activation::Request> {
+    prepare_mode(
+        bootstrap, cache, signer, store, role, generation, health, true,
+    )
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Activation mode does not alter the exact independent trust inputs."
+)]
+fn prepare_mode(
+    bootstrap: &Verified,
+    cache: &Cache,
+    signer: &SigningKey,
+    store: &mut Store,
+    role: u64,
+    generation: u64,
+    health: ClockHealth,
+    persistent: bool,
+) -> Result<activation::Request> {
     ensure!(
         bootstrap.fully_accepted()
             && bootstrap.descriptor().canonical() == store.initial_descriptor().canonical(),
@@ -54,7 +85,11 @@ pub fn prepare(
                 && op.local_generation == generation,
             "another immutable request is pending; inspect its outcome before replacing it"
         );
-        return Ok(request);
+        return if persistent {
+            request.until_withdrawn()
+        } else {
+            Ok(request)
+        };
     }
     let slot = store.ordinary_slot()?;
     let mut snapshot = Snapshot::parse(&a(vec![
@@ -147,6 +182,11 @@ pub fn prepare(
     ]))?;
     let signed = wire::sign_envelope(&payload, signer)?;
     let request = activation::Request::new(signed.clone(), records)?;
+    let request = if persistent {
+        request.until_withdrawn()?
+    } else {
+        request
+    };
     store.prepare_ordinary(slot, &signed)?;
     Ok(request)
 }

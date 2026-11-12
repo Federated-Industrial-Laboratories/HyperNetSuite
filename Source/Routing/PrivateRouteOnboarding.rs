@@ -386,7 +386,10 @@ pub fn join(arguments: Join) -> Result<()> {
         );
         let validity = f[8].array(2)?;
         ensure!(
-            (validity[0].uint()?, validity[1].uint()?) == accepted.validity,
+            crate::trust_validity::Validity(
+                validity[0].uint()?,
+                crate::trust_validity::End::parse(&validity[1])?
+            ) == accepted.validity,
             "retained membership validity differs from accepted invitation"
         );
         Cache::retain_context(&bootstrap, &store, &context)?;

@@ -67,7 +67,7 @@ struct Child {
     actions: Vec<u64>,
     scopes: Vec<Scope>,
     not_before_ms: u64,
-    expires_ms: u64,
+    expires_ms: crate::trust_validity::End,
     delegation_depth: u64,
     limits: [u64; 4],
 }
@@ -108,7 +108,7 @@ impl Child {
                 .collect::<Result<_>>()?),
             a(vec![
                 Value::Uint(self.not_before_ms),
-                Value::Uint(self.expires_ms),
+                self.expires_ms.value(),
             ]),
             Value::Uint(self.delegation_depth),
             a(self.limits.into_iter().map(Value::Uint).collect()),

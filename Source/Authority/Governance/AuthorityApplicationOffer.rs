@@ -123,7 +123,7 @@ impl Offer {
 }
 pub struct Invitation {
     pub grant: [u8; 32],
-    pub validity: (u64, u64),
+    pub validity: crate::trust_validity::Validity,
     pub acceptance_ms: u64,
 }
 pub fn invite(
@@ -151,10 +151,11 @@ pub fn invite(
     let start = now
         .saturating_sub(crate::authority_governance::UNCERTAINTY_MS)
         .max(request.validity.0);
-    let end = start
-        .checked_add(request.acceptance_ms)
-        .context("acceptance interval overflow")?
-        .min(request.validity.1);
+    let end = request.validity.1.bound(
+        start
+            .checked_add(request.acceptance_ms)
+            .context("acceptance interval overflow")?,
+    );
     let scope = bootstrap.descriptor().scope();
     let payload = wire::encode(&a(vec![
         V::Uint(200),
@@ -167,7 +168,7 @@ pub fn invite(
         version_value(&context.version(102, request.grant)?),
         a(vec![
             V::Uint(request.validity.0),
-            V::Uint(request.validity.1),
+            request.validity.1.value(),
         ]),
         b(&random_id()?),
         a(vec![V::Uint(start), V::Uint(end)]),
@@ -448,7 +449,7 @@ pub fn invite_renewal(
     bootstrap: &Verified,
     store: &Store,
     application: [u8; 32],
-    validity: (u64, u64),
+    validity: crate::trust_validity::Validity,
     acceptance_ms: u64,
     signer: &SigningKey,
     health: ClockHealth,
@@ -473,10 +474,11 @@ pub fn invite_renewal(
     let start = now
         .saturating_sub(crate::authority_governance::UNCERTAINTY_MS)
         .max(validity.0);
-    let end = start
-        .checked_add(acceptance_ms)
-        .context("renewal acceptance interval overflow")?
-        .min(validity.1);
+    let end = validity.1.bound(
+        start
+            .checked_add(acceptance_ms)
+            .context("renewal acceptance interval overflow")?,
+    );
     let payload = wire::encode(&a(vec![
         V::Uint(200),
         V::Uint(2),
@@ -486,7 +488,7 @@ pub fn invite_renewal(
         version_value(&old.reference),
         b(&old.owner),
         version_value(&old.grant),
-        a(vec![V::Uint(validity.0), V::Uint(validity.1)]),
+        a(vec![V::Uint(validity.0), validity.1.value()]),
         b(&random_id()?),
         a(vec![V::Uint(start), V::Uint(end)]),
     ]))?;

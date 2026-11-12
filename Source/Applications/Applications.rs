@@ -78,8 +78,15 @@ pub enum Command {
         scopes: Vec<String>,
         #[arg(long)]
         not_before_ms: u64,
+        #[arg(
+            long,
+            required_unless_present = "until_withdrawn",
+            conflicts_with = "until_withdrawn"
+        )]
+        expires_ms: Option<u64>,
+        /// Keep this permission until it is withdrawn.
         #[arg(long)]
-        expires_ms: u64,
+        until_withdrawn: bool,
         #[arg(long, value_delimiter = ',', num_args = 4, default_value = "0,1,0,1")]
         limits: Vec<u64>,
     },
@@ -95,8 +102,15 @@ pub enum Command {
         grant: String,
         #[arg(long)]
         not_before_ms: u64,
+        #[arg(
+            long,
+            required_unless_present = "until_withdrawn",
+            conflicts_with = "until_withdrawn"
+        )]
+        expires_ms: Option<u64>,
+        /// Keep this permission until it is withdrawn.
         #[arg(long)]
-        expires_ms: u64,
+        until_withdrawn: bool,
         #[arg(long, default_value_t = 3_600_000)]
         acceptance_ms: u64,
         #[arg(long)]
@@ -155,8 +169,15 @@ pub enum Command {
         application_key: String,
         #[arg(long)]
         not_before_ms: u64,
+        #[arg(
+            long,
+            required_unless_present = "until_withdrawn",
+            conflicts_with = "until_withdrawn"
+        )]
+        expires_ms: Option<u64>,
+        /// Keep this permission until it is withdrawn.
         #[arg(long)]
-        expires_ms: u64,
+        until_withdrawn: bool,
         #[arg(long, default_value_t = 3_600_000)]
         acceptance_ms: u64,
         #[arg(long)]
@@ -389,6 +410,7 @@ pub fn run(command: Command) -> Result<()> {
             grant,
             not_before_ms,
             expires_ms,
+            until_withdrawn,
             acceptance_ms,
             output,
         } => {
@@ -404,7 +426,10 @@ pub fn run(command: Command) -> Result<()> {
                 &store,
                 offers::Invitation {
                     grant,
-                    validity: (not_before_ms, expires_ms),
+                    validity: crate::trust_validity::Validity(
+                        not_before_ms,
+                        crate::trust_validity::End::selected(expires_ms, until_withdrawn)?,
+                    ),
                     acceptance_ms,
                 },
                 &signer(&key)?,
@@ -449,6 +474,7 @@ pub fn run(command: Command) -> Result<()> {
             scopes,
             not_before_ms,
             expires_ms,
+            until_withdrawn,
             limits,
         } => {
             let verified = bootstrap(&online.location)?;
@@ -492,7 +518,10 @@ pub fn run(command: Command) -> Result<()> {
                     reference(&context.version(101, selected.tier)?),
                     a(actions.into_iter().map(V::Uint).collect()),
                     a(scopes),
-                    a(vec![V::Uint(not_before_ms), V::Uint(expires_ms)]),
+                    a(vec![
+                        V::Uint(not_before_ms),
+                        crate::trust_validity::End::selected(expires_ms, until_withdrawn)?.value(),
+                    ]),
                     V::Uint(0),
                     a(limits.into_iter().map(V::Uint).collect()),
                 ]),
@@ -570,6 +599,7 @@ pub fn run(command: Command) -> Result<()> {
             application_key,
             not_before_ms,
             expires_ms,
+            until_withdrawn,
             acceptance_ms,
             output,
         } => {
@@ -580,7 +610,10 @@ pub fn run(command: Command) -> Result<()> {
                 &verified,
                 &store,
                 id(&application_key)?,
-                (not_before_ms, expires_ms),
+                crate::trust_validity::Validity(
+                    not_before_ms,
+                    crate::trust_validity::End::selected(expires_ms, until_withdrawn)?,
+                ),
                 acceptance_ms,
                 &signer(&key)?,
                 source.health()?,

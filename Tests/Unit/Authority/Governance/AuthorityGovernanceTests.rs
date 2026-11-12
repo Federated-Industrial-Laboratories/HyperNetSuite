@@ -42,6 +42,12 @@ fn rec(kind: u64, body: Vec<V>) -> Vec<u8> {
     wire::encode(&list(value)).unwrap()
 }
 fn fixture() -> (Vec<Vec<u8>>, Key, Key) {
+    fixture_lifetimes(100000.into(), 100000.into())
+}
+fn fixture_lifetimes(
+    parent_end: crate::trust_validity::End,
+    child_end: crate::trust_validity::End,
+) -> (Vec<Vec<u8>>, Key, Key) {
     let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32])
         .verifying_key()
         .to_bytes();
@@ -54,7 +60,7 @@ fn fixture() -> (Vec<Vec<u8>>, Key, Key) {
     let lim = list(vec![V::Uint(100); 4]);
     let scope = list(vec![list(vec![V::Uint(0), b([1; 32])])]);
     let actions = list(vec![V::Uint(0), V::Uint(11), V::Uint(25)]);
-    let validity = list(vec![V::Uint(0), V::Uint(100000)]);
+    let validity = crate::trust_validity::Validity(0, child_end).value();
     let recovery_record = rec(
         114,
         vec![
@@ -89,7 +95,7 @@ fn fixture() -> (Vec<Vec<u8>>, Key, Key) {
             vr(101, [3; 32], &tier),
             actions,
             scope.clone(),
-            validity.clone(),
+            crate::trust_validity::Validity(0, parent_end).value(),
             V::Null,
             V::Uint(2),
             lim.clone(),
@@ -578,5 +584,47 @@ fn admission_validity_bounds_the_subject_and_every_delegating_ancestor() {
     assert_eq!(
         capability(&governance, [10; 32], child).unwrap().expires_ms,
         8501
+    );
+}
+
+#[test]
+fn persistent_membership_requires_persistent_ancestors_and_remains_revocable() {
+    use crate::trust_validity::End;
+    let (records, _, child) = fixture_lifetimes(End::UntilWithdrawn, End::UntilWithdrawn);
+    let request = Requirement {
+        subject: child,
+        actions: &[0],
+        scope: (2, [88; 32]),
+        namespace: None,
+        usage: [1, 1, 0, 0],
+        evaluated_at_ms: 31_536_000_000,
+        expected: &[],
+    };
+    let governance = Governance::parse([1; 32], [2; 32], &records).unwrap();
+    assert!(governance.current_capability([5; 32], &request).is_ok());
+    let (finite, _, _) = fixture_lifetimes(End::At(100000), End::UntilWithdrawn);
+    let finite = Governance::parse([1; 32], [2; 32], &finite).unwrap();
+    let current = Requirement {
+        evaluated_at_ms: 5000,
+        ..request
+    };
+    assert!(finite.current_capability([5; 32], &current).is_err());
+    let mut revoked = records;
+    let index = revoked
+        .iter()
+        .position(|bytes| wire::decode(bytes).unwrap().list(32).unwrap()[0] == V::Uint(125))
+        .unwrap();
+    let mut member = wire::decode(&revoked[index])
+        .unwrap()
+        .array(12)
+        .unwrap()
+        .to_vec();
+    member[9] = V::Bool(true);
+    revoked[index] = wire::encode(&list(member)).unwrap();
+    assert!(
+        Governance::parse([1; 32], [2; 32], &revoked)
+            .unwrap()
+            .current_capability([5; 32], &current)
+            .is_err()
     );
 }

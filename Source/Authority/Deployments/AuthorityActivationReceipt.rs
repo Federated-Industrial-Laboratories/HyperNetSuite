@@ -64,6 +64,10 @@ impl Report {
     }
 }
 impl Receipt {
+    pub fn persistent(&self) -> Result<bool> {
+        let value = wire::decode_state(&self.bytes)?;
+        Ok(Request::parse(value.array(12)?[3].bytes()?)?.persistent())
+    }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         ensure!(
             bytes.len() <= RECEIPT_LIMIT,

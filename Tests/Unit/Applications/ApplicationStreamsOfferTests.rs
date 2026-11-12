@@ -55,7 +55,7 @@ impl Fixture {
                 duration_ms: 60000,
                 idle_ms: 15000,
             },
-            validity: (1000, 50000),
+            validity: (1000, 50000).into(),
             envelope: Vec::new(),
         };
         let payload = registration
@@ -109,7 +109,8 @@ impl Fixture {
             endpoint: hex::encode(self.previous.binding.endpoint),
             protocol: old.protocol.clone(),
             not_before_ms: 2000,
-            expires_ms: 60000,
+            expires_ms: Some(60000),
+            until_withdrawn: false,
             maximum_bytes: old.limits.bytes,
             duration_ms: old.limits.duration_ms,
             idle_ms: old.limits.idle_ms,
@@ -134,7 +135,7 @@ fn renewal_preserves_exact_binding_and_requires_new_operator_consent() {
         renewed.registration.binding,
         f.previous.registration.binding
     );
-    assert_eq!(renewed.registration.validity, (2000, 60000));
+    assert_eq!(renewed.registration.validity, (2000, 60000).into());
     assert_eq!(renewed.registration.route.generation, 3);
     assert_eq!(renewed.registration.route.digest, [64; 32]);
     assert!(Artifact::parse(&f.bootstrap, &bytes, true).is_err());
@@ -163,9 +164,9 @@ fn renewal_rejects_identity_rights_route_and_validity_changes_without_output() {
             9 => a.route = format!("{}:1:{}", hex::encode([62; 32]), hex::encode([63; 32])),
             10 => a.route = format!("{}:2:{}", hex::encode([62; 32]), hex::encode([64; 32])),
             11 => a.not_before_ms = 999,
-            12 => a.expires_ms = 50000,
-            13 => a.expires_ms = 49999,
-            _ => a.not_before_ms = a.expires_ms,
+            12 => a.expires_ms = Some(50000),
+            13 => a.expires_ms = Some(49999),
+            _ => a.not_before_ms = a.expires_ms.unwrap(),
         }
         let output = a.output.clone();
         assert!(create(a).is_err(), "accepted changed field {change}");

@@ -166,8 +166,8 @@ impl ContextState {
         let policy = wire::decode(self.governance.record_bytes(100, network)?)?;
         let policy = policy.array(17)?;
         let mut root_subjects = Vec::new();
-        for root in policy[15].list(16)? {
-            let record = wire::decode(self.governance.record_bytes(102, root.fixed()?)?)?;
+        for (root, _) in crate::authority_governance::policy_roots(policy)? {
+            let record = wire::decode(self.governance.record_bytes(102, root)?)?;
             root_subjects.push(record.array(17)?[8].fixed::<32>()?);
         }
         let mut needed =

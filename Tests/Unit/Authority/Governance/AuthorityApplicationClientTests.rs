@@ -232,7 +232,7 @@ fn offered(f: &Fixture, context: &DelegationContext, lifetime: u64) -> applicati
         &f.store,
         application_offer::Invitation {
             grant: [40; 32],
-            validity: (now - 10000, now + 300000),
+            validity: (now - 10000, now + 300000).into(),
             acceptance_ms: lifetime,
         },
         &f.signer,

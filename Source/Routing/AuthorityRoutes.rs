@@ -32,7 +32,7 @@ pub struct RegisteredProfile {
     pub limits: Limits,
     pub maximum_connections: u64,
     pub assurance: Assurance,
-    pub validity: (u64, u64),
+    pub validity: crate::trust_validity::Validity,
     pub envelope: Vec<u8>,
 }
 fn identity(value: &V) -> Result<Identity> {
@@ -118,7 +118,7 @@ impl RegisteredProfile {
                 && id(&f[4])? == incarnation,
             "route profile context differs"
         );
-        let span = f[20].array(2)?;
+        let span = crate::trust_validity::Validity::parse(&f[20])?;
         let p = Self {
             manifest: crate::runtime_manifest::Manifest::parse(f[21].bytes()?)?,
             deployment: id(&f[5])?,
@@ -144,7 +144,7 @@ impl RegisteredProfile {
             limits: limits(&f[17])?,
             maximum_connections: f[18].uint()?,
             assurance: assurance(&f[19])?,
-            validity: (span[0].uint()?, span[1].uint()?),
+            validity: span,
             envelope: envelope.to_vec(),
         };
         ensure!(
@@ -230,7 +230,7 @@ impl RegisteredProfile {
             limits_value(self.limits),
             V::Uint(self.maximum_connections),
             V::Uint(u64::from(self.assurance == Assurance::Independent)),
-            a(vec![V::Uint(self.validity.0), V::Uint(self.validity.1)]),
+            a(vec![V::Uint(self.validity.0), self.validity.1.value()]),
             b(&self.manifest.encode()?),
         ]))
     }
@@ -282,6 +282,20 @@ pub struct Voucher {
     pub baseline: Option<(u64, u64)>,
 }
 impl Voucher {
+    /// A live session can follow an early credential replacement without receiving a new budget.
+    pub fn continues(&self, previous: &Self) -> bool {
+        self.sponsor == previous.sponsor
+            && self.possession == previous.possession
+            && self.relay == previous.relay
+            && self.destination == previous.destination
+            && self.grant == previous.grant
+            && self.action == previous.action
+            && self.scope == previous.scope
+            && self.connections == previous.connections
+            && self.bytes == previous.bytes
+            && self.baseline.unwrap_or((0, 0)) == previous.baseline.unwrap_or((0, 0))
+            && self.expires >= previous.expires
+    }
     pub fn parse(value: &V) -> Result<Self> {
         let raw = value.list(14)?;
         let (f, baseline) = if raw.len() == 14 {

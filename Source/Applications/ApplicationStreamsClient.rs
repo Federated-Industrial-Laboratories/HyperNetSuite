@@ -414,14 +414,8 @@ impl Client {
                     .idle_ms
                     .min(endpoint.route.limits.idle_ms),
             };
-            let expires = now
-                .checked_add(limits.duration_ms)
-                .context("stream expiry overflow")?
-                .min(registered.registration.validity.1);
-            ensure!(
-                expires > now.saturating_add(1250),
-                "stream service is too close to expiry"
-            );
+            let expires =
+                finite_session_expiry(registered.registration.validity.1, now, limits.duration_ms)?;
             let proof = streams::Proof {
                 service: r.reference.clone(),
                 principal: self.key.verifying_key().to_bytes(),
@@ -623,3 +617,15 @@ mod tests;
 #[cfg(test)]
 #[path = "../../Tests/Unit/Applications/ApplicationStreamRegistrationTests.rs"]
 mod registration_tests;
+
+fn finite_session_expiry(end: crate::trust_validity::End, now: u64, duration: u64) -> Result<u64> {
+    let expires = end.bound(
+        now.checked_add(duration)
+            .context("stream expiry overflow")?,
+    );
+    ensure!(
+        expires > now.saturating_add(1250),
+        "stream service is too close to expiry"
+    );
+    Ok(expires)
+}

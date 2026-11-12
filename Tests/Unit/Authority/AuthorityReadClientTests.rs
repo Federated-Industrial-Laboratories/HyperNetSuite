@@ -94,17 +94,17 @@ pub(crate) fn response(
 
 #[test]
 fn fresh_policy_roundtrip_preserves_stream_and_anchor_on_reopen() {
-    consumed_roundtrip(false, false);
+    consumed_roundtrip(false, false, false);
 }
 
 #[test]
 fn consumed_policy_read_sends_exact_cleanup_without_waiting_for_a_receipt() {
-    consumed_roundtrip(true, false);
+    consumed_roundtrip(true, false, false);
 }
 
 #[test]
 fn consumed_domain_refusal_sends_exact_cleanup_without_changing_ordinary_state() {
-    consumed_roundtrip(true, true);
+    consumed_roundtrip(true, true, false);
 }
 
 fn assert_cleanup(listener: &UnixListener, request: &[u8], challenge: &[u8], reply: &[u8]) {
@@ -132,7 +132,12 @@ fn assert_cleanup(listener: &UnixListener, request: &[u8], challenge: &[u8], rep
     // Closing without a receipt cannot change the consumed result.
 }
 
-fn consumed_roundtrip(cleanup: bool, domain: bool) {
+#[test]
+fn persistent_discovery_export_roundtrip_preserves_stream_and_floor_on_reopen() {
+    consumed_roundtrip(true, false, true);
+}
+
+fn consumed_roundtrip(cleanup: bool, domain: bool, export: bool) {
     let mut f = Fixture::new();
     let socket = f.directory.0.join("Read.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -149,8 +154,43 @@ fn consumed_roundtrip(cleanup: bool, domain: bool) {
         .canonical()
         .to_vec();
     let status_needed = f.store.needs_stream_status().unwrap();
-    let (p, r) = policy::current(&f.bootstrap, &f.store).unwrap();
+    let (mut p, r) = policy::current(&f.bootstrap, &f.store).unwrap();
     let scope = f.store.descriptor().scope();
+    if export {
+        let governance = Governance::parse(
+            scope.network,
+            scope.incarnation,
+            f.bootstrap.governance_records(),
+        )
+        .unwrap();
+        let roots = governance
+            .versions()
+            .into_iter()
+            .filter(|r| r.kind == 102)
+            .collect::<Vec<_>>();
+        let mut fields = wire::decode(&p).unwrap().array(17).unwrap().to_vec();
+        fields[1] = V::Uint(2);
+        fields[4] = V::Uint(2);
+        fields[5] = b(&wire::digest(&p));
+        fields[15] = a(roots
+            .iter()
+            .map(|r| {
+                a(vec![
+                    version_value(r),
+                    crate::trust_validity::End::UntilWithdrawn.value(),
+                ])
+            })
+            .collect());
+        fields[16] = a(vec![
+            a(vec![
+                V::Uint(scope.epoch),
+                V::Uint(prefix.height()),
+                b(prefix.policy_state()),
+            ]),
+            a(vec![]),
+        ]);
+        p = wire::encode(&a(fields)).unwrap();
+    }
     let refs = [100, 114]
         .into_iter()
         .zip([&p, &r])
@@ -244,6 +284,24 @@ fn consumed_roundtrip(cleanup: bool, domain: bool) {
                 .is_some_and(|refusal| refusal.code == 3),
             "{error:#}"
         );
+    } else if export {
+        let output = f.directory.0.join("DiscoveryPolicy.json");
+        policy::export(
+            &f.bootstrap,
+            &socket,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            clock,
+            &output,
+        )
+        .unwrap();
+        let bytes = files::read_public_single(&output, policy::certificate::LIMIT).unwrap();
+        assert_eq!(
+            policy::certificate::verify(&f.bootstrap, &bytes, evaluated).unwrap(),
+            2
+        );
+        assert!(policy::certificate::verify(&f.bootstrap, &bytes, evaluated + 5000).is_err());
     } else {
         policy::discover(
             &f.bootstrap,

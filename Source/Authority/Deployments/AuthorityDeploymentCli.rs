@@ -76,6 +76,9 @@ pub enum Command {
         generation: u64,
         #[arg(long)]
         output: PathBuf,
+        /// Reserve the first intent of a dedicated activation-only manager profile for persistent hosting.
+        #[arg(long)]
+        persistent: bool,
     },
     /// Validate strict manifest JSON and write its single canonical representation.
     Prepare {
@@ -665,6 +668,10 @@ pub fn run(command: Command) -> Result<()> {
                     crate::authority_runtime_activation::RECEIPT_LIMIT,
                     true,
                 )?)?;
+            ensure!(
+                !receipt.persistent()?,
+                "A persistent activation must retain its dedicated pending request; withdrawal is separate from completion"
+            );
             let historical = store.descriptor_for_scope(&receipt.scope()?)?;
             let report = receipt.verify(&verified, &historical)?;
             ensure!(
@@ -696,13 +703,19 @@ pub fn run(command: Command) -> Result<()> {
             role,
             generation,
             output,
+            persistent,
         } => {
             let verified = bootstrap(&location)?;
             let signer = deployment_signer(&key)?;
             let mut store = Store::open(&location.directory, verified.descriptor().clone())?;
             let source = clock(&location, store.descriptor().voters())?;
             let cache = Cache::load(&verified, &store, id(&deployment)?, Some(id(&grant)?))?;
-            let request = client::activation_client::prepare(
+            let prepare = if persistent {
+                client::activation_client::prepare_persistent
+            } else {
+                client::activation_client::prepare
+            };
+            let request = prepare(
                 &verified,
                 &cache,
                 &signer,
@@ -713,7 +726,7 @@ pub fn run(command: Command) -> Result<()> {
             )?;
             files::write_new(&output, &request.encode()?)?;
             crate::print_value(
-                &json!({"status":"ActivationRequestPrepared","deployment":deployment,"role":role,"localGeneration":generation,"intent":hex::encode(request.intent().digest),"recipient":hex::encode(request.operation().recipient),"currentPermission":false}),
+                &json!({"status":"ActivationRequestPrepared","persistent":request.persistent(),"managerProfile":"Dedicated; retain pending request for restarts","deployment":deployment,"role":role,"localGeneration":generation,"intent":hex::encode(request.intent().digest),"recipient":hex::encode(request.operation().recipient),"currentPermission":false}),
             )
         }
         Command::Prepare {

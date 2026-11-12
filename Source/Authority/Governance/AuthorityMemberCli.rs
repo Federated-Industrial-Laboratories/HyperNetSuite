@@ -42,8 +42,15 @@ pub struct Delegate {
     scopes: Vec<String>,
     #[arg(long)]
     not_before_ms: u64,
+    #[arg(
+        long,
+        required_unless_present = "until_withdrawn",
+        conflicts_with = "until_withdrawn"
+    )]
+    expires_ms: Option<u64>,
+    /// Keep this permission until it is withdrawn.
     #[arg(long)]
-    expires_ms: u64,
+    until_withdrawn: bool,
     #[arg(long, default_value_t = 0)]
     delegation_depth: u64,
     #[arg(long, value_delimiter = ',', num_args = 4, default_value = "0,1,0,1")]
@@ -61,8 +68,15 @@ pub struct Invite {
     member: String,
     #[arg(long)]
     not_before_ms: u64,
+    #[arg(
+        long,
+        required_unless_present = "until_withdrawn",
+        conflicts_with = "until_withdrawn"
+    )]
+    expires_ms: Option<u64>,
+    /// Keep this permission until it is withdrawn.
     #[arg(long)]
-    expires_ms: u64,
+    until_withdrawn: bool,
     #[arg(long, default_value_t = 3_600_000)]
     acceptance_ms: u64,
     #[arg(long)]
@@ -219,7 +233,8 @@ pub fn delegate(command: Delegate) -> Result<()> {
         Value::Array(scopes),
         Value::Array(vec![
             Value::Uint(command.not_before_ms),
-            Value::Uint(command.expires_ms),
+            crate::trust_validity::End::selected(command.expires_ms, command.until_withdrawn)?
+                .value(),
         ]),
         Value::Uint(command.delegation_depth),
         Value::Array(command.limits.into_iter().map(Value::Uint).collect()),
@@ -254,7 +269,10 @@ pub fn invite(command: Invite) -> Result<()> {
         Invitation {
             member: id(&command.member)?,
             reader_grant: id(&command.reader_grant)?,
-            validity: (command.not_before_ms, command.expires_ms),
+            validity: crate::trust_validity::Validity(
+                command.not_before_ms,
+                crate::trust_validity::End::selected(command.expires_ms, command.until_withdrawn)?,
+            ),
             acceptance_ms: command.acceptance_ms,
         },
         &signer(&command.key)?,

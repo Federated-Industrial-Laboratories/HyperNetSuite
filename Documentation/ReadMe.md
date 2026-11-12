@@ -117,3 +117,5 @@ Expiry options ending in `-ms` take absolute Unix milliseconds. Mail and Forms
 `--expires` take absolute Unix seconds. Retention options name their own units.
 Do not paste private keys, vault contents or credential-bearing profiles into
 logs, issue reports or documentation.
+
+[Persistent access and hosting](PersistentAccess.md) describes optional until-withdrawn permissions, managed service activation and finite route handover.
