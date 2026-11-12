@@ -2,8 +2,17 @@
 # SPDX-License-Identifier: MIT
 # Install a locked release build into a supplied prefix without elevation.
 set -euo pipefail
+if [[ $# == 0 ]]; then
+    package_root=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
+    if [[ ! -d "$package_root/Packages/Core" || ! -d "$package_root/Packages/Suite" ]]; then
+        echo 'This packaged installer needs the complete adjacent Packages/Core and Packages/Suite sets.' >&2
+        exit 2
+    fi
+    exec /usr/bin/python3 -I -S -c 'import sys,runpy; sys.path.insert(0,sys.argv.pop(1)); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")' \
+        "$package_root/Tools" "$package_root/Tools/Bundle.py" Bootstrap --release-directory "$package_root/Packages"
+fi
 if [[ $# != 1 ]]; then
-    echo 'Usage: bash Tools/Install.sh PREFIX' >&2
+    echo 'Usage: bash Tools/Install.sh [SOURCE_BUILD_PREFIX]' >&2
     exit 2
 fi
 Prefix=$(realpath -m -- "$1")

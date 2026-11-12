@@ -6,6 +6,8 @@ mod authority_deployment_records;
 mod authority_deployments;
 #[path = "Authority/AuthorityHistory.rs"]
 mod authority_history;
+#[path = "NativeInstallation/Mod.rs"]
+mod native_installation;
 #[path = "Runtime/RuntimeBootstrapKeys.rs"]
 mod runtime_bootstrap_keys;
 #[path = "Runtime/RuntimeManifest.rs"]
@@ -183,6 +185,9 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Install or verify the fixed local coordinated Core and Suite release.
+    #[command(subcommand)]
+    NativeInstallation(native_installation::Command),
     /// Machine-readable native protocol capabilities for compatible server setup.
     ProtocolFeatures,
     /// Verify current governance through a private local authority control socket.
@@ -308,6 +313,7 @@ fn run() -> Result<()> {
 }
 fn dispatch(command: Command) -> Result<()> {
     match command {
+        Command::NativeInstallation(command) => native_installation::run(command),
         Command::ProtocolFeatures => print_value(&trust_validity::features()),
         Command::AuthorityInspection(command) => authority_inspection_cli::run(command),
         Command::Network(command) => networks::run(command),
