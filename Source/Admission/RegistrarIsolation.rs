@@ -363,6 +363,7 @@ impl RegistrarContainer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::DirBuilderExt;
     struct Directory(PathBuf);
     impl Drop for Directory {
         fn drop(&mut self) {
@@ -375,9 +376,15 @@ mod tests {
             "HyperNetRegistrarBindings-{}",
             crate::random_hex::<16>()
         )));
-        std::fs::create_dir(&root.0).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root.0)
+            .unwrap();
         let control = root.0.join("Control");
-        std::fs::create_dir(&control).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&control)
+            .unwrap();
         let bindings = Bindings::capture([control.clone()]).unwrap();
         std::fs::write(
             control.join("Current"),
@@ -387,7 +394,10 @@ mod tests {
         bindings.require_current().unwrap();
         std::fs::rename(&control, root.0.join("Previous")).unwrap();
         assert!(bindings.require_current().is_err());
-        std::fs::create_dir(&control).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&control)
+            .unwrap();
         assert!(bindings.require_current().is_err());
         let refreshed = Bindings::capture([control.clone()]).unwrap();
         refreshed.require_current().unwrap();
