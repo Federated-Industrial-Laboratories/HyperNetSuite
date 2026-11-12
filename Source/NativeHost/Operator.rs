@@ -246,6 +246,7 @@ pub fn operator(host: &Host<'_>, who: &str, arguments: &[String]) -> Result<Valu
             Some(
                 "initialise"
                     | "context"
+                    | "stream-status"
                     | "delegate-grant"
                     | "invite-member"
                     | "admit-member"
@@ -441,12 +442,17 @@ pub fn initialise(host: &Host<'_>, who: &str) -> Result<()> {
     }
     Ok(())
 }
-pub fn authority_context(host: &Host<'_>) -> Result<Value> {
+pub fn authority_ready(host: &Host<'_>) -> Result<Value> {
     initialise(host, "Administrator")?;
-    let mut a = bytes(&["authority-inspection", "context"]);
+    // Stream status verifies a current quorum without replacing unfinished owner work.
+    let mut a = bytes(&["authority-inspection", "stream-status"]);
     a.extend(online(host, "Administrator")?);
-    a.extend(bytes(&["--grant", &host.root_grant()?]));
-    operator(host, "Administrator", &a)
+    let value = operator(host, "Administrator", &a)?;
+    ensure!(
+        value["status"] == "StreamStatus",
+        "authority readiness response differs"
+    );
+    Ok(value)
 }
 pub fn record_reference(value: &Value, kind: u64) -> Result<String> {
     let records = value["result"][3]
