@@ -213,6 +213,7 @@ fn prepare(
         hrc: None,
         removed: false,
         retirement: None,
+        removal_acknowledged: false,
     };
     let mut intent = Intent {
         attempt: session.identity.attempt.clone(),
@@ -365,14 +366,7 @@ fn advance(
                 state.retirement = Some(result.clone());
                 state.desired_online = false;
                 session.save(state)?;
-                let _ = post(
-                    session,
-                    state,
-                    protocol::Action::AcknowledgeRemoval {
-                        result_digest: protocol::digest(result.as_bytes()),
-                    },
-                );
-                return Ok(json!({"status":"Removed","code":"ParticipantRemoved"}));
+                return confirm_removal(session, state, post);
             }
             Response::RemovalAcknowledged => {
                 return Ok(json!({"status":"Removed","code":"ParticipantRemoved"}));
@@ -533,10 +527,9 @@ pub fn run(directory: &std::path::Path, command: &Command, stop: &AtomicBool) ->
         }
         Command::Connect { admission } => {
             let mut state = session.state()?;
-            ensure!(
-                !state.removed,
-                "host removed this membership; automatic reconnect cannot restore it"
-            );
+            if state.removed {
+                return confirm_removal(&session, &mut state, post);
+            }
             state.desired_online = true;
             session.save(&state)?;
             let response = {
@@ -576,6 +569,9 @@ pub fn run(directory: &std::path::Path, command: &Command, stop: &AtomicBool) ->
         }
         Command::Continue | Command::Renew | Command::RenewReader | Command::RenewChat => {
             let mut state = session.state()?;
+            if state.removed {
+                return confirm_removal(&session, &mut state, post);
+            }
             ensure!(
                 state.desired_online,
                 "saved server is offline; reconnect explicitly"
@@ -615,5 +611,107 @@ pub fn run(directory: &std::path::Path, command: &Command, stop: &AtomicBool) ->
             summary(&session, &state)
         }
         Command::Status => summary(&session, &session.state()?),
+    }
+}
+
+fn confirm_removal(
+    session: &Session,
+    state: &mut State,
+    send: impl FnOnce(&Session, &mut State, protocol::Action) -> Result<Response>,
+) -> Result<Value> {
+    ensure!(
+        state.removed && !state.desired_online,
+        "membership is not removed"
+    );
+    let result = state
+        .retirement
+        .as_ref()
+        .filter(|s| protocol::artifact(s, 128 * 1024))
+        .ok_or_else(|| anyhow::anyhow!("verified retirement evidence is absent"))?;
+    let digest = protocol::digest(result.as_bytes());
+    // A lost acknowledgement must remain retryable without restoring access or
+    // starting the clock and chat runtime. Only an explicit reconnect contacts it.
+    if !state.removal_acknowledged
+        && matches!(
+            send(
+                session,
+                state,
+                protocol::Action::AcknowledgeRemoval {
+                    result_digest: digest,
+                }
+            ),
+            Ok(Response::RemovalAcknowledged)
+        )
+    {
+        state.removal_acknowledged = true;
+        session.save(state)?;
+    }
+    Ok(
+        json!({"status":"Removed","code":"ParticipantRemoved","removalAcknowledged":state.removal_acknowledged}),
+    )
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_removal_acknowledgement_survives_restart_without_rejoining() {
+        let directory =
+            std::env::temp_dir().join(format!("join-removal-{}", crate::random_hex::<8>()));
+        let session = Session::open(&directory).unwrap();
+        let state: State = serde_json::from_value(json!({
+            "version":1,"location":"https://localhost/","metadata":{
+                "origin":"https://localhost/","name":"Example","network":"01".repeat(32),
+                "incarnation":"02".repeat(32),"policy":"03".repeat(32),"generation":1,
+                "bootstrapDigest":"04".repeat(32),"signingKey":"05".repeat(32),
+                "permissions":{"modes":["inviteOnly"],"access":{"mode":"untilRemoved"},
+                    "reader":true,"chat":false,"roomCreation":false,"moderation":false,
+                    "publishing":false,"hosting":false,"agents":false,"maximumMembers":1,"hrc":null},"welcome":null},
+            "desiredOnline":false,"roles":[],"displayName":"Reader","intent":null,
+            "nativeClaim":"06".repeat(32),"nativeBound":true,"installed":{"retained":true},
+            "hrc":null,"removed":true,"retirement":"aabb"
+        })).unwrap();
+        session.save(&state).unwrap();
+        let mut state = session.state().unwrap();
+        let result=confirm_removal(&session,&mut state,|_,_,action| {
+            assert!(matches!(action,protocol::Action::AcknowledgeRemoval{result_digest} if result_digest==protocol::digest(b"aabb")));
+            anyhow::bail!("connection lost before acknowledgement")
+        }).unwrap();
+        assert_eq!(result["status"], "Removed");
+        drop(session);
+        let session = Session::open(&directory).unwrap();
+        let mut state = session.state().unwrap();
+        assert!(!state.removal_acknowledged && state.removed && !state.desired_online);
+        assert_eq!(state.retirement.as_deref(), Some("aabb"));
+        confirm_removal(&session, &mut state, |_, _, _| {
+            Ok(Response::Refused {
+                code: "TemporaryFailure".into(),
+            })
+        })
+        .unwrap();
+        assert!(!state.removal_acknowledged);
+        confirm_removal(&session, &mut state, |_, _, _| {
+            Ok(Response::RemovalAcknowledged)
+        })
+        .unwrap();
+        assert!(session.state().unwrap().removal_acknowledged);
+        confirm_removal(&session, &mut state, |_, _, _| {
+            panic!("confirmed receipt must not reconnect")
+        })
+        .unwrap();
+        assert!(state.removed && !state.desired_online);
+        assert_eq!(state.installed, Some(json!({"retained":true})));
+        drop(session);
+        assert_eq!(
+            run(
+                &directory,
+                &Command::Connect { admission: None },
+                &AtomicBool::new(false)
+            )
+            .unwrap()["status"],
+            "Removed"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

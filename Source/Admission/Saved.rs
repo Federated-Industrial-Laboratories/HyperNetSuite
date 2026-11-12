@@ -37,6 +37,8 @@ pub struct State {
     pub removed: bool,
     #[serde(default)]
     pub retirement: Option<String>,
+    #[serde(default)]
+    pub removal_acknowledged: bool,
 }
 pub struct Session {
     pub directory: PathBuf,

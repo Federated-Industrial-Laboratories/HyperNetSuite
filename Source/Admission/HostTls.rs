@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
-    os::unix::fs::{DirBuilderExt, MetadataExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -126,24 +126,7 @@ impl Configuration {
                 for name in ["Config", "Work", "Logs"] {
                     saved::create_directory(&root.join(name))?;
                 }
-                let webroot = root.join("Webroot");
-                for path in [
-                    &webroot,
-                    &webroot.join(".well-known"),
-                    &webroot.join(".well-known/acme-challenge"),
-                ] {
-                    if !path.exists() {
-                        std::fs::DirBuilder::new().mode(0o755).create(path)?;
-                    }
-                    let meta = std::fs::symlink_metadata(path)?;
-                    ensure!(
-                        meta.is_dir()
-                            && !meta.file_type().is_symlink()
-                            && meta.uid() == unsafe { libc::geteuid() }
-                            && meta.mode() & 0o777 == 0o755,
-                        "certificate challenge directory differs"
-                    );
-                }
+                let webroot = challenge_directory(&root)?;
                 let config = root.join("Config");
                 let live = config.join("live/HyperNetAdmission");
                 let mut args: Vec<OsString> = vec![
@@ -253,6 +236,31 @@ impl Configuration {
         }
     }
 }
+fn challenge_directory(root: &Path) -> Result<PathBuf> {
+    super::private::directory(root)?;
+    let webroot = root.join("Webroot");
+    for path in [
+        &webroot,
+        &webroot.join(".well-known"),
+        &webroot.join(".well-known/acme-challenge"),
+    ] {
+        if !path.exists() {
+            std::fs::DirBuilder::new().mode(0o700).create(path)?;
+            // Host services use umask0077. Only this new public token subtree
+            // permits traversal by the isolated read-only validation listener.
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+        }
+        let meta = std::fs::symlink_metadata(path)?;
+        ensure!(
+            meta.is_dir()
+                && !meta.file_type().is_symlink()
+                && meta.uid() == unsafe { libc::geteuid() }
+                && meta.mode() & 0o777 == 0o755,
+            "certificate challenge directory differs"
+        );
+    }
+    Ok(webroot)
+}
 fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -311,5 +319,42 @@ impl Drop for Maintenance {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn public_challenge_subtree_works_under_private_service_umask() {
+        const CHILD: &str = "HYPERNET_TEST_CHALLENGE_UMASK_DIRECTORY";
+        if let Some(root) = std::env::var_os(CHILD) {
+            // Change umask only in a dedicated test process, never other tests.
+            unsafe {
+                libc::umask(0o077);
+            }
+            let root = PathBuf::from(root);
+            let public = challenge_directory(&root).unwrap();
+            assert_eq!(std::fs::metadata(&root).unwrap().mode() & 0o777, 0o700);
+            for path in [
+                &public,
+                &public.join(".well-known"),
+                &public.join(".well-known/acme-challenge"),
+            ] {
+                assert_eq!(std::fs::metadata(path).unwrap().mode() & 0o777, 0o755);
+            }
+            assert_eq!(challenge_directory(&root).unwrap(), public);
+            std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(challenge_directory(&root).is_err());
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("join-challenge-{}", crate::random_hex::<8>()));
+        saved::create_directory(&root).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","admission::host_tls::tests::public_challenge_subtree_works_under_private_service_umask","--test-threads=1"])
+            .env(CHILD,&root).status().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
     }
 }
