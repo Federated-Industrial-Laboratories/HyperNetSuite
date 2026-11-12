@@ -16,6 +16,36 @@ use std::{
     time::Duration,
 };
 
+pub struct Bindings(Vec<(PathBuf, (u64, u64))>);
+fn directory_identity(path: &Path) -> Result<(u64, u64)> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink() && metadata.mode() & 0o022 == 0,
+        "registrar mount directory is unavailable or permits replacement"
+    );
+    Ok((metadata.dev(), metadata.ino()))
+}
+impl Bindings {
+    fn capture(paths: impl IntoIterator<Item = PathBuf>) -> Result<Self> {
+        paths
+            .into_iter()
+            .map(|path| {
+                let identity = directory_identity(&path)?;
+                Ok((path, identity))
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Self)
+    }
+    pub fn require_current(&self) -> Result<()> {
+        for (path, expected) in &self.0 {
+            ensure!(
+                directory_identity(path)? == *expected,
+                "native control mount changed; restart public joining"
+            );
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Mount {
@@ -85,6 +115,18 @@ pub fn initialise(directory: &Path, initial: Initial) -> Result<Value> {
     Ok(json!({"status":"RegistrarConfigured","identityPin":registrar.identity_pin()}))
 }
 impl RegistrarContainer {
+    pub fn bindings(&self, edge: &Container) -> Result<Bindings> {
+        self.validate(edge)?;
+        let mut paths = vec![
+            edge.directory.join("Registrar"),
+            edge.directory.join("Bridge"),
+        ];
+        paths.extend(self.native.mounts.iter().map(|mount| mount.source.clone()));
+        if let Some(hrc) = &self.hrc {
+            paths.extend([hrc.state_directory.clone(), hrc.bridge_directory.clone()]);
+        }
+        Bindings::capture(paths)
+    }
     fn validate(&self, edge: &Container) -> Result<()> {
         ensure!(
             self.native.namespace_uid == 1001
@@ -315,5 +357,53 @@ impl RegistrarContainer {
             self.native.host_uid,
             action,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::DirBuilderExt;
+    struct Directory(PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn replaced_control_directory_requires_a_new_bind_mount() {
+        let root = Directory(std::env::temp_dir().join(format!(
+            "HyperNetRegistrarBindings-{}",
+            crate::random_hex::<16>()
+        )));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root.0)
+            .unwrap();
+        let control = root.0.join("Control");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&control)
+            .unwrap();
+        let bindings = Bindings::capture([control.clone()]).unwrap();
+        std::fs::write(
+            control.join("Current"),
+            b"new socket entries remain visible",
+        )
+        .unwrap();
+        bindings.require_current().unwrap();
+        std::fs::rename(&control, root.0.join("Previous")).unwrap();
+        assert!(bindings.require_current().is_err());
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&control)
+            .unwrap();
+        assert!(bindings.require_current().is_err());
+        let refreshed = Bindings::capture([control.clone()]).unwrap();
+        refreshed.require_current().unwrap();
+        std::fs::remove_dir(&control).unwrap();
+        std::os::unix::fs::symlink(root.0.join("Previous"), &control).unwrap();
+        assert!(refreshed.require_current().is_err());
+        assert!(Bindings::capture([control]).is_err());
     }
 }

@@ -446,7 +446,7 @@ pub(super) fn activate(host: &mut Host<'_>) -> Result<()> {
     }
     host.wait(
         || {
-            super::operator::authority_context(host)?;
+            super::operator::authority_ready(host)?;
             Ok(())
         },
         60,

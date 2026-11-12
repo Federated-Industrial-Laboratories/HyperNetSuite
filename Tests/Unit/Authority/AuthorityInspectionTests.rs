@@ -995,7 +995,33 @@ fn stream_transport_setup_failure_precedes_challenge_and_clock_sample() {
 
 #[test]
 fn immediate_stream_status_accepts_a_quick_certificate_without_challenge_ageing() {
+    immediate_stream_status(false);
+}
+
+#[test]
+fn stream_status_preserves_an_unfinished_ordinary_request() {
+    immediate_stream_status(true);
+}
+
+fn immediate_stream_status(retain_pending: bool) {
     let mut f = Fixture::new();
+    let pending = if retain_pending {
+        f.context
+            .prepare(request(), &f.signer, &mut f.store, &mut f.session, f.issued)
+            .unwrap()
+            .cancel(&mut f.session)
+            .unwrap();
+        Some(
+            f.store
+                .resume_ordinary()
+                .unwrap()
+                .unwrap()
+                .signed()
+                .to_vec(),
+        )
+    } else {
+        None
+    };
     let socket = f.directory.0.join("Quick.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1047,6 +1073,12 @@ fn immediate_stream_status_accepts_a_quick_certificate_without_challenge_ageing(
     server.join().unwrap();
     assert_eq!(result.unwrap().canonical(), expected);
     assert_eq!(f.store.prefix().height(), 2);
+    if let Some(pending) = pending {
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().signed(),
+            pending
+        );
+    }
 }
 
 #[test]

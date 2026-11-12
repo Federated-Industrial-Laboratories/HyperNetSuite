@@ -400,7 +400,10 @@ fn manager(host: &mut Host<'_>, name: &str) -> Result<(String, String)> {
             "--not-before-ms",
             &host.state.created_ms.to_string(),
             "--limits",
-            "0,1,0,1",
+            "0",
+            "1",
+            "0",
+            "1",
         ]));
         a.extend(end_arguments(host.c.hosting_end));
         let value = operator(host, "Administrator", &a)?;
@@ -530,6 +533,7 @@ fn request(host: &mut Host<'_>, name: &str, role: u64, generation: u64) -> Resul
     Ok(path)
 }
 pub fn activate(host: &mut Host<'_>, name: &str, operator_name: &str, role: u64) -> Result<()> {
+    host.phase(&format!("Activating {name}"))?;
     let purpose = name.to_ascii_lowercase();
     let persistent = host.c.hosting_end == End::UntilWithdrawn;
     let active = units::active(host, &purpose)?;
