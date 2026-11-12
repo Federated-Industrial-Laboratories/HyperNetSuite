@@ -16,6 +16,9 @@ use std::{
 mod chrome;
 #[path = "Common.rs"]
 pub(crate) mod common;
+#[path = "Navigation.rs"]
+mod navigation;
+pub use navigation::{install_navigation, navigation_channel};
 #[path = "Palette.rs"]
 mod palette;
 #[path = "PageRenderer.rs"]
@@ -44,6 +47,7 @@ pub fn run(
     theme_file: Option<&std::path::Path>,
     work: impl FnOnce(crate::viewer::Session) -> Result<()> + Send + 'static,
 ) -> Result<()> {
+    let navigation = navigation::take_registered();
     let palette = theme_file.map(palette::Palette::load).transpose()?;
     let closed = Arc::new(AtomicBool::new(false));
     let app_closed = closed.clone();
@@ -87,7 +91,12 @@ pub fn run(
                     let _ = sender.send(Message::Finished(result));
                     context.request_repaint();
                 })?;
-            Ok(Box::new(Browser::new(receiver, app_closed)))
+            let mut browser = Browser::new(receiver, app_closed);
+            if let Some(inbox) = &navigation {
+                inbox.attach(&cc.egui_ctx);
+            }
+            browser.navigation = navigation;
+            Ok(Box::new(browser))
         }),
     );
     closed.store(true, Ordering::Release);
@@ -109,6 +118,7 @@ struct Confirmation {
 
 struct Browser {
     receiver: Receiver<Message>,
+    navigation: Option<navigation::NavigationInbox>,
     closed: Arc<AtomicBool>,
     page: Option<Box<Page>>,
     renderer: renderer::PageRenderer,
@@ -137,6 +147,7 @@ impl Browser {
         let (store, preferences, settings_error) = settings::Store::load();
         Self {
             receiver,
+            navigation: None,
             closed,
             page: None,
             renderer: Default::default(),
@@ -216,6 +227,35 @@ impl Browser {
                     }
                 }
             }
+        }
+    }
+
+    fn poll_navigation(&mut self, ctx: &egui::Context) {
+        if let Some(navigation) = &mut self.navigation {
+            navigation.poll(ctx);
+        }
+        if self.can_navigate()
+            && !self.settings_open
+            && !self.help_open
+            && !self.information_open
+            && !ctx.egui_wants_keyboard_input()
+            && self
+                .page
+                .as_ref()
+                .is_some_and(|p| p.document.forms.is_empty())
+        {
+            self.open_queued();
+        }
+    }
+    fn open_queued(&mut self) {
+        if self.can_navigate()
+            && self.page.as_ref().is_some_and(|p| p.reply.is_some())
+            && let Some(address) = self
+                .navigation
+                .as_mut()
+                .and_then(navigation::NavigationInbox::next)
+        {
+            self.action(reader::Action::Address(address));
         }
     }
 
@@ -313,6 +353,7 @@ impl Browser {
     fn shutdown(&mut self) {
         self.closed.store(true, Ordering::Release);
         crate::private_route_client::request_cancel();
+        self.navigation.take();
         self.confirmation.take();
         if let Some(page) = &mut self.page {
             page.reply.take();
@@ -323,11 +364,13 @@ impl Browser {
 impl eframe::App for Browser {
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.messages(ctx);
+        self.poll_navigation(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.messages(&ctx);
+        self.poll_navigation(&ctx);
         self.keyboard(&ctx);
         chrome::text_size(ui, self.preferences.text_scale);
         self.toolbar(ui);

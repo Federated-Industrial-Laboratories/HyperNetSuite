@@ -1,3 +1,5 @@
+#[path = "Admission/Mod.rs"]
+mod admission;
 #[path = "Authority/AuthorityCapacity.rs"]
 mod authority_capacity;
 #[path = "Authority/Deployments/AuthorityDeploymentRecords.rs"]
@@ -187,6 +189,9 @@ struct Options {
 enum Command {
     /// Machine-readable native protocol capabilities for compatible server setup.
     ProtocolFeatures,
+    /// Open or exchange simple native server invitations.
+    #[command(subcommand)]
+    Join(admission::Command),
     /// Verify current governance through a private local authority control socket.
     #[command(subcommand)]
     AuthorityInspection(authority_inspection_cli::Command),
@@ -311,6 +316,7 @@ fn run() -> Result<()> {
 fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::ProtocolFeatures => print_value(&trust_validity::features()),
+        Command::Join(command) => admission::run(command),
         Command::AuthorityInspection(command) => authority_inspection_cli::run(command),
         Command::Network(command) => networks::run(command),
         Command::Routes(command) => private_route_commands::run(command),
