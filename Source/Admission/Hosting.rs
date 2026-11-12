@@ -436,15 +436,14 @@ fn complete(directory: &Path, setup: &Setup, resume: bool, stop: &AtomicBool) ->
     ensure!(setup.version == 1, "unsupported hosting setup version");
     setup.configuration.validate()?;
     let configuration = &setup.configuration;
-    let mut result = native(
-        directory,
-        configuration,
-        json!({"operation":"create","configuration":configuration.native,"reviewDigest":setup.native_review}),
-        stop,
-    )?;
-    if resume && field(&result, "status")? == "Stopped" {
-        result = native(directory, configuration, json!({"operation":"start"}), stop)?;
-    }
+    let action = if resume && directory.join("NativeHost/Hosting.json").try_exists()? {
+        // A retained host has already accepted its configuration and any reviewed
+        // controller successor. Its original installation review is historical.
+        json!({"operation":"start"})
+    } else {
+        json!({"operation":"create","configuration":configuration.native,"reviewDigest":setup.native_review})
+    };
+    let result = native(directory, configuration, action, stop)?;
     ensure!(
         field(&result, "status")? == "Running",
         "native provisioning is incomplete; resume the retained setup"
@@ -761,6 +760,7 @@ pub fn serve(directory: &Path, stop: Arc<AtomicBool>) -> Result<Value> {
         r.container.clone(),
         setup.configuration.origin.clone(),
     );
+    let bindings = r.registrar.bindings(&r.container)?;
     let mut registrar = runtime::Process::spawn(
         &r.container.podman,
         &r.registrar.launch_arguments(&r.container)?,
@@ -770,6 +770,7 @@ pub fn serve(directory: &Path, stop: Arc<AtomicBool>) -> Result<Value> {
             runtime::Process::spawn(&r.container.podman, &r.container.launch_arguments()?)?;
         let outcome = (|| -> Result<()> {
             while !stop.load(Ordering::Acquire) && desired(directory)? {
+                bindings.require_current()?;
                 ensure!(
                     registrar.running()? && listener.running()?,
                     "public joining worker stopped"
