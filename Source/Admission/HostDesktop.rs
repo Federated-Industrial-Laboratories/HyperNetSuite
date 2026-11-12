@@ -11,7 +11,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, sync_channel},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use zeroize::Zeroize;
 struct Job {
@@ -143,8 +143,12 @@ struct Window {
     picker: super::folder_picker::Picker,
     configuration: Option<hosting::Configuration>,
     preview: Option<Value>,
+    software_preview: Option<Value>,
+    installed_application: Option<PathBuf>,
     status: Option<Value>,
     job: Option<Job>,
+    progress_checked: Instant,
+    progress: Option<String>,
     error: Option<String>,
     notice: String,
     link: String,
@@ -265,6 +269,46 @@ impl Window {
             )
         }));
     }
+    fn software(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.collapsing("Install or update signed hosting software", |ui| {
+            ui.label("Choose the coordinated release's Packages folder. Signatures, compatibility and update rules are checked before installation.");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.release).desired_width(520.0));
+                if ui.button("Browse").clicked() { self.picker.choose(PathBuf::from(&self.release), ctx); }
+            });
+            if ui.button("Install / verify packages").clicked() { self.install(ctx); }
+            if self.installed_application.is_some() && ui.button("Open installed hosting application").clicked() {
+                let hrc = self.hrc.clone();
+                self.job = Some(Job::new(ctx, move |stop| {
+                    use std::os::unix::process::CommandExt;
+                    let installation = super::installation::inspect(stop)?;
+                    let path = installation.get("suiteExecutable").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("verified Suite executable is absent"))?;
+                    super::runtime::executable(Path::new(path))?;
+                    let mut command = std::process::Command::new(path);
+                    command.args(["join", "host-desktop"]);
+                    if let Some(hrc) = hrc { command.arg("--hrc-executable").arg(hrc); }
+                    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).process_group(0).spawn()?;
+                    Ok(json!({"status":"InstalledApplicationOpened"}))
+                }));
+            }
+            ui.small("Podman, chrony and Python 3 come from your distribution's software manager.");
+            if self.directory.join("HostingSetup.json").exists() {
+                ui.separator();
+                ui.label("Stop hosting, install the signed update, then open the installed hosting application to review this server's controller update. It keeps the server stopped and preserves accounts, permissions and history.");
+                if ui.button("Review controller update").clicked() { self.call(ctx, hosting::Request::PreviewSoftware); }
+                if let Some(review) = self.software_preview.clone() {
+                    ui.label("Update the Suite controller for this stopped server. Core, HRC and the selected permissions stay at their reviewed versions.");
+                    ui.collapsing("Verified package details", |ui| {
+                        if let Some(native) = review.get("native") { ui.monospace(serde_json::to_string_pretty(native).unwrap_or_default()); }
+                    });
+                    if let Some(digest) = review.get("reviewDigest").and_then(Value::as_str)
+                        && ui.button("Apply reviewed controller update").clicked() {
+                        self.call(ctx, hosting::Request::UpdateSoftware { review_digest: digest.into() });
+                    }
+                }
+            }
+        });
+    }
 
     fn setup(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Create a server");
@@ -357,7 +401,6 @@ impl Window {
             "This topology does not provide independent operators or independent fault domains.",
         );
         ui.collapsing("Resources and connection settings",|ui|{ui.horizontal(|ui|{ui.label("Memory per native role (MiB)");ui.add(egui::DragValue::new(&mut self.memory_mib).range(256..=8192));});ui.horizontal(|ui|{ui.label("State per native role (MiB)");ui.add(egui::DragValue::new(&mut self.state_mib).range(1024..=1048576));});ui.horizontal(|ui|{ui.label("CPU per native role (%)");ui.add(egui::DragValue::new(&mut self.cpu).range(10..=800));});ui.horizontal(|ui|{ui.label("Bytes per connection (MiB)");ui.add(egui::DragValue::new(&mut self.connection_mib).range(1..=1024));});for(label,port)in[("Join HTTPS port",&mut self.join_port),("Relay port",&mut self.relay_port),("First authority port",&mut self.authority_port)]{ui.horizontal(|ui|{ui.label(label);ui.add(egui::DragValue::new(port).range(1025..=65530));});}ui.horizontal(|ui|{ui.label("Private subnet start");ui.add(egui::DragValue::new(&mut self.subnet).range(1..=251));});ui.label("Optional HTTPS origin with the same joining port");ui.text_edit_singleline(&mut self.origin);ui.small("The shared native link pins the server's private TLS authority. Browsers need a publicly trusted certificate to open HTTPS without a certificate warning.");});
-        ui.collapsing("Install or repair signed native packages",|ui|{ui.label("Use the coordinated release's Packages folder. The installer checks the pinned publisher, signatures and rollback rules before installing Core and Suite together.");ui.horizontal(|ui|{ui.add(egui::TextEdit::singleline(&mut self.release).desired_width(520.0));if ui.button("Browse").clicked(){self.picker.choose(PathBuf::from(&self.release),ctx);}});if ui.button("Install / verify packages").clicked(){self.install(ctx);}ui.small(self.installation.display().to_string());ui.small("Podman, chrony and Python 3 come from your distribution's software manager. The native package installer reports any missing system requirements.");});
         if ui
             .add_enabled(
                 self.same_organisation && !self.name.trim().is_empty(),
@@ -685,6 +728,7 @@ impl eframe::App for Window {
         }
         if let Some(result) = self.job.as_ref().and_then(|j| j.receiver.try_recv().ok()) {
             self.job = None;
+            self.progress = None;
             self.notice.clear();
             match result {
                 Err(error) => {
@@ -693,33 +737,110 @@ impl eframe::App for Window {
                 }
                 Ok(value) => {
                     self.error = None;
-                    match value.get("status").and_then(Value::as_str).unwrap_or(""){
-                    "Preview"=>self.preview=Some(value),
-                    "Running"|"Stopped"|"NeedsAttention"=>{self.preview=None;if let Some(mode)=value.pointer("/admission/mode").and_then(|v|serde_json::from_value(v.clone()).ok()){self.mode=mode;}self.status=Some(value);self.refresh_hosts();},
-                    "InvitationCreated"=>self.show_link(&ctx,value.get("link").and_then(Value::as_str).unwrap_or_default().into(),value.get("instructions").and_then(Value::as_str).unwrap_or_default().into()),
-                    "InstallationComplete"=>self.notice="Signed native installation verified. Review your server setup to continue.".into(),
-                    "HostingDiagnosis"=>{let file=self.directory.join("Diagnosis.json");match saved::replace(&file,&value){Ok(())=>self.notice=format!("Redacted diagnosis saved to {}",file.display()),Err(e)=>self.error=Some(e.to_string())}},
-                    "refused"=>self.error=Some(format!("Host action refused: {}",value.get("code").and_then(Value::as_str).unwrap_or("Unavailable"))),
-                    "RemovalPending"=>{self.notice="Removal is still in progress; continue it from the member list.".into();self.call(&ctx,hosting::Request::Status);},
-                    _=>{self.notice="Host setting saved.".into();if self.status.is_some(){self.call(&ctx,hosting::Request::Status);}}
-                }
+                    match value.get("status").and_then(Value::as_str).unwrap_or("") {
+                        "Preview" => self.preview = Some(value),
+                        "Running" | "Stopped" | "StopPending" | "Withdrawn"
+                        | "WithdrawalPending" | "NeedsAttention" => {
+                            self.preview = None;
+                            if let Some(mode) = value
+                                .pointer("/admission/mode")
+                                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            {
+                                self.mode = mode;
+                            }
+                            self.status = Some(value);
+                            self.refresh_hosts();
+                        }
+                        "InvitationCreated" => self.show_link(
+                            &ctx,
+                            value
+                                .get("link")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .into(),
+                            value
+                                .get("instructions")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .into(),
+                        ),
+                        "InstallationComplete" => {
+                            self.installed_application = value
+                                .pointer("/installation/suiteExecutable")
+                                .and_then(Value::as_str)
+                                .map(PathBuf::from);
+                            self.notice="Signed native installation verified. Open the installed hosting application to use it.".into();
+                        }
+                        "InstalledApplicationOpened" => {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+                        }
+                        "SoftwarePreview" => self.software_preview = Some(value),
+                        "SoftwareUpdated" => {
+                            self.software_preview = None;
+                            self.notice="Controller updated. Hosting remains stopped; Start / resume when ready.".into();
+                            self.call(&ctx, hosting::Request::Status);
+                        }
+                        "HostingDiagnosis" => {
+                            let file = self.directory.join("Diagnosis.json");
+                            match saved::replace(&file, &value) {
+                                Ok(()) => {
+                                    self.notice =
+                                        format!("Redacted diagnosis saved to {}", file.display())
+                                }
+                                Err(e) => self.error = Some(e.to_string()),
+                            }
+                        }
+                        "refused" => {
+                            self.error = Some(format!(
+                                "Host action refused: {}",
+                                value
+                                    .get("code")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("Unavailable")
+                            ))
+                        }
+                        "RemovalPending" => {
+                            self.notice =
+                                "Removal is still in progress; continue it from the member list."
+                                    .into();
+                            self.call(&ctx, hosting::Request::Status);
+                        }
+                        _ => {
+                            self.notice = "Host setting saved.".into();
+                            if self.status.is_some() {
+                                self.call(&ctx, hosting::Request::Status);
+                            }
+                        }
+                    }
                 }
             }
+        }
+        if self.job.is_some() && self.progress_checked.elapsed() >= Duration::from_secs(1) {
+            self.progress_checked = Instant::now();
+            self.progress = saved::read::<Value>(&self.directory.join("NativeHost/Hosting.json"))
+                .ok()
+                .and_then(|v| {
+                    v.get("phase")
+                        .and_then(Value::as_str)
+                        .filter(|p| p.len() <= 128 && !p.chars().any(char::is_control))
+                        .map(str::to_owned)
+                });
         }
         egui::CentralPanel::default().show(ui,|ui|{egui::ScrollArea::vertical().show(ui,|ui|{
             ui.heading("HyperNet hosting");
             if let Some(error)=&self.error{ui.colored_label(egui::Color32::from_rgb(245,130,110),error);ui.small("Saved keys, policy and unfinished operations are retained. Correct the cause and resume.");}
             if !self.notice.is_empty(){ui.label(&self.notice);}
-            if self.job.is_some(){ui.horizontal(|ui|{ui.spinner();ui.label("Applying the reviewed operation…");if ui.button("Cancel").clicked()&&let Some(job)=&self.job{job.stop.store(true,Ordering::Release);}});return;}
+            if self.job.is_some(){ui.horizontal(|ui|{ui.spinner();ui.label(self.progress.as_deref().unwrap_or("Applying the reviewed operation…"));if ui.button("Cancel").clicked()&&let Some(job)=&self.job{job.stop.store(true,Ordering::Release);}});return;}
             ui.collapsing("Saved servers",|ui|{for path in &self.hosts{if ui.selectable_label(self.selected.as_ref()==Some(path),saved::read::<Value>(&path.join("HostingSetup.json")).ok().and_then(|v|v.pointer("/configuration/native/name").and_then(Value::as_str).map(str::to_owned)).unwrap_or_else(||"Unfinished server setup".into())).clicked(){self.selected=Some(path.clone());}}
-if let Some(path)=self.selected.clone()&&ui.button("Open dashboard").clicked(){self.directory=path;self.call(&ctx,hosting::Request::Status);}
-if ui.button("Create another server").clicked(){self.directory=self.root.join(crate::random_hex::<32>());self.selected=None;self.configuration=None;self.preview=None;self.status=None;self.mode=store::Mode::InviteOnly;self.password.zeroize();self.agents=false;self.link.zeroize();self.instructions.zeroize();self.texture=None;self.same_organisation=false;self.error=None;}
+if let Some(path)=self.selected.clone()&&ui.button("Open dashboard").clicked(){self.directory=path;self.software_preview=None;self.call(&ctx,hosting::Request::Status);}
+if ui.button("Create another server").clicked(){self.directory=self.root.join(crate::random_hex::<32>());self.selected=None;self.configuration=None;self.preview=None;self.software_preview=None;self.status=None;self.mode=store::Mode::InviteOnly;self.password.zeroize();self.agents=false;self.link.zeroize();self.instructions.zeroize();self.texture=None;self.same_organisation=false;self.error=None;}
 });
             if self.status.is_none() && self.directory.join("HostingSetup.json").exists() {
                 ui.horizontal(|ui|{if ui.button("Resume retained setup").clicked(){self.call(&ctx,hosting::Request::Resume);}
 if ui.button("Stop retained setup").clicked(){self.call(&ctx,hosting::Request::Stop);}});
             }
             if self.status.is_some(){self.dashboard(ui,&ctx);}else if self.preview.is_some(){self.review(ui,&ctx);}else{self.setup(ui,&ctx);}
+            self.software(ui,&ctx);
             if !self.link.is_empty(){ui.separator();ui.heading("Connection details");ui.add(egui::Label::new(&self.link).wrap().selectable(true));ui.horizontal(|ui|{if ui.button("Copy link").clicked(){ctx.copy_text(self.link.clone());}
 if ui.button("Copy connection instructions").clicked(){ctx.copy_text(self.instructions.clone());}
 if ui.button("Hide invitation").clicked(){self.link.zeroize();self.instructions.zeroize();self.texture=None;}});if let Some(texture)=&self.texture{ui.image((texture.id(),egui::vec2(320.0,320.0)));}ui.horizontal(|ui|{ui.text_edit_singleline(&mut self.export_path);if ui.button("Save QR image").clicked(){match Location::parse(&self.link).and_then(|l|qr::write(&l,Path::new(&self.export_path))){Ok(())=>self.notice="QR image saved privately.".into(),Err(e)=>self.error=Some(e.to_string())}}});ui.small("A private invitation is a credential. Share it only with its intended recipients. Clipboard history may retain copied invitations.");}
@@ -790,8 +911,12 @@ pub fn run(hrc: Option<PathBuf>, stop: Arc<AtomicBool>) -> Result<Value> {
                 picker: Default::default(),
                 configuration: None,
                 preview: None,
+                software_preview: None,
+                installed_application: None,
                 status: None,
                 job: None,
+                progress_checked: Instant::now(),
+                progress: None,
                 error: None,
                 notice: String::new(),
                 link: String::new(),

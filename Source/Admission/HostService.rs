@@ -62,7 +62,7 @@ fn utility(arguments: &[String], stop: &AtomicBool) -> Result<()> {
     helper::output(&path, &args, &[], stop, Duration::from_secs(60))?;
     Ok(())
 }
-fn config_root() -> Result<PathBuf> {
+pub(crate) fn config_root() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
@@ -100,15 +100,18 @@ fn config_root() -> Result<PathBuf> {
     );
     Ok(target)
 }
+fn content(directory: &Path, executable: &Path) -> Result<String> {
+    Ok(format!(
+        "[Unit]\nDescription=HyperNet server joining\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={} join host-session --directory {}\nRestart=on-failure\nRestartSec=5\nUMask=0077\nKillMode=mixed\nTimeoutStopSec=45\n\n[Install]\nWantedBy=default.target\n",
+        quote(executable)?,
+        quote(directory)?
+    ))
+}
 pub fn start(directory: &Path, executable: &Path, stop: &AtomicBool) -> Result<()> {
     runtime::executable(executable)?;
     let root = config_root()?;
     let target = root.join(unit(directory));
-    let content = format!(
-        "[Unit]\nDescription=HyperNet server joining\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={} join host-session --directory {}\nRestart=on-failure\nRestartSec=5\nUMask=0077\nKillMode=mixed\nTimeoutStopSec=45\n\n[Install]\nWantedBy=default.target\n",
-        quote(executable)?,
-        quote(directory)?
-    );
+    let content = content(directory, executable)?;
     if target.exists() {
         let m = std::fs::symlink_metadata(&target)?;
         ensure!(
@@ -146,6 +149,127 @@ pub fn start(directory: &Path, executable: &Path, stop: &AtomicBool) -> Result<(
         ],
         stop,
     )
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct Successor {
+    previous: PathBuf,
+    successor: PathBuf,
+    exists: bool,
+    previous_sha256: String,
+    successor_sha256: String,
+}
+pub(super) fn require_stopped(directory: &Path, stop: &AtomicBool) -> Result<()> {
+    let output = helper::output(
+        Path::new("/usr/bin/systemctl"),
+        &[
+            "--user".into(),
+            "show".into(),
+            "--property=ActiveState".into(),
+            "--property=UnitFileState".into(),
+            unit(directory).into(),
+        ],
+        &[],
+        stop,
+        Duration::from_secs(10),
+    )?;
+    let fields: std::collections::BTreeMap<_, _> = std::str::from_utf8(&output)?
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect();
+    ensure!(
+        matches!(fields.get("ActiveState"), Some(&"inactive" | &"failed"))
+            && matches!(fields.get("UnitFileState"), Some(&"disabled" | &"")),
+        "stop public joining before changing its software"
+    );
+    Ok(())
+}
+pub(super) fn review_successor(
+    directory: &Path,
+    previous: &Path,
+    successor: &Path,
+    stop: &AtomicBool,
+) -> Result<Successor> {
+    require_stopped(directory, stop)?;
+    runtime::executable(previous)?;
+    runtime::executable(successor)?;
+    let target = config_root()?.join(unit(directory));
+    let old = content(directory, previous)?;
+    let new = content(directory, successor)?;
+    let exists = target.try_exists()?;
+    if exists {
+        ensure!(
+            crate::native_installation::files::read(&target, 16384, true)? == old.as_bytes(),
+            "public joining unit differs from its retained software"
+        );
+    }
+    Ok(Successor {
+        previous: previous.into(),
+        successor: successor.into(),
+        exists,
+        previous_sha256: protocol::digest(old.as_bytes()),
+        successor_sha256: protocol::digest(new.as_bytes()),
+    })
+}
+impl Successor {
+    pub(super) fn validate(
+        &self,
+        directory: &Path,
+        previous: &Path,
+        successor: &Path,
+    ) -> Result<()> {
+        ensure!(
+            self.previous == previous
+                && self.successor == successor
+                && self.previous_sha256
+                    == protocol::digest(content(directory, previous)?.as_bytes())
+                && self.successor_sha256
+                    == protocol::digest(content(directory, successor)?.as_bytes()),
+            "public joining software review differs"
+        );
+        Ok(())
+    }
+    pub(super) fn apply(&self, directory: &Path, stop: &AtomicBool) -> Result<()> {
+        self.validate(directory, &self.previous, &self.successor)?;
+        require_stopped(directory, stop)?;
+        let root = config_root()?;
+        let target = root.join(unit(directory));
+        if !self.exists {
+            ensure!(
+                !target.try_exists()?,
+                "unreviewed public joining unit appeared"
+            );
+            return Ok(());
+        }
+        let old = content(directory, &self.previous)?;
+        let new = content(directory, &self.successor)?;
+        let current = crate::native_installation::files::read(&target, 16384, true)?;
+        ensure!(
+            current == old.as_bytes() || current == new.as_bytes(),
+            "public joining unit changed during update"
+        );
+        if current != new.as_bytes() {
+            let temp = root.join(format!(".hypernet-{}", crate::random_hex::<16>()));
+            let result = (|| -> Result<()> {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(&temp)?;
+                file.write_all(new.as_bytes())?;
+                file.sync_all()?;
+                std::fs::rename(&temp, &target)?;
+                File::open(&root)?.sync_all()?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = std::fs::remove_file(&temp);
+            }
+            result?;
+        }
+        utility(&["--user".into(), "daemon-reload".into()], stop)
+    }
 }
 pub fn stop(directory: &Path, stop: &AtomicBool) -> Result<()> {
     utility(

@@ -114,9 +114,15 @@ controls use the owner's separate HRC account.
 
 **Stop hosting** preserves the state for an ordinary restart. It disables the
 public joining user service and stops the native host through its supported
-lifecycle command. **Withdraw hosting consent** also changes the native consent;
-hosting again requires a fresh review. Neither action deletes user history or
-private recovery material.
+lifecycle command. An authority's idle private bridge remains for the next
+explicit restart. **Withdraw hosting consent** permanently withdraws this host
+profile and releases its verified owned bridges. Hosting again requires a
+separately reviewed host. Neither action deletes user history or private recovery
+material. Unresolved cleanup remains visible and can be retried.
+
+An interrupted activation retains its exact request until the native completion
+is verified and reported. Completed request and receipt exports are bounded to
+the current and previous activations; native requester floors remain intact.
 
 For operation after logout and reboot, enable unattended user services from the
 dashboard. The desktop may request administrator authentication for this local
@@ -127,6 +133,19 @@ Export **redacted diagnosis** to inspect native phase, joining readiness and
 unattended startup status. It omits private invitations, passwords, key bytes and
 member histories. Keep owner recovery files separately backed up and stop the
 host before changing its software or moving private state.
+
+For a Suite controller update, stop hosting and use **Install or update signed
+hosting software**. Install the coordinated packages, open the verified installed
+hosting application, select the saved server and choose **Review controller
+update**. Apply the exact review, then use **Start / resume** separately. The
+controller update requires the same Core package and image, HRC executable,
+publisher and state contract. It changes the stopped controller and its exact
+service commands; it does not change permissions or replace identities.
+
+An interrupted controller update stays offline. Review and apply its retained
+update again. Do not delete the update plan or restore an older journal to retry.
+Core software changes use the native stopped deployment successor workflow and
+its separate software consent; a controller update cannot authorise them.
 
 ## Isolation and administration boundary
 

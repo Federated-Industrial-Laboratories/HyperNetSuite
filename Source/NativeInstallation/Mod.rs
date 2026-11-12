@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Install a fixed signed Core/Suite pair through their existing upstream verifiers.
 #[path = "Files.rs"]
-mod files;
+pub(crate) mod files;
 #[path = "Helper.rs"]
 mod helper;
 use anyhow::{Context, Result, ensure};
@@ -105,6 +105,13 @@ pub enum Command {
     Install {
         #[arg(long)]
         release_directory: PathBuf,
+        #[arg(long)]
+        directory: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Import the exact verified Core image using a current signed release target.
+    LoadImage {
         #[arg(long)]
         directory: Option<PathBuf>,
         #[arg(long)]
@@ -457,8 +464,66 @@ fn inspect(root: &Path, publisher: &str) -> Result<Installation> {
         serde_json::from_slice(&files::read(&root.join("Installation.json"), 65536, true)?)?;
     inspect_inner(root, &retained, publisher)
 }
+/// A stopped controller cutover needs current Suite policy; unchanged Core keeps its prior admission.
+pub(crate) fn admit_controller(root: &Path) -> Result<Value> {
+    admit_controller_pinned(root, PUBLISHER)
+}
+fn admit_controller_pinned(root: &Path, publisher: &str) -> Result<Value> {
+    let _lock = files::Lock::acquire(root)?;
+    let retained =
+        serde_json::from_slice(&files::read(&root.join("Installation.json"), 65536, true)?)?;
+    let installed = inspect_inner(root, &retained, publisher)?;
+    let product = Product::Suite;
+    let package = &installed.packages.suite;
+    let helper = helper::Helper::new(root, product)?;
+    let receipt = helper.run(&admission_args(
+        "AdmitInstalled",
+        &package.prefix,
+        &product.root(root).join("Trust"),
+        &product
+            .root(root)
+            .join("Targets")
+            .join(&package.target_digest),
+    ))?;
+    let (admitted, _) =
+        checked_record(root, product, &package.archive_sha256, &receipt, publisher)?;
+    ensure!(
+        &admitted == package,
+        "controller admission changed the reviewed selection"
+    );
+    Ok(serde_json::to_value(inspect_inner(
+        root, &installed, publisher,
+    )?)?)
+}
 pub fn run(command: Command) -> Result<()> {
     let (result, json) = match command {
+        Command::LoadImage {
+            directory: selected,
+            json,
+        } => {
+            let root = selected.map(Ok).unwrap_or_else(directory)?;
+            let installed = inspect(&root, PUBLISHER)?;
+            let _lock = files::Lock::acquire(&root)?;
+            let package = &installed.packages.core;
+            let product_root = Product::Core.root(&root);
+            let evidence = product_root.join("Targets").join(&package.target_digest);
+            let helper = helper::Helper::new(&product_root, Product::Core)?;
+            let value = helper.run(&admission_args(
+                "LoadInstalledImage",
+                &package.prefix,
+                &product_root.join("Trust"),
+                &evidence,
+            ))?;
+            ensure!(
+                value["imageId"] == installed.core_image,
+                "imported Core image identity differs"
+            );
+            if json {
+                return crate::print_value(&value);
+            }
+            println!("Verified native Core image is available.");
+            return Ok(());
+        }
         Command::Install {
             release_directory,
             directory: selected,

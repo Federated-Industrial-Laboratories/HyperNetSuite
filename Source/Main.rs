@@ -8,6 +8,8 @@ mod authority_deployment_records;
 mod authority_deployments;
 #[path = "Authority/AuthorityHistory.rs"]
 mod authority_history;
+#[path = "NativeHost/Mod.rs"]
+mod native_host;
 #[path = "NativeInstallation/Mod.rs"]
 mod native_installation;
 #[path = "Runtime/RuntimeBootstrapKeys.rs"]
@@ -189,6 +191,9 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Review, create and manage a native server through the installed product commands.
+    #[command(subcommand)]
+    AdmissionHost(native_host::Command),
     /// Install or verify the fixed local coordinated Core and Suite release.
     #[command(subcommand)]
     NativeInstallation(native_installation::Command),
@@ -320,6 +325,7 @@ fn run() -> Result<()> {
 }
 fn dispatch(command: Command) -> Result<()> {
     match command {
+        Command::AdmissionHost(command) => native_host::run(command),
         Command::NativeInstallation(command) => native_installation::run(command),
         Command::ProtocolFeatures => print_value(&trust_validity::features()),
         Command::Join(command) => admission::run(command),

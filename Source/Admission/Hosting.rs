@@ -19,6 +19,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[path = "HostingSoftware.rs"]
+mod software;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configuration {
@@ -59,6 +61,11 @@ pub enum Request {
         maximum_uses: u32,
     },
     Diagnose,
+    PreviewSoftware,
+    UpdateSoftware {
+        #[serde(rename = "reviewDigest")]
+        review_digest: String,
+    },
 }
 impl Drop for Request {
     fn drop(&mut self) {
@@ -453,7 +460,28 @@ fn complete(directory: &Path, setup: &Setup, resume: bool, stop: &AtomicBool) ->
 pub fn request(directory: &Path, request: Request, stop: &AtomicBool) -> Result<Value> {
     saved::create_directory(directory)?;
     let _lock = host_service::lock(directory, "HostControl.lock")?;
-    match &request {
+    if matches!(
+        &request,
+        Request::Create { .. } | Request::Start | Request::Resume
+    ) {
+        ensure!(
+            !software::pending(directory)?,
+            "complete the reviewed software update before starting"
+        );
+    }
+    let cancellation_stops = matches!(
+        &request,
+        Request::Create { .. }
+            | Request::Resume
+            | Request::Start
+            | Request::Stop
+            | Request::Withdraw
+    );
+    let result = (|| match &request {
+        Request::PreviewSoftware => software::preview(directory, stop),
+        Request::UpdateSoftware { review_digest } => {
+            software::update(directory, review_digest, stop)
+        }
         Request::Preview { configuration } => preview(directory, configuration, stop),
         Request::Create {
             configuration,
@@ -547,7 +575,7 @@ pub fn request(directory: &Path, request: Request, stop: &AtomicBool) -> Result<
                             stop,
                         )?;
                         Ok(
-                            json!({"status":if n.get("status").and_then(Value::as_str)==Some("Stopped"){"Stopped"}else{"NeedsAttention"},"desiredRunning":n.get("desiredRunning"),"native":n,"admission":null,"listenerVerifiedFromHost":false,"setupIncomplete":true}),
+                            json!({"status":readiness(false,false,n.get("status").and_then(Value::as_str)),"desiredRunning":n.get("desiredRunning"),"native":n,"admission":null,"listenerVerifiedFromHost":false,"setupIncomplete":true}),
                         )
                     }
                     _ => {
@@ -614,7 +642,37 @@ pub fn request(directory: &Path, request: Request, stop: &AtomicBool) -> Result<
                 _ => unreachable!(),
             }
         }
+    })();
+    // A cancelled helper is reaped before cleanup starts. Use a fresh bounded
+    // owner request so cancellation cannot leave independently managed units running.
+    if result.is_err()
+        && cancellation_stops
+        && stop.load(Ordering::Acquire)
+        && directory.join("HostingSetup.json").exists()
+    {
+        let cleanup = AtomicBool::new(false);
+        choice(directory, false)?;
+        let public = if directory.join("HostingReady.json").exists() {
+            host_service::stop(directory, &cleanup)
+        } else {
+            Ok(())
+        };
+        if directory.join("NativeHost/Hosting.json").exists() {
+            let setup: Setup = saved::read(&directory.join("HostingSetup.json"))?;
+            let result = native(
+                directory,
+                &setup.configuration,
+                json!({"operation":if matches!(&request, Request::Withdraw){"withdraw"}else{"stop"}}),
+                &cleanup,
+            )?;
+            ensure!(
+                matches!(result["status"].as_str(), Some("Stopped" | "Withdrawn")),
+                "hosting cancelled; offline choice saved but cleanup is incomplete; retry Stop"
+            );
+        }
+        public?;
     }
+    result
 }
 fn instructions(r: &Ready, location: &Location) -> Result<String> {
     Ok(format!(
@@ -628,6 +686,17 @@ fn instructions(r: &Ready, location: &Location) -> Result<String> {
         }
     ))
 }
+fn readiness(online: bool, accessible: bool, native: Option<&str>) -> &'static str {
+    match native {
+        Some("Withdrawn") => "Withdrawn",
+        Some("WithdrawalPending") => "WithdrawalPending",
+        Some("StopPending") => "StopPending",
+        Some("Stopped") if !online => "Stopped",
+        Some("Running") if online && accessible => "Running",
+        _ => "NeedsAttention",
+    }
+}
+
 fn status(directory: &Path, setup: &Setup, r: &Ready, stop: &AtomicBool) -> Result<Value> {
     let n = native(
         directory,
@@ -639,7 +708,7 @@ fn status(directory: &Path, setup: &Setup, r: &Ready, stop: &AtomicBool) -> Resu
     let online = desired(directory)?;
     let accessible = online && public.is_some() && verified_listener(r).is_ok();
     Ok(
-        json!({"status":if accessible&&n.get("status").and_then(Value::as_str)==Some("Running"){"Running"}else if !online{"Stopped"}else{"NeedsAttention"},"desiredRunning":online,"native":n,"admission":public,"link":r.location,"instructions":instructions(r,&Location::parse(&r.location)?)?,"listenerVerifiedFromHost":accessible,"tls":setup.configuration.tls.review(),"certificateRefresh":saved::read::<Value>(&directory.join("TlsHealth.json")).ok(),"externalReachability":"Check the shared link from another connection; local readiness does not prove router/firewall forwarding.","startsAfterLogout":host_service::linger_enabled()}),
+        json!({"status":readiness(online,accessible,n.get("status").and_then(Value::as_str)),"desiredRunning":online,"native":n,"admission":public,"link":r.location,"instructions":instructions(r,&Location::parse(&r.location)?)?,"listenerVerifiedFromHost":accessible,"tls":setup.configuration.tls.review(),"certificateRefresh":saved::read::<Value>(&directory.join("TlsHealth.json")).ok(),"externalReachability":"Check the shared link from another connection; local readiness does not prove router/firewall forwarding.","startsAfterLogout":host_service::linger_enabled()}),
     )
 }
 #[cfg(feature = "gui")]
@@ -676,6 +745,10 @@ pub(super) fn owner_reader(directory: &Path, refresh: bool, stop: &AtomicBool) -
 }
 pub fn serve(directory: &Path, stop: Arc<AtomicBool>) -> Result<Value> {
     let _lock = host_service::lock(directory, "HostSession.lock")?;
+    ensure!(
+        !software::pending(directory)?,
+        "complete the reviewed software update before starting"
+    );
     if !desired(directory)? {
         return Ok(json!({"status":"Stopped"}));
     }
@@ -715,4 +788,24 @@ pub fn serve(directory: &Path, stop: Arc<AtomicBool>) -> Result<Value> {
     result?;
     cleanup?;
     Ok(json!({"status":"Stopped"}))
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::readiness;
+    #[test]
+    fn offline_choice_does_not_hide_pending_cleanup_or_terminal_withdrawal() {
+        for (native, expected) in [
+            (Some("Running"), "NeedsAttention"),
+            (Some("StopPending"), "StopPending"),
+            (Some("WithdrawalPending"), "WithdrawalPending"),
+            (Some("Withdrawn"), "Withdrawn"),
+            (Some("Stopped"), "Stopped"),
+            (None, "NeedsAttention"),
+        ] {
+            assert_eq!(readiness(false, false, native), expected);
+        }
+        assert_eq!(readiness(true, false, Some("Running")), "NeedsAttention");
+        assert_eq!(readiness(true, true, Some("Running")), "Running");
+    }
 }
