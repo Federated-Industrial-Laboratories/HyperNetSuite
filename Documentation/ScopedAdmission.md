@@ -28,6 +28,7 @@ Create a private policy specification, using lowercase hexadecimal IDs and keys:
   "authority": "AUTHORITY_ROUTE_ID",
   "templates": [
     {"role": 0, "destination": "PAGE_ROUTE_ID", "application": null,
+     "page": "PAGE_STORAGE_SERVICE_PUBLIC_KEY",
      "limits": [262144, 1024, 16, 16], "connections": 64,
      "bytes": 16777216, "voucherMs": 3600000},
     {"role": 1, "destination": "CHAT_ROUTE_ID", "application": "CHAT_SERVICE_ID",
@@ -41,7 +42,14 @@ Create a private policy specification, using lowercase hexadecimal IDs and keys:
 
 Replace placeholders and the validity start with the actual approved values.
 Use `[START_MS, EXPIRES_MS]` for finite validity. Authority ancestors must permit
-the policy validity. Route vouchers also stop at the current host/service consent
+the policy validity, including the owner's current membership. A Page reader
+template binds `page` to the exact Page storage service public key, independently
+of the relay destination endpoint key. Only role 0 accepts this optional field.
+Its versioned template extension fails closed on older clients. Admission and
+renewal require current host-readable Page storage consent; the certified result
+includes the host and its complete capability/deployment closure. The installed
+reader route uses this exact subject. Omit `page` only for the existing advanced
+non-Page reader route configuration. Route vouchers also stop at the current host/service consent
 deadline. Install with the normal owner
 bootstrap, private floor, key, clock witness and authority socket arguments:
 

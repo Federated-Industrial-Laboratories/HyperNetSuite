@@ -186,9 +186,10 @@ fn route(
         Assurance::Organisation
     };
     let subject = if purpose == 5 {
-        d.policy
-            .template(role.role)?
+        let template = d.policy.template(role.role)?;
+        template
             .application
+            .or(template.page)
             .unwrap_or(destination.service)
     } else {
         role.member

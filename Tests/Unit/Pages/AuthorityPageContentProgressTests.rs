@@ -88,7 +88,7 @@ fn progress_contract(effect: content::Effect) {
         hosts: vec![host.clone()],
         copies: 1,
         failure_domains: 1,
-        expires_ms: 100000,
+        expires_ms: 100000.into(),
     };
     let mut state = domain::State::empty(context.0, context.1);
     let record = domain::Record::next(
@@ -137,7 +137,7 @@ fn progress_contract(effect: content::Effect) {
         digest: digest(&bytes),
         bytes: bytes.len() as u64,
         recorded_ms: 1000,
-        expires_ms: 100000,
+        expires_ms: 100000.into(),
         envelope: vec![],
     };
     receipt.envelope =

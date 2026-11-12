@@ -30,7 +30,7 @@ pub(super) fn author(
     namespace: String,
     page_text: String,
     revision: u64,
-    expires_ms: u64,
+    expires_ms: crate::trust_validity::End,
     output: PathBuf,
 ) -> Result<()> {
     let bytes = source(&file)?;
