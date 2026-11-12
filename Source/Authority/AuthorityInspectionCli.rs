@@ -30,7 +30,7 @@ pub struct Location {
     /// Independently pinned Ed25519 public key for the host clock monitor.
     #[arg(long, requires = "host_kernel_boot")]
     clock_monitor_key: Option<String>,
-    /// Independently pinned current host kernel boot identifier.
+    /// Pinned kernel boot UUID, or CurrentHost to read this host's current boot UUID.
     #[arg(long, requires = "clock_monitor_key")]
     host_kernel_boot: Option<String>,
 }

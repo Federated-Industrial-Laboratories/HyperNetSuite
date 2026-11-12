@@ -34,6 +34,51 @@ fn accepted(bytes: &[u8], now: Observation) -> bool {
 }
 
 #[test]
+fn current_host_resolves_one_exact_boot_without_relaxing_signed_observations() {
+    let pin = hex::encode(key().verifying_key().to_bytes());
+    let path = Path::new("/Clock/ClockHealth.cbor");
+    let Source::Signed {
+        host_kernel_boot,
+        monitor_key,
+        ..
+    } = Source::select(path, Some(&pin), Some("CurrentHost")).unwrap()
+    else {
+        panic!("signed source required")
+    };
+    assert_eq!(
+        host_kernel_boot,
+        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .unwrap()
+            .trim_end_matches('\n')
+    );
+    assert_eq!(monitor_key, key().verifying_key().to_bytes());
+    let mut value = fields(sample());
+    value[2] = V::Text(host_kernel_boot.clone());
+    assert!(signed(&encoded(value), monitor_key, &host_kernel_boot, sample()).is_ok());
+    assert!(
+        signed(
+            &encoded(fields(sample())),
+            monitor_key,
+            &host_kernel_boot,
+            sample()
+        )
+        .is_err()
+    );
+    for invalid in [
+        "currenthost",
+        "CurrentHost\n",
+        "",
+        "00000000-0000-0000-0000-000000000000",
+    ] {
+        assert!(Source::select(path, Some(&pin), Some(invalid)).is_err());
+    }
+    assert!(Source::select(path, None, Some("CurrentHost")).is_err());
+    assert!(
+        matches!(Source::select(path, Some(&pin), Some(BOOT)).unwrap(), Source::Signed { host_kernel_boot, .. } if host_kernel_boot == BOOT)
+    );
+}
+
+#[test]
 fn signed_observation_requires_the_exact_monitor_host_boot_and_signature() {
     let bytes = encoded(fields(sample()));
     assert!(accepted(&bytes, sample()));

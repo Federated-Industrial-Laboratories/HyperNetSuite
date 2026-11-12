@@ -46,11 +46,22 @@ impl Source {
             (Some(key), Some(boot)) => {
                 let monitor_key = trust_bootstrap::hex32(key)?;
                 wire::valid_key(&monitor_key)?;
-                ensure!(valid_boot(boot), "invalid pinned host kernel boot");
+                let host_kernel_boot = if boot == "CurrentHost" {
+                    unshifted_clock()?;
+                    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?
+                        .trim_end_matches('\n')
+                        .to_owned()
+                } else {
+                    boot.to_owned()
+                };
+                ensure!(
+                    valid_boot(&host_kernel_boot),
+                    "invalid pinned host kernel boot"
+                );
                 Ok(Self::Signed {
                     path: path.into(),
                     monitor_key,
-                    host_kernel_boot: boot.into(),
+                    host_kernel_boot,
                 })
             }
             _ => anyhow::bail!("signed clock requires both monitor key and host kernel boot"),
