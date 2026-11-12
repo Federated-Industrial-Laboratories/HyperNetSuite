@@ -29,6 +29,12 @@ pub struct Arguments {
     /// Previous accepted service artifact; preserve its exact binding and rights.
     #[arg(long)]
     renew_from: Option<PathBuf>,
+    /// Previous operator-signed route profile for an exact certificate-only service refresh.
+    #[arg(long, requires_all = ["renew_from", "certificate_route"])]
+    certificate_previous_route: Option<PathBuf>,
+    /// New same-key certificate successor; does not extend this service permission.
+    #[arg(long, requires_all = ["renew_from", "certificate_previous_route"])]
+    certificate_route: Option<PathBuf>,
     #[arg(long)]
     service: String,
     /// Exact registered route ID:generation:digest.
@@ -196,7 +202,32 @@ pub fn create(a: Arguments) -> Result<()> {
         envelope: vec![],
     };
     if let Some(accepted) = previous {
-        check_renewal(&accepted, &binding, &registration)?;
+        let certificates = match (&a.certificate_previous_route, &a.certificate_route) {
+            (Some(before), Some(after)) => {
+                let parse = |path: &Path| {
+                    crate::authority_domains::routes::RegisteredProfile::parse(
+                        &files::read_single(path, 32768, true)?,
+                        scope.network,
+                        scope.incarnation,
+                    )
+                };
+                let before = parse(before)?;
+                let after = parse(after)?;
+                after.successor_of(&before)?;
+                ensure!(
+                    after.manifest.transport_changed(&before.manifest)
+                        && before.identity.service == accepted.registration.route.id
+                        && after.identity.service == registration.route.id
+                        && before.operator == accepted.registration.operator
+                        && after.operator == registration.operator,
+                    "Certificate service refresh differs from its exact signed route successor"
+                );
+                true
+            }
+            (None, None) => false,
+            _ => anyhow::bail!("Certificate service refresh requires both exact route profiles"),
+        };
+        check_renewal_with_certificates(&accepted, &binding, &registration, certificates)?;
     }
     registration.envelope = wire::sign_envelope(
         &registration.payload(scope.network, scope.incarnation)?,
@@ -211,10 +242,11 @@ pub fn create(a: Arguments) -> Result<()> {
     files::write_new(&a.output, &bytes)?;
     artifact.report("ApplicationServiceOffered")
 }
-fn check_renewal(
+fn check_renewal_with_certificates(
     previous: &Artifact,
     binding: &streams::local::Binding,
     registration: &streams::Registration,
+    certificates: bool,
 ) -> Result<()> {
     let old = &previous.registration;
     ensure!(
@@ -235,8 +267,12 @@ fn check_renewal(
         "service renewal requires the same route at its existing or a later generation"
     );
     ensure!(
-        registration.validity.0 >= old.validity.0 && registration.validity.1 > old.validity.1,
-        "service renewal must advance expiry without backdating validity"
+        registration.validity.0 >= old.validity.0
+            && (registration.validity.1 > old.validity.1
+                || certificates
+                    && registration.validity == old.validity
+                    && registration.route.generation > old.route.generation),
+        "service renewal must extend expiry or prove an exact certificate-only route successor"
     );
     Ok(())
 }

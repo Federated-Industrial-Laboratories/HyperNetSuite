@@ -212,3 +212,16 @@ voucher reference and a new finite expiry. A delayed commit after the previous
 expiry is refused instead of becoming a post-expiry quota renewal. All pinned
 identities, capability references, allowances and cumulative usage baselines are
 preserved. Ordinary explicit `RouteIssue` renewal retains its finite semantics.
+
+Certificate renewal is separate from entitlement lifetime. `TransportCertificates/1`
+uses explicit manifest wire version2 and a retained certificate origin. The native
+validators preserve the original resource/withdrawal identity while accepting
+only a same-key, same-name and same-extension certificate successor. The current
+issuer and leaves still need finite valid dates and a valid TLS chain. New route
+metadata comes from a fresh certified native result and keeps the accepted
+network, role keys and permissions. Installation requires exclusive ownership of
+the selected requester; live companions use normal stop/refresh/restart.
+Certificate refresh carries the existing live voucher usage baseline. A depleted
+live voucher is retained until its finite expiry, even when another role in the
+same claim refreshes, so the server can perform normal authenticated post-expiry
+quota renewal without an ever-moving recovery boundary.
