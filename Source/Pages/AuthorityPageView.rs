@@ -293,6 +293,41 @@ fn view(
             &status,
             mode,
         )?;
+        #[cfg(feature = "gui")]
+        if !matches!(
+            action,
+            reader::Action::Quit | reader::Action::Back | reader::Action::Previous
+        ) {
+            let refresh = crate::admission::pages::reader_needs_refresh(&online.key);
+            match refresh {
+                Ok(Some(needed)) if needed || client.is_none() => {
+                    drop(client.take());
+                    let next_online = Online {
+                        location: online.location.clone(),
+                        key: online.key.clone(),
+                        socket: online.socket.clone(),
+                    };
+                    match session.request(move || {
+                        crate::admission::pages::refresh_reader(&next_online.key)?;
+                        Client::new(&next_online)
+                    }) {
+                        Ok(Some(fresh)) => client = Some(fresh),
+                        Ok(None) => return Ok(()),
+                        Err(error) => {
+                            status = reader::bounded_status(&format!(
+                                "Could not reconnect reader: {error:#}"
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                Err(error) => {
+                    status = reader::bounded_status(&format!("Reader is unavailable: {error:#}"));
+                    continue;
+                }
+                _ => {}
+            }
+        }
         let mut exit = false;
         let next = (|| -> Result<Option<Entry>> {
             let g = grant.clone();
@@ -411,7 +446,7 @@ fn view(
             }
             Ok(None)
         })();
-        if exit || client.is_none() {
+        if exit {
             return Ok(());
         }
         match next {
