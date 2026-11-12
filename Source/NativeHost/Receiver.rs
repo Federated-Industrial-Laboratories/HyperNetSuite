@@ -113,6 +113,126 @@ fn owner_route(host: &Host<'_>, args: Vec<String>) -> Result<()> {
     operator(host, "Administrator", &a)?;
     Ok(())
 }
+// An expired signed issuance can be fenced, but a different pending command must first
+// resume through the normal exact command. Never treat a timeout as an absent request.
+fn resolve_expired(
+    exact_current_expiry: Option<u64>,
+    mut recover: impl FnMut() -> Result<Value>,
+    retry: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let result = match recover() {
+        Ok(result) => result,
+        Err(first) => {
+            let retried = retry();
+            recover().with_context(|| {
+                format!(
+                    "expired route recovery remains unresolved: {first:#}; exact retry: {retried:?}"
+                )
+            })?
+        }
+    };
+    ensure!(
+        result["state"] == "RouteIssueRecovery",
+        "route recovery response differs"
+    );
+    ensure!(
+        matches!(
+            result["status"].as_str(),
+            Some("NothingPending" | "Recovered")
+        ) || (result["status"] == "Waiting"
+            && exact_current_expiry.is_some_and(|expiry| result["expiresAtMs"] == expiry)),
+        "route issuance remains unresolved; retain its exact arguments and retry at its original expiry: {result}"
+    );
+    Ok(())
+}
+fn owner_recovery(host: &Host<'_>, id: &str) -> Result<Value> {
+    let mut a = bytes(&["routes", "recover-expired-issue", "--id", id]);
+    a.extend(online(host, "Administrator")?);
+    operator(host, "Administrator", &a)
+}
+fn unrecorded_expiry(result: &Value, fresh: u64) -> Result<u64> {
+    ensure!(
+        result["state"] == "RouteIssueRecovery",
+        "route recovery response differs"
+    );
+    match result["status"].as_str() {
+        Some("Waiting") => number(result, "expiresAtMs"),
+        Some("NothingPending" | "Recovered") => Ok(fresh),
+        _ => anyhow::bail!("initial receiver route remains unresolved; retry its exact recovery"),
+    }
+}
+fn recover_owner(host: &Host<'_>, id: &str, retry: impl FnOnce() -> Result<()>) -> Result<()> {
+    resolve_expired(None, || owner_recovery(host, id), retry)
+}
+fn own_route(host: &Host<'_>, profile: &Path, args: Vec<String>) -> Result<()> {
+    let mut a = bytes(&[
+        "network",
+        "connect",
+        "--profile",
+        &text(profile)?,
+        "--",
+        "routes",
+        "issue",
+    ]);
+    a.extend(args);
+    host.suite(&a)?;
+    Ok(())
+}
+fn new_cycle(previous: &Value, expires: u64, now: u64) -> Result<Value> {
+    ensure!(
+        expires > now.saturating_add(1250),
+        "host's finite consent has expired; review normal host consent before resuming"
+    );
+    if previous["complete"] != true {
+        ensure!(
+            number(previous, "expires")? <= now,
+            "receiver issuance still has a live allowance"
+        );
+    }
+    let generation = number(previous, "generation")?
+        .checked_add(1)
+        .context("receiver recovery exhausted")?;
+    let mut value = json!({"generation":generation,"expires":expires,"complete":false});
+    if previous.get("expires").is_some() {
+        value["previous"] =
+            json!({"generation":previous["generation"],"expires":previous["expires"]});
+    }
+    Ok(value)
+}
+fn route_expiry(path: &Path) -> Result<u64> {
+    let profile: crate::route_profile::Profile =
+        serde_json::from_slice(&files::public_file(path, 600000)?)?;
+    profile.validate()?;
+    let record = crate::authority_domains::Record::parse(
+        &profile.voucher,
+        profile.network,
+        profile.incarnation,
+    )?;
+    Ok(crate::authority_domains::routes::Voucher::parse(&record.payload)?.expires)
+}
+fn cleanup_cycles(host: &Host<'_>, folder: &Path, current: u64, join: bool) -> Result<()> {
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let number = if join {
+            name.strip_prefix("JoinRoute")
+        } else {
+            name.strip_prefix("Recovery")
+                .or_else(|| name.strip_prefix("Owned"))
+        }
+        .and_then(|s| s.strip_suffix(".json"))
+        .and_then(|s| s.parse::<u64>().ok());
+        if number.is_some_and(|n| n.saturating_add(1) < current) {
+            if name.starts_with("Owned") {
+                files::remove(&entry.path())?;
+            } else {
+                retire_export(host, "Administrator", &entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
 pub fn prepare(host: &mut Host<'_>) -> Result<()> {
     if units::active(host, "receiver")? {
         let status = companion_status(&host.c.root, &host.state)?;
@@ -130,26 +250,6 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
     }
     host.phase("Private service receiver")?;
     let folder = host.dir("ReceiverClient")?;
-    if let Some(cycle) = host.remembered("receiver-cycle") {
-        let current = number(&cycle, "generation")?;
-        for entry in std::fs::read_dir(&folder)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            let generation = name
-                .strip_prefix("Recovery")
-                .or_else(|| name.strip_prefix("Owned"))
-                .and_then(|s| s.strip_suffix(".json"))
-                .and_then(|s| s.parse::<u64>().ok());
-            if generation.is_some_and(|n| n < current) {
-                if name.starts_with("Recovery") {
-                    retire_export(host, "Administrator", &entry.path())?;
-                } else {
-                    files::remove(&entry.path())?;
-                }
-            }
-        }
-    }
     let profile = folder.join("Profile.json");
     if !profile.exists() {
         host.suite(&bytes(&[
@@ -248,6 +348,23 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
         ]));
         host.suite(&a)?;
     }
+    let template = if let Some(selected) = host.remembered("receiver-route-template") {
+        let path = std::path::PathBuf::from(string(&selected, "path")?);
+        ensure!(
+            path.starts_with(host.p("Successor/Certificates")) && path.canonicalize()? == path,
+            "receiver certificate template escapes the reviewed successor directory"
+        );
+        crate::admission::private::directory(
+            path.parent().context("receiver template parent absent")?,
+        )?;
+        ensure!(
+            digest(&files::read(&path, 600000)?) == string(&selected, "sha256")?,
+            "receiver certificate template differs from its retained digest"
+        );
+        path
+    } else {
+        template
+    };
     let joined = folder.join("Joined");
     if host.remembered("receiver-joined").is_none() {
         let offer = folder.join("Offer.cbor");
@@ -282,9 +399,59 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
             let v = operator(host, "Administrator", &a)?;
             host.remember("receiver-pending", v)?;
         }
-        let join_route = folder.join("JoinRoute.json");
+        // Persist each exact finite deadline before signing. The immutable invitation always
+        // retains its first route; later transport successors do not change member acceptance.
+        let id = host.id("receiver-join-route")?;
+        let current = clock_now(&host.c.root)?;
+        let mut join_cycle = match host.remembered("receiver-join-cycle") {
+            Some(value) => value,
+            None => {
+                let original = folder.join("JoinRoute.json");
+                let expires = if original.exists() {
+                    route_expiry(&original)?
+                } else {
+                    unrecorded_expiry(
+                        &owner_recovery(host, &id)?,
+                        host.c.hosting_end.bound(current.saturating_add(3_600_000)),
+                    )?
+                };
+                let value = json!({"generation":0,"expires":expires,"complete":false});
+                host.remember("receiver-join-cycle", value.clone())?;
+                value
+            }
+        };
+        let path_for = |generation| {
+            if generation == 0 {
+                folder.join("JoinRoute.json")
+            } else {
+                folder.join(format!("JoinRoute{generation}.json"))
+            }
+        };
+        let mut join_route = path_for(number(&join_cycle, "generation")?);
+        if number(&join_cycle, "expires")? <= current {
+            recover_owner(host, &id, || {
+                owner_route(
+                    host,
+                    route_args(
+                        host,
+                        &id,
+                        &request,
+                        (&host.root_grant()?, 10),
+                        number(&join_cycle, "expires")?,
+                        &template,
+                        &join_route,
+                    )?,
+                )
+            })?;
+            join_cycle = new_cycle(
+                &join_cycle,
+                host.c.hosting_end.bound(current.saturating_add(3_600_000)),
+                current,
+            )?;
+            host.remember("receiver-join-cycle", join_cycle.clone())?;
+            join_route = path_for(number(&join_cycle, "generation")?);
+        }
         if !join_route.exists() {
-            let id = host.id("receiver-join-route")?;
             owner_route(
                 host,
                 route_args(
@@ -292,7 +459,7 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
                     &id,
                     &request,
                     (&host.root_grant()?, 10),
-                    host.c.hosting_end.bound(now()? + 3_600_000),
+                    number(&join_cycle, "expires")?,
                     &template,
                     &join_route,
                 )?,
@@ -314,7 +481,10 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
             ]));
             host.suite(&a)?;
         }
-        let v = host.suite(&bytes(&[
+        // The new route is certified and the original is embedded in the immutable invitation.
+        // Retire older transport exports even if member redemption needs another exact retry.
+        cleanup_cycles(host, &folder, number(&join_cycle, "generation")?, true)?;
+        let mut a = bytes(&[
             "network",
             "join",
             "--profile",
@@ -327,8 +497,24 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
             &text(&joined)?,
             "--clock-witness",
             &text(&host.p("Native/Clock/ClockHealth.json"))?,
-        ]))?;
+        ]);
+        // Passing the same original route needs no override. A replaced route must prove the
+        // explicit expired-voucher and same-identity successor contract in normal network join.
+        let invitation_value: Value =
+            serde_json::from_slice(&files::public_file(&invitation, 1_048_576)?)?;
+        let selected: Value = serde_json::from_slice(&files::public_file(&join_route, 600000)?)?;
+        if invitation_value["authorityRoute"] != selected {
+            a.extend(bytes(&[
+                "--authority-route",
+                &text(&join_route)?,
+                "--authority-route-digest",
+                &digest(&files::public_file(&join_route, 600000)?),
+            ]));
+        }
+        let v = host.suite(&a)?;
         host.remember("receiver-joined", v)?;
+        join_cycle["complete"] = json!(true);
+        host.remember("receiver-join-cycle", join_cycle)?;
     }
     let receiver = json!({"profile":profile,"member":subject,"directory":joined.join("Requester"),
         "authorityRoute":joined.join("AuthorityRoute.json"),"readerGrant":reader});
@@ -348,14 +534,35 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
     }
     // A stopped receiver may have been offline beyond its own finite voucher.
     // The host offers one bounded recovery route; the receiver then signs its own renewal.
+    let current = clock_now(&host.c.root)?;
     let mut cycle = host
         .remembered("receiver-cycle")
         .unwrap_or(json!({"generation":0,"complete":true}));
-    if cycle["complete"] == true {
-        let generation = number(&cycle, "generation")?
-            .checked_add(1)
-            .context("receiver recovery exhausted")?;
-        cycle = json!({"generation":generation,"expires":host.c.hosting_end.bound(now()?+3_600_000),"complete":false});
+    let owner_id = host.id("receiver-recovery-route")?;
+    let own_id = host.id("receiver-authority-route")?;
+    if cycle["complete"] == true || number(&cycle, "expires")? <= current {
+        if cycle["complete"] != true {
+            let old = folder.join(format!("Recovery{}.json", number(&cycle, "generation")?));
+            recover_owner(host, &owner_id, || {
+                owner_route(
+                    host,
+                    route_args(
+                        host,
+                        &owner_id,
+                        &request,
+                        (&host.root_grant()?, 0),
+                        number(&cycle, "expires")?,
+                        &template,
+                        &old,
+                    )?,
+                )
+            })?;
+        }
+        cycle = new_cycle(
+            &cycle,
+            host.c.hosting_end.bound(current.saturating_add(3_600_000)),
+            current,
+        )?;
         host.remember("receiver-cycle", cycle.clone())?;
     }
     let generation = number(&cycle, "generation")?;
@@ -363,12 +570,11 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
     let recovery = folder.join(format!("Recovery{generation}.json"));
     let own = folder.join(format!("Owned{generation}.json"));
     if !recovery.exists() {
-        let id = host.id("receiver-recovery-route")?;
         owner_route(
             host,
             route_args(
                 host,
-                &id,
+                &owner_id,
                 &request,
                 (&host.root_grant()?, 0),
                 expires,
@@ -378,27 +584,60 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
         )?;
     }
     retain(host, &profile, &recovery)?;
+    if cycle["ownStarted"] != true {
+        // A fresh owner transport permits resolving the receiver's old signed request without
+        // replaying an expired voucher. Unknown effects remain in the normal requester floor.
+        resolve_expired(
+            Some(expires),
+            || {
+                host.suite(&bytes(&[
+                    "network",
+                    "connect",
+                    "--profile",
+                    &text(&profile)?,
+                    "--",
+                    "routes",
+                    "recover-expired-issue",
+                    "--id",
+                    &own_id,
+                ]))
+            },
+            || {
+                let previous = &cycle["previous"];
+                let old = folder.join(format!("Owned{}.json", number(previous, "generation")?));
+                own_route(
+                    host,
+                    &profile,
+                    route_args(
+                        host,
+                        &own_id,
+                        &request,
+                        (&reader, 0),
+                        number(previous, "expires")?,
+                        &template,
+                        &old,
+                    )?,
+                )
+            },
+        )?;
+        cycle["ownStarted"] = json!(true);
+        host.remember("receiver-cycle", cycle.clone())?;
+    }
+    cleanup_cycles(host, &folder, generation, false)?;
     if !own.exists() {
-        let id = host.id("receiver-authority-route")?;
-        let mut a = bytes(&[
-            "network",
-            "connect",
-            "--profile",
-            &text(&profile)?,
-            "--",
-            "routes",
-            "issue",
-        ]);
-        a.extend(route_args(
+        own_route(
             host,
-            &id,
-            &request,
-            (&reader, 0),
-            expires,
-            &template,
-            &own,
-        )?);
-        host.suite(&a)?;
+            &profile,
+            route_args(
+                host,
+                &own_id,
+                &request,
+                (&reader, 0),
+                expires,
+                &template,
+                &own,
+            )?,
+        )?;
     }
     retain(host, &profile, &own)?;
     cycle["complete"] = json!(true);
@@ -424,5 +663,58 @@ mod tests {
         route["state"] = json!("current");
         route["recoveryAfterMs"] = Value::Null;
         assert!(expired_route(&route, 5000).unwrap());
+    }
+    #[test]
+    fn interrupted_recovery_replays_discovery_but_never_advances_waiting_or_uncertain_work() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let replayed = Cell::new(false);
+        resolve_expired(
+            None,
+            || {
+                calls.set(calls.get() + 1);
+                if !replayed.get() {
+                    anyhow::bail!("pending RouteContext")
+                }
+                Ok(json!({"state":"RouteIssueRecovery","status":"Recovered"}))
+            },
+            || {
+                replayed.set(true);
+                anyhow::bail!("exact old issuance is expired")
+            },
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 2);
+        assert_eq!(
+            unrecorded_expiry(
+                &json!({"state":"RouteIssueRecovery","status":"Waiting","expiresAtMs":5000}),
+                10000
+            )
+            .unwrap(),
+            5000
+        );
+        resolve_expired(
+            Some(5000),
+            || Ok(json!({"state":"RouteIssueRecovery","status":"Waiting","expiresAtMs":5000})),
+            || panic!("current exact command resumes outside recovery"),
+        )
+        .unwrap();
+        for status in ["Waiting", "RecoveryPending"] {
+            assert!(
+                resolve_expired(
+                    None,
+                    || Ok(json!({"state":"RouteIssueRecovery","status":status})),
+                    || panic!("live/uncertain request must not be replayed")
+                )
+                .is_err()
+            );
+        }
+        assert!(resolve_expired(None, || anyhow::bail!("unavailable"), || Ok(())).is_err());
+        let old = json!({"generation":7,"expires":5000,"complete":false,"previous":{"generation":6,"expires":1000}});
+        assert!(new_cycle(&old, 10000, 4999).is_err());
+        assert!(new_cycle(&old, 5000, 5000).is_err());
+        let next = new_cycle(&old, 10000, 5000).unwrap();
+        assert_eq!(next["previous"], json!({"generation":7,"expires":5000}));
+        assert_eq!(old["complete"], false);
     }
 }

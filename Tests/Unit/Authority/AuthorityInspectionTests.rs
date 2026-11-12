@@ -1377,26 +1377,34 @@ fn lost_fence_response_resumes_exact_signed_fence_and_verifies_committed_ancestr
         send_control(stream, &history);
         original_fence
     });
-    let failed = stream_client::fence_local(
+    let failed = stream_client::fence_local_guarded(
         &descriptor,
         &socket,
         &f.signer,
         &mut f.store,
         &mut f.session,
         live_clock,
+        |metadata| {
+            ensure!(
+                metadata.state().unwrap().generation == 1,
+                "initial stream differs"
+            );
+            Ok(())
+        },
     );
     assert!(failed.is_err());
     assert_eq!(f.store.prefix().height(), 2);
     let pending = f.store.resume_fence().unwrap().unwrap();
     let original = pending.signed().to_vec();
     assert!(f.store.ordinary_slot().is_err());
-    let response = stream_client::fence_local(
+    let response = stream_client::fence_local_guarded(
         &descriptor,
         &socket,
         &f.signer,
         &mut f.store,
         &mut f.session,
         live_clock,
+        |_| panic!("an already signed fence must resume its original comparison"),
     )
     .unwrap();
     assert_eq!(server.join().unwrap(), original);
@@ -1420,4 +1428,64 @@ fn lost_fence_response_resumes_exact_signed_fence_and_verifies_committed_ancestr
         reopened.stream_metadata().unwrap().unwrap(),
         *response.metadata()
     );
+}
+
+#[test]
+fn limited_fence_guard_uses_authenticated_status_before_preparing_any_fence() {
+    let mut f = Fixture::new();
+    let descriptor = f.bootstrap.descriptor().clone();
+    let metadata = f
+        .store
+        .stream_metadata()
+        .unwrap()
+        .unwrap()
+        .canonical()
+        .to_vec();
+    let original_parent = *f.store.prefix().node();
+    let socket = f.directory.0.join("GuardedFence.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server_descriptor = descriptor.clone();
+    let server = std::thread::spawn(move || {
+        let (stream, packet) = receive_control(&listener);
+        let (ordered, request, challenge) = submitted(&packet);
+        assert!(matches!(
+            proof::SignedRequest::from_signed(&request).unwrap(),
+            proof::SignedRequest::StreamStatus(_)
+        ));
+        let (reply, _) = certified_request(
+            &server_descriptor,
+            &request,
+            &challenge,
+            &ordered,
+            wire::decode(&metadata).unwrap(),
+            mature(&challenge),
+            original_parent,
+            2,
+            0,
+        );
+        send_control(stream, &reply);
+    });
+    let result = stream_client::fence_local_guarded(
+        &descriptor,
+        &socket,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        live_clock,
+        |metadata| {
+            assert_eq!(metadata.state().unwrap().generation, 1);
+            anyhow::bail!("original issuance generation differs")
+        },
+    );
+    server.join().unwrap();
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("original issuance generation differs")
+    );
+    assert_eq!(f.store.prefix().height(), 2);
+    assert!(f.store.resume_fence().unwrap().is_none());
+    assert_eq!(f.store.ordinary_slot().unwrap().generation(), 1);
 }

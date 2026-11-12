@@ -333,6 +333,38 @@ budget, then retain the new route profile. Every connection rechecks sponsor
 rights, consent, service withdrawal and the exact registered destination. Replacing
 a voucher does not reset the requester floor or replay a mutation.
 
+## Interrupted finite issuance
+
+An interrupted `routes issue` or automatic handover retains its exact signed
+request. Resume that command while its requested expiry is live. If it expires
+before completion, use `routes recover-expired-issue` with the normal online
+arguments and that exact voucher `--id`. An admitted client with a current
+retained authority transport can use:
+
+```sh
+HyperNetSuite network connect --profile /Private/Client/Profile.json -- \
+  routes recover-expired-issue --id VOUCHER_ID
+```
+
+This limited operation verifies the healthy clock and original signed request
+under the requester lock. `Waiting` keeps a live request unchanged;
+`NothingPending` reports that no ordinary request or fence remains. `Recovered`
+means the normal certified stream fence completed. `RecoveryPending` requires
+another exact retry. Different pending commands or identifiers refuse recovery;
+resume their normal command first. Unknown prior effects and certified floors
+remain retained. Recovery does not replenish a live voucher's budget.
+
+An interrupted `network join` can retain its original invitation while accepting
+an explicitly verified successor authority route with `--authority-route PATH`
+and `--authority-route-digest SHA256`. Repeat every original join argument,
+including its invitation digest and directory. The original voucher must have
+expired. Its replacement preserves voucher identity, purpose, sponsor, separate
+possession key, grant, relay, destination and budgets. Same-key certificate
+renewals require the normal cryptographic successor proof and current dates.
+The original invitation, accepted member and requester state stay unchanged;
+current native authority still decides admission. An expired finite member
+offer cannot be extended by replacing its transport.
+
 ## Assurance, cancellation and diagnostics
 
 The default minimum is `Independent`. The effective minimum is the stricter of
