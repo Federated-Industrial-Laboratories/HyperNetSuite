@@ -46,6 +46,7 @@ struct Active {
 struct State {
     active: BTreeMap<String, Active>,
     errors: VecDeque<Value>,
+    authority_route: Value,
     controls: usize,
 }
 struct Guard {
@@ -193,13 +194,32 @@ fn reserve_slot(slots: &mut BTreeSet<(Digest, u64)>, next: &mut u64, service: Di
     slots.insert((service, slot));
     *next = (slot + 1) % streams::SLOTS;
 }
+fn maintain(client: &mut Client, targets: &[Target], state: &Arc<Mutex<State>>) {
+    let failed = client.maintain_authority_route(targets).is_err();
+    let status = client.authority_route_status(failed)
+        .unwrap_or_else(|_| json!({"mode":"automatic","state":"unavailable","expiresAtMs":null,"recoveryAfterMs":null}));
+    if let Ok(mut state) = state.lock() {
+        state.authority_route = status;
+    }
+    if failed {
+        error(
+            state,
+            None,
+            "Authority route renewal failed; access remains subject to its current expiry and usage limits.",
+        );
+    }
+}
 fn actor(
     mut client: Client,
     targets: Vec<Target>,
     receiver: queue::Receiver,
     ready: SyncSender<Result<()>>,
+    state: Arc<Mutex<State>>,
 ) {
     let initial = client.resume_agent(&targets);
+    if initial.is_ok() {
+        maintain(&mut client, &targets, &state);
+    }
     let success = initial.is_ok();
     let _ = ready.send(initial);
     if !success {
@@ -210,7 +230,17 @@ fn actor(
         .iter()
         .map(|target| (target.service.clone(), 0))
         .collect::<BTreeMap<_, _>>();
-    while let Ok(job) = receiver.recv() {
+    let mut maintenance = Instant::now();
+    loop {
+        if maintenance.elapsed() >= Duration::from_secs(10) {
+            maintain(&mut client, &targets, &state);
+            maintenance = Instant::now();
+        }
+        let job = match receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(job) => job,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match job {
             Job::Plan(target, budget, timing, reply) => {
                 timing.event("Dequeue", "Complete");
@@ -370,7 +400,7 @@ fn request(
             }
             ipc::write_json(
                 &mut stream,
-                &json!({"version":1,"ok":true,"status":"Ready","network":runtime.profile["network"],"incarnation":runtime.profile["incarnation"],"principal":runtime.profile["principal"],"binding":runtime.profile["binding"],"uptimeMs":runtime.started.elapsed().as_millis(),"incoming":runtime.binding.is_some(),"targets":runtime.targets.iter().map(|t|json!({"service":t.service,"protocol":t.protocol})).collect::<Vec<_>>(),"connections":state.active.values().map(|a|json!({"id":a.info.id,"direction":a.info.direction,"service":a.info.service,"peer":{"principal":a.info.peer["principal"],"owner":a.info.peer["owner"],"endpoint":a.info.peer["endpoint"]}})).collect::<Vec<_>>(),"recentErrors":state.errors}),
+                &json!({"version":1,"ok":true,"status":"Ready","network":runtime.profile["network"],"incarnation":runtime.profile["incarnation"],"principal":runtime.profile["principal"],"binding":runtime.profile["binding"],"uptimeMs":runtime.started.elapsed().as_millis(),"incoming":runtime.binding.is_some(),"targets":runtime.targets.iter().map(|t|json!({"service":t.service,"protocol":t.protocol})).collect::<Vec<_>>(),"connections":state.active.values().map(|a|json!({"id":a.info.id,"direction":a.info.direction,"service":a.info.service,"peer":{"principal":a.info.peer["principal"],"owner":a.info.peer["owner"],"endpoint":a.info.peer["endpoint"]}})).collect::<Vec<_>>(),"recentErrors":state.errors,"authorityRoute":state.authority_route}),
             )
         }
         "cancel" => {
@@ -764,14 +794,16 @@ pub fn run(a: Arguments) -> Result<()> {
     let (ready, started) = mpsc::sync_channel(1);
     let actor_targets = targets.clone();
     timing::start();
-    let actor = thread::spawn(move || actor(c, actor_targets, receiver, ready));
-    started.recv().context("authority actor did not start")??;
-    let (incoming, queue) = mpsc::sync_channel(16);
     let state = Arc::new(Mutex::new(State {
         active: BTreeMap::new(),
         errors: VecDeque::new(),
+        authority_route: Value::Null,
         controls: 0,
     }));
+    let actor_state = state.clone();
+    let actor = thread::spawn(move || actor(c, actor_targets, receiver, ready, actor_state));
+    started.recv().context("authority actor did not start")??;
+    let (incoming, queue) = mpsc::sync_channel(16);
     let checks = binding
         .as_ref()
         .map(|b| checks::Checks::new(b.clone(), clock.clone()).map(Arc::new))
@@ -965,7 +997,7 @@ fn local_ingress(
 
 fn status_v2(runtime: &Runtime, state: &State) -> Value {
     json!({
-        "version":2,"ok":true,"status":"Ready",
+        "version":2,"ok":true,"status":"Ready","authorityRoute":state.authority_route,
         "network":runtime.profile["network"],"incarnation":runtime.profile["incarnation"],
         "principal":runtime.profile["principal"],"binding":runtime.profile["binding"],
         "uptimeMs":runtime.started.elapsed().as_millis(),"incoming":runtime.binding.is_some(),

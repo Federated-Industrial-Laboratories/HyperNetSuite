@@ -5,8 +5,9 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Condvar, Mutex,
-        mpsc::{RecvError, SendError, TrySendError},
+        mpsc::{RecvTimeoutError, SendError, TrySendError},
     },
+    time::{Duration, Instant},
 };
 
 const CAPACITY: usize = 16;
@@ -99,8 +100,19 @@ impl Drop for Sender {
 }
 
 impl Receiver {
-    pub fn recv(&self) -> Result<Job, RecvError> {
-        let mut state = self.0.state.lock().map_err(|_| RecvError)?;
+    #[cfg(test)]
+    pub fn recv(&self) -> Result<Job, RecvTimeoutError> {
+        self.receive(None)
+    }
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<Job, RecvTimeoutError> {
+        self.receive(Some(Instant::now() + timeout))
+    }
+    fn receive(&self, deadline: Option<Instant>) -> Result<Job, RecvTimeoutError> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| RecvTimeoutError::Disconnected)?;
         loop {
             if !state.jobs.is_empty() {
                 let index = state
@@ -114,9 +126,25 @@ impl Receiver {
                 return Ok(job);
             }
             if state.senders == 0 {
-                return Err(RecvError);
+                return Err(RecvTimeoutError::Disconnected);
             }
-            state = self.0.ready.wait(state).map_err(|_| RecvError)?;
+            state = match deadline {
+                Some(deadline) => {
+                    let remaining = deadline
+                        .checked_duration_since(Instant::now())
+                        .ok_or(RecvTimeoutError::Timeout)?;
+                    self.0
+                        .ready
+                        .wait_timeout(state, remaining)
+                        .map_err(|_| RecvTimeoutError::Disconnected)?
+                        .0
+                }
+                None => self
+                    .0
+                    .ready
+                    .wait(state)
+                    .map_err(|_| RecvTimeoutError::Disconnected)?,
+            };
         }
     }
 }
