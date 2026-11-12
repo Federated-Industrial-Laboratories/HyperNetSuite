@@ -520,7 +520,7 @@ impl eframe::App for Window {
                 ui.label("Local clock tools (used without changing system time)");
                 for (label,path) in [("chronyc",&mut self.configuration.chronyc),("chronyd",self.configuration.chronyd.get_or_insert_with(||"/usr/sbin/chronyd".into()))]{let mut value=path.display().to_string();ui.horizontal(|ui|{ui.label(label);if ui.text_edit_singleline(&mut value).changed(){*path=PathBuf::from(&value);}});}
                 if self.application==Application::Hrc {let mut value=self.configuration.core.as_ref().map(|p|p.display().to_string()).unwrap_or_default();ui.horizontal(|ui|{ui.label("HyperNet Core");if ui.text_edit_singleline(&mut value).changed(){self.configuration.core=Some(value.into());}});}
-                ui.label("The packaged setup installs these prerequisites. Use Repair installation if a tool is missing.");
+                ui.label("Install missing clock tools with your distribution's software manager. Repair installation checks the signed native packages.");
             });
         });
         if self.job.is_some() {
