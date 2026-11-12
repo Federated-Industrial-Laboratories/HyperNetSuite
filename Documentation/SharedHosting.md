@@ -132,6 +132,12 @@ allowance waits for its original expiry. Current and previous recovery exports
 are retained until a successor completes. Expired finite host or membership
 consent still requires its normal reviewed successor.
 
+Certificate renewal of a live receiver retains its original voucher identifier,
+expiry, usage baseline and limits. With the receiver stopped, the host obtains
+current recovery transport, resumes the exact receiver operation and publishes
+the certified certificate successor. An interrupted refresh retains its original
+plan; crossing the old deadline uses normal expired-route recovery instead.
+
 For operation after logout and reboot, enable unattended user services from the
 dashboard. The desktop may request administrator authentication for this local
 system setting. The host supervisor uses service restart with backoff, without a
