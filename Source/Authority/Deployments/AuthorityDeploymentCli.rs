@@ -624,7 +624,7 @@ fn synchronise(online: Online, grant: [u8; 32], directory: &Path) -> Result<()> 
             );
             let historical = match resumed {
                 Some(value) => value,
-                None => source.health()?.observe()?.wall_ms >= offer.manifest.validity.1,
+                None => offer.historical(source.health()?.observe()?.wall_ms)?,
             };
             let request = Request::Register {
                 grant: context.version(102, grant)?,
@@ -650,9 +650,13 @@ fn synchronise(online: Online, grant: [u8; 32], directory: &Path) -> Result<()> 
         "Retained offer history did not complete the exact pending registration"
     );
     let final_manifest = previous.context("No retained operational offers found")?;
+    let at = source.health()?.observe()?.wall_ms;
+    let fresh_final = at >= final_manifest.validity.0
+        && at < final_manifest.validity.1
+        && final_manifest.current_transport(at).is_ok();
     crate::print_value(
         &json!({"status":"DeploymentSynchronised","deployment":hex::encode(final_manifest.deployment),
-        "generation":final_generation,"currentPermission":false,"freshFinalConsent":source.health()?.observe()?.wall_ms < final_manifest.validity.1}),
+        "generation":final_generation,"currentPermission":false,"freshFinalConsent":fresh_final}),
     )
 }
 pub fn run(command: Command) -> Result<()> {

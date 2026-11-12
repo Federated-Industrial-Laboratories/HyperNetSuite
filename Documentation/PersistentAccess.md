@@ -225,3 +225,9 @@ Certificate refresh carries the existing live voucher usage baseline. A depleted
 live voucher is retained until its finite expiry, even when another role in the
 same claim refreshes, so the server can perform normal authenticated post-expiry
 quota renewal without an ever-moving recovery boundary.
+
+Certificate expiry remains independent of persistent permission. A signed expired
+certificate successor can be admitted only as non-serving history after its
+not-before time. Synchronisation uses that historical path when recovering a
+retained generation chain. The final serving admission and every runtime
+activation still require current certificates and finite certificate deadlines.
