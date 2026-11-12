@@ -28,6 +28,7 @@ if len(os.fsencode(path / ('I' + '0' * 16) / 'UnavailableAuthority.sock')) >= 10
 PYTHON
 # Bound concurrent clock-sensitive fixtures unless the caller selects a limit.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
+python3 -B Tests/NativeInstallation.py
 cargo fmt --all --check
 # Include files retain module scope and are not discovered by cargo fmt.
 shopt -s globstar
