@@ -153,6 +153,8 @@ mod transfers;
 mod trust_action_scope;
 #[path = "Protocol/TrustBootstrap.rs"]
 mod trust_bootstrap;
+#[path = "Protocol/TrustValidity.rs"]
+mod trust_validity;
 #[path = "Protocol/TrustWire.rs"]
 mod trust_wire;
 
@@ -181,6 +183,8 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Machine-readable native protocol capabilities for compatible server setup.
+    ProtocolFeatures,
     /// Verify current governance through a private local authority control socket.
     #[command(subcommand)]
     AuthorityInspection(authority_inspection_cli::Command),
@@ -304,6 +308,7 @@ fn run() -> Result<()> {
 }
 fn dispatch(command: Command) -> Result<()> {
     match command {
+        Command::ProtocolFeatures => print_value(&trust_validity::features()),
         Command::AuthorityInspection(command) => authority_inspection_cli::run(command),
         Command::Network(command) => networks::run(command),
         Command::Routes(command) => private_route_commands::run(command),

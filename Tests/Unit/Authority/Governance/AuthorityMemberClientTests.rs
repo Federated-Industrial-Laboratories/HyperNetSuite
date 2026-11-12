@@ -311,7 +311,7 @@ fn offer_with_lifetime(f: &Fixture, acceptance_ms: u64) -> Vec<u8> {
         member_offer::Invitation {
             member: [25; 32],
             reader_grant: [24; 32],
-            validity: (span[0].uint().unwrap(), span[1].uint().unwrap()),
+            validity: (span[0].uint().unwrap(), span[1].uint().unwrap()).into(),
             acceptance_ms,
         },
         &f.signer,
@@ -376,7 +376,7 @@ fn invitation_window_includes_clock_allowance_within_its_requested_duration() {
             member_offer::Invitation {
                 member: [25; 32],
                 reader_grant: [24; 32],
-                validity: (now - 10_000, expires),
+                validity: (now - 10_000, expires).into(),
                 acceptance_ms: duration,
             },
             &f.signer,
@@ -397,7 +397,7 @@ fn invitation_window_includes_clock_allowance_within_its_requested_duration() {
             member_offer::Invitation {
                 member: [25; 32],
                 reader_grant: [24; 32],
-                validity: (now - 10_000, now + 86_500_000),
+                validity: (now - 10_000, now + 86_500_000).into(),
                 acceptance_ms: 86_400_001,
             },
             &f.signer,
@@ -623,7 +623,7 @@ fn receipt_failure_reopens_and_resumes_exact_admission_after_acceptance_expires(
         member_offer::Invitation {
             member: [25; 32],
             reader_grant: [24; 32],
-            validity: (span[0].uint().unwrap(), span[1].uint().unwrap()),
+            validity: (span[0].uint().unwrap(), span[1].uint().unwrap()).into(),
             // The synthetic certificate retains the full first challenge lifetime.
             acceptance_ms: DURATION + crate::authority_governance::UNCERTAINTY_MS,
         },

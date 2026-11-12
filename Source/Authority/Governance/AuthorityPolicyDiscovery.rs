@@ -35,6 +35,7 @@ fn discover_once(
     session: &mut Session,
     mut clock: impl FnMut() -> Result<ClockHealth>,
     caller: Option<crate::route_connector::OperationBudget>,
+    export: Option<&Path>,
 ) -> Result<()> {
     ensure!(
         bootstrap.fully_accepted()
@@ -44,6 +45,10 @@ fn discover_once(
     store.require_requester(signer.verifying_key().to_bytes())?;
     if store.resume_ordinary()?.is_some() {
         // Reconcile the original operation under its retained policy before another query.
+        ensure!(
+            export.is_none(),
+            "resolve pending operation before exporting a policy certificate"
+        );
         return Ok(());
     }
     let descriptor = store.descriptor().clone();
@@ -92,6 +97,11 @@ fn discover_once(
             bail!("policy discovery refused");
         }
         let (p, r) = pair.context("certified policy pair absent")?;
+        let certificate = export
+            .map(|_| {
+                super::certificate::encode(bootstrap, store, &exchange, clock()?.observe()?.wall_ms)
+            })
+            .transpose()?;
         // Candidate bytes precede the floor so interruption cannot hide a learned contract.
         retain_cached_pair(store, PENDING, &p, &r)?;
         let ((), consumed) =
@@ -99,6 +109,9 @@ fn discover_once(
                 retain_pair(store, &p, &r)
             })?;
         remaining(exchange.deadline)?;
+        if let (Some(path), Some(bytes)) = (export, certificate) {
+            files::write_new(path, &bytes)?;
+        }
         exchange
             .control
             .acknowledge_read(&consumed, signer, exchange.deadline);
@@ -121,7 +134,7 @@ pub fn discover(
     session: &mut Session,
     clock: impl FnMut() -> Result<ClockHealth>,
 ) -> Result<()> {
-    discover_once(bootstrap, path, signer, store, session, clock, None)
+    discover_once(bootstrap, path, signer, store, session, clock, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -143,6 +156,7 @@ pub(crate) fn refresh_before_request_with_budget(
             session,
             || budget.clock(&mut clock),
             Some(budget.transport()),
+            None,
         )
     })?;
     require_accepted(bootstrap, store)
@@ -171,6 +185,28 @@ pub(crate) fn refresh_before_request_with_transport(
     clock: impl FnMut() -> Result<ClockHealth>,
     caller: Option<crate::route_connector::OperationBudget>,
 ) -> Result<()> {
-    discover_once(bootstrap, path, signer, store, session, clock, caller)?;
+    discover_once(bootstrap, path, signer, store, session, clock, caller, None)?;
     require_accepted(bootstrap, store)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn export(
+    bootstrap: &Verified,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    clock: impl FnMut() -> Result<ClockHealth>,
+    output: &Path,
+) -> Result<()> {
+    discover_once(
+        bootstrap,
+        path,
+        signer,
+        store,
+        session,
+        clock,
+        None,
+        Some(output),
+    )
 }

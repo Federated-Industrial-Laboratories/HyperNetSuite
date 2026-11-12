@@ -23,7 +23,7 @@ fn registration() -> streams::Registration {
             duration_ms: 30000,
             idle_ms: 5000,
         },
-        validity: (1000, 4000),
+        validity: (1000, 4000).into(),
         envelope: vec![],
     };
     registration.envelope =
@@ -214,4 +214,63 @@ fn registration_cli_requires_explicit_renewal_mode() {
         Cli::try_parse_from(&args).unwrap().command,
         super::super::Command::Register { renew: true, .. }
     ));
+}
+
+#[test]
+fn persistent_registration_still_issues_a_finite_signed_session() {
+    let mut registration = registration();
+    registration.validity.1 = crate::trust_validity::End::UntilWithdrawn;
+    let now = 31_536_000_000;
+    let expires = finite_session_expiry(
+        registration.validity.1,
+        now,
+        registration.limits.duration_ms,
+    )
+    .unwrap();
+    assert_eq!(expires, now + 30000);
+    let key = deployment::key(80);
+    let proof = streams::Proof {
+        service: VersionRef {
+            kind: 172,
+            id: registration.id,
+            generation: 1,
+            digest: [71; 32],
+        },
+        principal: key.verifying_key().to_bytes(),
+        grant: VersionRef {
+            kind: 102,
+            id: [72; 32],
+            generation: 1,
+            digest: [73; 32],
+        },
+        protocol: registration.protocol,
+        slot: 0,
+        generation: 1,
+        nonce: [74; 32],
+        challenge: [75; 32],
+        exporter: [76; 32],
+        limits: registration.limits,
+        expires,
+        envelope: vec![],
+    };
+    let payload = proof.payload([20; 32], [21; 32]).unwrap();
+    let signed = wire::sign_envelope(&payload, &key).unwrap();
+    assert_eq!(
+        streams::Proof::parse(&signed, [20; 32], [21; 32])
+            .unwrap()
+            .expires,
+        expires
+    );
+    let mut fields = wire::decode(&payload).unwrap().array(16).unwrap().to_vec();
+    fields[15] = crate::trust_validity::End::UntilWithdrawn.value();
+    let invalid = wire::sign_envelope(&wire::encode(&V::Array(fields)).unwrap(), &key).unwrap();
+    assert!(streams::Proof::parse(&invalid, [20; 32], [21; 32]).is_err());
+    assert!(
+        finite_session_expiry(
+            crate::trust_validity::End::UntilWithdrawn,
+            u64::MAX - 10,
+            30000
+        )
+        .is_err()
+    );
 }

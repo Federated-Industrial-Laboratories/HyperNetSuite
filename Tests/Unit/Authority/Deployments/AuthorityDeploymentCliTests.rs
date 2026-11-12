@@ -12,7 +12,7 @@ fn possession_import_preserves_exact_key_class_and_approved_manifest() {
         Class::Transport,
         &transport,
         manifest.validity.0,
-        manifest.validity.1,
+        manifest.validity.1.finite().unwrap(),
     )
     .unwrap();
     let (payload, signatures) = wire::envelope(&bytes, 1).unwrap();
@@ -27,7 +27,7 @@ fn possession_import_preserves_exact_key_class_and_approved_manifest() {
             Class::Service,
             &transport,
             manifest.validity.0,
-            manifest.validity.1
+            manifest.validity.1.finite().unwrap()
         )
         .is_err()
     );
@@ -37,7 +37,7 @@ fn possession_import_preserves_exact_key_class_and_approved_manifest() {
             Class::Transport,
             &transport,
             0,
-            manifest.validity.1
+            manifest.validity.1.finite().unwrap()
         )
         .is_err()
     );

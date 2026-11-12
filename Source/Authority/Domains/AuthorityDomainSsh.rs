@@ -22,7 +22,7 @@ pub struct Profile {
     pub endpoint: Digest,
     pub purpose: String,
     pub maximum_seconds: u64,
-    pub validity: (u64, u64),
+    pub validity: crate::trust_validity::Validity,
     pub deployment_profile: VersionRef,
     pub consent: VersionRef,
     pub envelope: Vec<u8>,
@@ -44,7 +44,7 @@ impl Profile {
                 && id(&f[4])? == incarnation,
             "SSH profile context differs"
         );
-        let span = f[13].array(2)?;
+        let span = crate::trust_validity::Validity::parse(&f[13])?;
         let profile = Self {
             manifest: crate::runtime_manifest::Manifest::parse(f[16].bytes()?)?,
             network,
@@ -57,7 +57,7 @@ impl Profile {
             endpoint: id(&f[10])?,
             purpose: label(&f[11], 128)?,
             maximum_seconds: f[12].uint()?,
-            validity: (span[0].uint()?, span[1].uint()?),
+            validity: span,
             deployment_profile: version(&f[14])?,
             consent: version(&f[15])?,
             envelope: envelope.to_vec(),
@@ -113,7 +113,7 @@ impl Profile {
             b(&self.endpoint),
             V::Text(self.purpose.clone()),
             V::Uint(self.maximum_seconds),
-            a(vec![V::Uint(self.validity.0), V::Uint(self.validity.1)]),
+            a(vec![V::Uint(self.validity.0), self.validity.1.value()]),
             reference(&self.deployment_profile),
             reference(&self.consent),
             b(&self.manifest.encode()?),
@@ -565,8 +565,7 @@ impl Context<'_> {
         if live {
             let consent = wire::decode(self.governance.record_bytes(105, r.deployment)?)?;
             let f = consent.array(19)?;
-            let span = f[16].array(2)?;
-            let validity = (span[0].uint()?, span[1].uint()?);
+            let validity = crate::trust_validity::Validity::parse(&f[16])?;
             ensure!(
                 current(self.at, effective)
                     && current(self.at, validity)
@@ -579,7 +578,7 @@ impl Context<'_> {
                         && f[1].fixed::<32>().ok() == Some(p.endpoint))),
                 "SSH profile exceeds current deployment consent"
             );
-            self.expires = self.expires.min(effective.1).min(validity.1);
+            self.expires = effective.1.bound(validity.1.bound(self.expires));
             self.capability(&r.grant, r.registrar, 13, (5, r.deployment))?;
         }
         Ok(r)

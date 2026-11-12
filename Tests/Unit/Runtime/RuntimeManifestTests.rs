@@ -58,7 +58,7 @@ pub(crate) fn fixture() -> Manifest {
                 operator: public(2),
                 bootstrap_digest: [23; 32],
                 software_digest: [24; 32],
-                validity: (1000, 3601000),
+                validity: (1000, 3601000).into(),
                 session_mode: 0,
                 roles: vec![Role {
                     role: 0,
@@ -189,7 +189,7 @@ fn operational_successor_requires_exact_predecessor_and_preserves_rights() {
     next.generation = 2;
     next.previous_profile = Some(wire::digest(&original.desired().unwrap()));
     next.previous_consent = Some(wire::digest(&original.unsigned_consent(0).unwrap()));
-    next.validity = (2000, 7200000);
+    next.validity = (2000, 7200000).into();
     next.clock.kernel_boot = "22345678-1234-1234-1234-123456789abc".into();
     next.software_digest = [91; 32];
     next.roles[0].image_digest = [92; 32];

@@ -24,6 +24,17 @@ pub struct Online {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Export a short-lived quorum certificate for explicit persistent bootstrap adoption.
+    Export {
+        #[command(flatten)]
+        location: Location,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        socket: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Fetch only the current network trust contract without administrative inspection authority.
     Discover {
         #[command(flatten)]
@@ -120,6 +131,9 @@ struct Spec {
     limits: [u64; 4],
     manual_review_default: bool,
     policy_authority: Vec<String>,
+    /// Exact current root grants whose lifetime is explicitly extended.
+    #[serde(default)]
+    until_withdrawn_roots: Vec<String>,
     recovery: Option<Recovery>,
 }
 fn a(v: Vec<V>) -> V {
@@ -145,7 +159,7 @@ fn policy_spec(bytes: &[u8]) -> Result<Json> {
     let p = value.array(17)?;
     let ids = |v: &V| max_ids(v);
     Ok(
-        json!({"enrolment":p[6].uint()?,"publicReading":p[7].boolean()?,"minimumRoute":p[8].uint()?,"allowedRelayDomains":ids(&p[9])?,"allowedPublicationModes":p[10].list(2)?.iter().map(V::uint).collect::<Result<Vec<_>>>()?,"defaultPublicationMode":p[11].uint()?,"limits":p[13].array(4)?.iter().map(V::uint).collect::<Result<Vec<_>>>()?,"manualReviewDefault":p[14].boolean()?,"policyAuthority":ids(&p[15])?,"recovery":null}),
+        json!({"enrolment":p[6].uint()?,"publicReading":p[7].boolean()?,"minimumRoute":p[8].uint()?,"allowedRelayDomains":ids(&p[9])?,"allowedPublicationModes":p[10].list(2)?.iter().map(V::uint).collect::<Result<Vec<_>>>()?,"defaultPublicationMode":p[11].uint()?,"limits":p[13].array(4)?.iter().map(V::uint).collect::<Result<Vec<_>>>()?,"manualReviewDefault":p[14].boolean()?,"policyAuthority":crate::authority_governance::policy_roots(p)?.iter().map(|(id,_)|hex::encode(id)).collect::<Vec<_>>(),"untilWithdrawnRoots":crate::authority_governance::policy_roots(p)?.iter().filter(|(_,r)|r.is_some()).map(|(id,_)|hex::encode(id)).collect::<Vec<_>>(),"recovery":null}),
     )
 }
 fn max_ids(value: &V) -> Result<Vec<String>> {
@@ -237,6 +251,29 @@ fn combine(payload: &[u8], paths: &[PathBuf]) -> Result<Vec<u8>> {
 }
 pub fn run(command: Command) -> Result<()> {
     match command {
+        Command::Export {
+            location,
+            key,
+            socket,
+            output,
+        } => {
+            let bootstrap = bootstrap(&location)?;
+            let mut store = Store::open(&location.directory, bootstrap.descriptor().clone())?;
+            let signer = signer(&key)?;
+            let clock = clock(&location, store.descriptor().voters())?;
+            policy::export(
+                &bootstrap,
+                &socket,
+                &signer,
+                &mut store,
+                &mut Session::new()?,
+                || clock.health(),
+                &output,
+            )?;
+            crate::print_value(
+                &json!({"state":"FreshDiscoveryPolicy", "output":output, "shortLived":true}),
+            )
+        }
         Command::Discover {
             location,
             key,
@@ -308,6 +345,19 @@ pub fn run(command: Command) -> Result<()> {
             )?;
             let mut expected = cap.dependencies;
             expected.push(old_r.reference.clone());
+            let extended = input
+                .until_withdrawn_roots
+                .iter()
+                .map(|root| context.version(102, id(root)?))
+                .collect::<Result<Vec<_>>>()?;
+            ensure!(
+                extended.windows(2).all(|p| p[0].id < p[1].id)
+                    && extended
+                        .iter()
+                        .all(|r| input.policy_authority.contains(&hex::encode(r.id))),
+                "persistent roots must be sorted, distinct current policy authorities"
+            );
+            expected.extend(extended.clone());
             if let Some(recovery) = &input.recovery {
                 let principals = recovery
                     .principals
@@ -362,7 +412,7 @@ pub fn run(command: Command) -> Result<()> {
             let r = Custody::parse(&recovery, s.network, s.incarnation)?;
             let policy_bytes = wire::encode(&a(vec![
                 V::Uint(100),
-                V::Uint(1),
+                V::Uint(if extended.is_empty() { 1 } else { 2 }),
                 b(&s.network),
                 b(&s.incarnation),
                 V::Uint(
@@ -384,7 +434,20 @@ pub fn run(command: Command) -> Result<()> {
                 reference(&r.reference),
                 a(input.limits.into_iter().map(V::Uint).collect()),
                 V::Bool(input.manual_review_default),
-                identifiers(&input.policy_authority)?,
+                a(input
+                    .policy_authority
+                    .iter()
+                    .map(|root| {
+                        let root = id(root)?;
+                        Ok(match extended.iter().find(|r| r.id == root) {
+                            Some(r) => a(vec![
+                                reference(r),
+                                crate::trust_validity::End::UntilWithdrawn.value(),
+                            ]),
+                            None => b(&root),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?),
                 snapshot.value.clone(),
             ]))?;
             let op = Operation {

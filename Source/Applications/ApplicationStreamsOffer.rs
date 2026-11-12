@@ -42,8 +42,15 @@ pub struct Arguments {
     protocol: String,
     #[arg(long)]
     not_before_ms: u64,
+    #[arg(
+        long,
+        required_unless_present = "until_withdrawn",
+        conflicts_with = "until_withdrawn"
+    )]
+    expires_ms: Option<u64>,
+    /// Keep this permission until it is withdrawn.
     #[arg(long)]
-    expires_ms: u64,
+    until_withdrawn: bool,
     #[arg(long, default_value_t = 1073741824)]
     maximum_bytes: u64,
     #[arg(long, default_value_t = 60000)]
@@ -182,7 +189,10 @@ pub fn create(a: Arguments) -> Result<()> {
             duration_ms: a.duration_ms,
             idle_ms: a.idle_ms,
         },
-        validity: (a.not_before_ms, a.expires_ms),
+        validity: crate::trust_validity::Validity(
+            a.not_before_ms,
+            crate::trust_validity::End::selected(a.expires_ms, a.until_withdrawn)?,
+        ),
         envelope: vec![],
     };
     if let Some(accepted) = previous {

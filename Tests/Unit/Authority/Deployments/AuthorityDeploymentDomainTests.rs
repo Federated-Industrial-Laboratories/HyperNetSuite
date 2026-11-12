@@ -22,7 +22,7 @@ fn updated_fixture() -> (Fixture, Vec<Vec<u8>>, Cache) {
     manifest.generation = 2;
     manifest.previous_profile = Some(wire::digest(&initial.manifest.desired().unwrap()));
     manifest.previous_consent = Some(wire::digest(&initial.manifest.unsigned_consent(0).unwrap()));
-    manifest.validity.1 = f.current.observe().unwrap().wall_ms + 3600000;
+    manifest.validity.1 = (f.current.observe().unwrap().wall_ms + 3600000).into();
     let consent = wire::sign_envelope(
         &manifest.unsigned_consent(0).unwrap(),
         &crate::authority_deployment_tests::key(90),

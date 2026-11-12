@@ -91,7 +91,7 @@ fn bootstrap_actions(now: u64, complete: bool, actions: Vec<u64>) -> Verified {
             admission_domain: "15".repeat(32),
             assurance: Assurance::Independent,
             not_before_ms: now - 10000,
-            expires_ms: now + 3600000,
+            expires_ms: (now + 3600000).into(),
         },
     };
     let draft = trust_bootstrap::draft(spec, [[20; 32], [21; 32], [22; 32], [23; 32]], now - 10000)

@@ -15,7 +15,7 @@ pub struct Offer {
     pub candidate: [u8; 32],
     pub inviter: [u8; 32],
     pub reader: VersionRef,
-    pub validity: (u64, u64),
+    pub validity: crate::trust_validity::Validity,
     pub acceptance_validity: (u64, u64),
     pub payload: Vec<u8>,
 }
@@ -30,11 +30,12 @@ fn reference(value: &V) -> Result<VersionRef> {
     proof::validate_versions(std::slice::from_ref(&reference), 1)?;
     Ok(reference)
 }
-fn span(value: &V) -> Result<(u64, u64)> {
-    let f = value.array(2)?;
-    let span = (f[0].uint()?, f[1].uint()?);
-    ensure!(span.0 < span.1, "invalid membership validity");
-    Ok(span)
+fn span(value: &V) -> Result<crate::trust_validity::Validity> {
+    crate::trust_validity::Validity::parse(value)
+}
+fn finite_span(value: &V) -> Result<(u64, u64)> {
+    let span = span(value)?;
+    Ok((span.0, span.1.finite()?))
 }
 impl Offer {
     pub fn parse(bootstrap: &Verified, bytes: &[u8], accepted: bool) -> Result<Self> {
@@ -68,7 +69,7 @@ impl Offer {
         let validity = span(&p[7])?;
         let reader = reference(&p[8])?;
         let inviter = p[9].fixed::<32>()?;
-        let acceptance_validity = span(&p[11])?;
+        let acceptance_validity = finite_span(&p[11])?;
         wire::valid_key(&candidate)?;
         wire::valid_key(&inviter)?;
         ensure!(
@@ -178,7 +179,7 @@ impl Offer {
 pub struct Invitation {
     pub member: [u8; 32],
     pub reader_grant: [u8; 32],
-    pub validity: (u64, u64),
+    pub validity: crate::trust_validity::Validity,
     pub acceptance_ms: u64,
 }
 pub fn invite(
@@ -213,10 +214,11 @@ pub fn invite(
         .wall_ms
         .saturating_sub(crate::authority_governance::UNCERTAINTY_MS)
         .max(request.validity.0);
-    let end = start
-        .checked_add(request.acceptance_ms)
-        .context("acceptance interval overflow")?
-        .min(request.validity.1);
+    let end = request.validity.1.bound(
+        start
+            .checked_add(request.acceptance_ms)
+            .context("acceptance interval overflow")?,
+    );
     let payload = wire::encode(&a(vec![
         V::Uint(200),
         V::Uint(1),
@@ -227,7 +229,7 @@ pub fn invite(
         grant[8].clone(),
         a(vec![
             V::Uint(request.validity.0),
-            V::Uint(request.validity.1),
+            request.validity.1.value(),
         ]),
         version_value(&reference),
         b(&signer.verifying_key().to_bytes()),
@@ -421,7 +423,7 @@ pub fn confirm(
         V::Null,
         b(&offer.member),
         b(&offer.candidate),
-        a(vec![V::Uint(offer.validity.0), V::Uint(offer.validity.1)]),
+        a(vec![V::Uint(offer.validity.0), offer.validity.1.value()]),
         V::Bool(false),
         version_value(&offer.reader),
         p[5].clone(),

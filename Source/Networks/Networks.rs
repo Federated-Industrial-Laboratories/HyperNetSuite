@@ -89,6 +89,9 @@ pub enum Command {
     Prepare {
         #[arg(long)]
         bootstrap: PathBuf,
+        /// Fresh native policy certificate explicitly adopting retained bootstrap roots.
+        #[arg(long)]
+        current_policy: Option<PathBuf>,
         /// Digest of the entire bootstrap, verified through an independent channel.
         #[arg(long)]
         fingerprint: String,
@@ -404,6 +407,7 @@ pub fn run(command: Command) -> Result<()> {
         }
         Command::Prepare {
             bootstrap,
+            current_policy,
             fingerprint: pin,
             minimum_route,
             publication_mode,
@@ -413,7 +417,7 @@ pub fn run(command: Command) -> Result<()> {
             let _guard = profile_lock(&destination)?;
             let bytes = files::read_single(&bootstrap, trust_wire::MAXIMUM, false)?;
             fingerprint(&bytes, &pin)?;
-            let checked = trust::check(&bytes, true, time()?)?;
+            let checked = prepare_trust(&bytes, current_policy.as_deref(), time()?)?;
             let minimum_route = if minimum_route == "Independent" {
                 trust::Assurance::Independent
             } else {
@@ -440,7 +444,7 @@ pub fn run(command: Command) -> Result<()> {
                 recovery: None,
                 joined: None,
             };
-            let checked = verify_profile(&profile, &bytes, true)?;
+            let checked = verify_profile(&profile, &bytes, current_policy.is_none())?;
             let encoded = Zeroizing::new(serde_json::to_vec(&profile)?);
             ensure!(encoded.len() <= PROFILE_LIMIT, "profile exceeds size bound");
             output(&destination, &encoded)?;
@@ -532,4 +536,23 @@ pub(crate) fn route_key(path: &Path, route: &crate::route_profile::Profile) -> R
     );
     let secret = Zeroizing::new(trust::hex32(&profile.relay_identity.secret_key)?);
     Ok(SigningKey::from_bytes(&secret))
+}
+
+fn prepare_trust(bytes: &[u8], current_policy: Option<&Path>, now: u64) -> Result<trust::Verified> {
+    match current_policy {
+        None => trust::check(bytes, true, now),
+        Some(path) => {
+            let bootstrap = trust::inspect(bytes, true)?;
+            let certificate = files::read_public_single(
+                path,
+                crate::authority_inspection::policy::certificate::LIMIT,
+            )?;
+            crate::authority_inspection::policy::certificate::verify(
+                &bootstrap,
+                &certificate,
+                now,
+            )?;
+            Ok(bootstrap)
+        }
+    }
 }

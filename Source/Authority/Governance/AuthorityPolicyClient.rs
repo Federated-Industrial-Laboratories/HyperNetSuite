@@ -5,9 +5,11 @@ use crate::authority_policies::{self as policies, Operation};
 const CURRENT: &str = "CurrentPolicy.cbor";
 const ACCEPTED: &str = "AcceptedPolicy.cbor";
 const PENDING: &str = "PendingPolicy.cbor";
+#[path = "AuthorityPolicyCertificate.rs"]
+pub mod certificate;
 #[path = "AuthorityPolicyDiscovery.rs"]
 mod discovery;
-pub use discovery::{discover, refresh_before_request};
+pub use discovery::{discover, export, refresh_before_request};
 pub(crate) use discovery::{
     refresh_before_request_with_budget, refresh_before_request_with_transport,
 };

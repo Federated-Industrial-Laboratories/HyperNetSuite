@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Application consent creates a permanent identity class with exact accepted rights.
+use crate::trust_validity::Validity;
 use crate::{
     authority_governance::{Governance, Requirement},
     authority_membership::{
@@ -23,11 +24,12 @@ fn id(value: &V) -> Result<Digest> {
     ensure!(key != [0; 32], "zero application identifier");
     Ok(key)
 }
-fn span(value: &V) -> Result<(u64, u64)> {
-    let f = value.array(2)?;
-    let result = (f[0].uint()?, f[1].uint()?);
-    ensure!(result.0 < result.1, "invalid application validity");
-    Ok(result)
+fn span(value: &V) -> Result<Validity> {
+    Validity::parse(value)
+}
+fn finite_span(value: &V) -> Result<(u64, u64)> {
+    let span = Validity::parse(value)?;
+    Ok((span.0, span.1.finite()?))
 }
 fn refs(value: &V, maximum: usize) -> Result<Vec<VersionRef>> {
     let result = value
@@ -80,7 +82,7 @@ pub struct Registration {
     pub application: Key,
     pub owner: Key,
     pub grant: VersionRef,
-    pub validity: (u64, u64),
+    pub validity: Validity,
     pub renewable: bool,
     pub reference: VersionRef,
 }
@@ -111,7 +113,7 @@ impl Registration {
         let grant = version(&f[8])?;
         let validity = span(&f[9])?;
         ensure!(
-            application != owner && grant.kind == 102 && validity.1 - validity.0 <= 604800000,
+            application != owner && grant.kind == 102 && validity.bounded_duration(604800000),
             "invalid application identity or grant"
         );
         Snapshot::parse(&f[10])?;
@@ -155,7 +157,7 @@ pub struct Acceptance {
     pub application: Key,
     pub owner: Key,
     pub grant: VersionRef,
-    pub validity: (u64, u64),
+    pub validity: Validity,
     pub acceptance_validity: (u64, u64),
     #[cfg(test)]
     pub payload: Vec<u8>,
@@ -190,11 +192,11 @@ impl Acceptance {
         let grant = version(&f[7])?;
         let validity = span(&f[8])?;
         id(&f[9])?;
-        let acceptance_validity = span(&f[10])?;
+        let acceptance_validity = finite_span(&f[10])?;
         ensure!(
             application != owner
                 && grant.kind == 102
-                && validity.1 - validity.0 <= 604800000
+                && validity.bounded_duration(604800000)
                 && acceptance_validity.1 - acceptance_validity.0 <= 86400000
                 && acceptance_validity.0 >= validity.0
                 && acceptance_validity.1 <= validity.1,
@@ -226,7 +228,7 @@ pub struct Renewal {
     pub admission: VersionRef,
     pub owner: Key,
     pub grant: VersionRef,
-    pub validity: (u64, u64),
+    pub validity: Validity,
     pub acceptance_validity: (u64, u64),
 }
 impl Renewal {
@@ -253,12 +255,12 @@ impl Renewal {
         let grant = version(&f[7])?;
         let validity = span(&f[8])?;
         id(&f[9])?;
-        let acceptance_validity = span(&f[10])?;
+        let acceptance_validity = finite_span(&f[10])?;
         ensure!(
             admission.kind == 127
                 && grant.kind == 102
                 && admission.id != owner
-                && validity.1 - validity.0 <= 604800000
+                && validity.bounded_duration(604800000)
                 && acceptance_validity.1 - acceptance_validity.0 <= 86400000
                 && acceptance_validity.0 >= validity.0
                 && acceptance_validity.1 <= validity.1,
@@ -492,7 +494,7 @@ impl Operation {
             f[5] = b(&consent.admission.digest);
             f[9] = a(vec![
                 V::Uint(consent.validity.0),
-                V::Uint(consent.validity.1),
+                consent.validity.1.value(),
             ]);
             f[10] = snapshot.value.clone();
             return Ok(Some(wire::encode(&a(f))?));
@@ -518,7 +520,7 @@ impl Operation {
                 b(&c.application),
                 b(&c.owner),
                 reference(&c.grant),
-                a(vec![V::Uint(c.validity.0), V::Uint(c.validity.1)]),
+                a(vec![V::Uint(c.validity.0), c.validity.1.value()]),
                 snapshot.value.clone(),
             ]),
             Self::Withdraw {
@@ -874,10 +876,10 @@ impl Operation {
                     } else {
                         decision.refuse(3);
                     }
-                    decision.expires_ms = decision
-                        .expires_ms
-                        .min(consent.acceptance_validity.1)
-                        .min(consent.validity.1);
+                    decision.expires_ms = consent
+                        .validity
+                        .1
+                        .bound(decision.expires_ms.min(consent.acceptance_validity.1));
                     decision.admission = Some(consent.application);
                     decision.dependencies.sort_by_key(VersionRef::index);
                     decision.dependencies.dedup();
@@ -981,10 +983,10 @@ impl Operation {
                     if exact && decision.dependencies != intent.expected {
                         decision.refuse(12);
                     }
-                    decision.expires_ms = decision
-                        .expires_ms
-                        .min(consent.acceptance_validity.1)
-                        .min(consent.validity.1);
+                    decision.expires_ms = consent
+                        .validity
+                        .1
+                        .bound(decision.expires_ms.min(consent.acceptance_validity.1));
                 }
                 decision.dependencies.push(created);
                 let dependencies = decision.dependencies.clone();

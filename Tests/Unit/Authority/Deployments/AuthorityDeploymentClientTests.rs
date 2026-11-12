@@ -168,7 +168,7 @@ fn offer_for_roles(f: &Fixture, roles: &[u64]) -> Offer {
     m.placement.volumes = m.volumes.iter().map(|v| v.volume_id).collect();
     m.authority_config = None;
     let now = f.current.observe().unwrap().wall_ms;
-    m.validity = (now - 10000, now + 3600000);
+    m.validity = (now - 10000, now + 3600000).into();
     let consent = wire::sign_envelope(
         &m.unsigned_consent(0).unwrap(),
         &crate::authority_deployment_tests::key(90),
@@ -198,7 +198,7 @@ fn offer_for_roles(f: &Fixture, roles: &[u64]) -> Offer {
                     *class,
                     k.verifying_key().to_bytes(),
                     [120; 32],
-                    m.validity,
+                    (m.validity.0, m.validity.1.finite().unwrap()),
                 )
                 .unwrap(),
                 &k,
@@ -1214,7 +1214,7 @@ fn operational_successor_prepares_from_certified_context_and_replaces_cached_gen
     manifest.previous_profile = Some(wire::digest(&initial.manifest.desired().unwrap()));
     manifest.previous_consent = Some(wire::digest(&initial.manifest.unsigned_consent(0).unwrap()));
     let now = f.current.observe().unwrap().wall_ms;
-    manifest.validity.1 = now + 3600000;
+    manifest.validity.1 = (now + 3600000).into();
     let consent = wire::sign_envelope(
         &manifest.unsigned_consent(0).unwrap(),
         &crate::authority_deployment_tests::key(90),
@@ -1265,7 +1265,7 @@ fn successor_cache_failure_reopens_and_completes_the_exact_registration() {
     manifest.generation = 2;
     manifest.previous_profile = Some(wire::digest(&initial.manifest.desired().unwrap()));
     manifest.previous_consent = Some(wire::digest(&initial.manifest.unsigned_consent(0).unwrap()));
-    manifest.validity.1 += 2000;
+    manifest.validity.1 = (manifest.validity.1.finite().unwrap() + 2000).into();
     let consent = wire::sign_envelope(
         &manifest.unsigned_consent(0).unwrap(),
         &crate::authority_deployment_tests::key(90),

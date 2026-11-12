@@ -63,7 +63,9 @@ Refresh `applications context` with `--child CHILD_GRANT_ID`. Prepare the exact
 offer using `applications offer`, the owner's common arguments except `--socket`,
 and `--parent`, `--tier`, `--grant CHILD_GRANT_ID`, `--not-before-ms`,
 `--expires-ms`, and `--output Exchange/Offer.cbor`. The application's validity
-must lie inside the grant and span at most seven days. Optional `--acceptance-ms`
+must lie inside the grant. Finite intervals span at most seven days;
+[until-withdrawn access](PersistentAccess.md) is explicitly selected with
+`--until-withdrawn` and requires a compatible permanent parent chain. Optional `--acceptance-ms`
 bounds the consent window; its default is one hour and maximum is24hours.
 
 Deliver only this offer to the application. Inspect and accept it offline:

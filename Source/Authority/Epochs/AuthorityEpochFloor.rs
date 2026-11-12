@@ -18,6 +18,12 @@ impl Stored {
     }
 }
 impl Store {
+    /// Export only public, authenticated epoch succession evidence.
+    pub fn epoch_archive(&self) -> Result<Vec<archive::Activated>> {
+        self.unchanged()?;
+        Ok(self.stored.epochs.clone())
+    }
+
     /// Historical descriptors authenticate receipts; they do not authorise new effects.
     pub fn descriptor_for_scope(
         &self,
