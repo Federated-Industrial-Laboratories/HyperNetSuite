@@ -218,10 +218,12 @@ fn cleanup_cycles(host: &Host<'_>, folder: &Path, current: u64, join: bool) -> R
         let number = if join {
             name.strip_prefix("JoinRoute")
         } else {
-            name.strip_prefix("Recovery")
+            name.strip_prefix("RecoveryTls")
+                .or_else(|| name.strip_prefix("Recovery"))
                 .or_else(|| name.strip_prefix("Owned"))
         }
         .and_then(|s| s.strip_suffix(".json"))
+        .and_then(|s| s.split('-').next())
         .and_then(|s| s.parse::<u64>().ok());
         if number.is_some_and(|n| n.saturating_add(1) < current) {
             if name.starts_with("Owned") {
@@ -233,6 +235,393 @@ fn cleanup_cycles(host: &Host<'_>, folder: &Path, current: u64, join: bool) -> R
     }
     Ok(())
 }
+fn selected_template(host: &Host<'_>) -> Result<Option<std::path::PathBuf>> {
+    host.remembered("receiver-route-template")
+        .map(|selected| {
+            let path = std::path::PathBuf::from(string(&selected, "path")?);
+            ensure!(
+                path.starts_with(host.p("Successor/Certificates")) && path.canonicalize()? == path,
+                "receiver certificate template escapes the reviewed successor directory"
+            );
+            crate::admission::private::directory(
+                path.parent().context("receiver template parent absent")?,
+            )?;
+            ensure!(
+                digest(&files::read(&path, 600000)?) == string(&selected, "sha256")?,
+                "receiver certificate template differs from its retained digest"
+            );
+            Ok(path)
+        })
+        .transpose()
+}
+fn route_record(route: &crate::route_profile::Profile) -> Result<crate::authority_domains::Record> {
+    route.validate()?;
+    let record =
+        crate::authority_domains::Record::parse(&route.voucher, route.network, route.incarnation)?;
+    ensure!(
+        record.reference.kind == 166,
+        "receiver route lacks a voucher"
+    );
+    Ok(record)
+}
+fn same_allowance(
+    original: &crate::authority_domains::Record,
+    successor: &crate::authority_domains::Record,
+) -> Result<()> {
+    use crate::authority_domains::routes::Voucher;
+    let old = Voucher::parse(&original.payload)?;
+    let new = Voucher::parse(&successor.payload)?;
+    ensure!(
+        original.reference.id == successor.reference.id
+            && successor.reference.generation > original.reference.generation
+            && old.sponsor == new.sponsor
+            && old.possession == new.possession
+            && old.grant == new.grant
+            && old.relay.id == new.relay.id
+            && old.destination.id == new.destination.id
+            && old.action == new.action
+            && old.scope == new.scope
+            && old.connections == new.connections
+            && old.bytes == new.bytes
+            && old.expires == new.expires
+            && old.baseline.unwrap_or((0, 0)) == new.baseline.unwrap_or((0, 0)),
+        "receiver certificate refresh changed its identity, expiry or allowance"
+    );
+    Ok(())
+}
+fn exact_voucher_args(
+    record: &crate::authority_domains::Record,
+    template: &Path,
+    output: &Path,
+) -> Result<Vec<String>> {
+    let old = crate::authority_domains::routes::Voucher::parse(&record.payload)?;
+    Ok(bytes(&[
+        "--grant",
+        &hex::encode(old.grant.id),
+        "--id",
+        &hex::encode(record.reference.id),
+        "--relay",
+        &hex::encode(old.relay.id),
+        "--destination",
+        &hex::encode(old.destination.id),
+        "--possession",
+        &hex::encode(old.possession),
+        "--action",
+        &old.action.to_string(),
+        "--scope-kind",
+        &old.scope.0.to_string(),
+        "--scope",
+        &hex::encode(old.scope.1),
+        "--connections",
+        &old.connections.to_string(),
+        "--bytes",
+        &old.bytes.to_string(),
+        "--expires-ms",
+        &old.expires.to_string(),
+        "--route-template",
+        &text(template)?,
+        "--output",
+        &text(output)?,
+    ]))
+}
+fn cleanup_certificates(host: &Host<'_>, folder: &Path, generation: u64) -> Result<()> {
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let old = name
+            .strip_prefix("CertificateOriginal")
+            .or_else(|| name.strip_prefix("CertificateOwned"))
+            .or_else(|| name.strip_prefix("CertificateRecovery"))
+            .and_then(|v| v.strip_suffix(".json"))
+            .and_then(|v| v.parse::<u64>().ok());
+        if old.is_some_and(|old| old.saturating_add(1) < generation) {
+            if name.starts_with("CertificateRecovery") {
+                retire_export(host, "Administrator", &entry.path())?;
+            } else {
+                files::remove(&entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+// Initial setup can stop after owner transport is retained but before the receiver
+// signs its own voucher. Refresh that transport without rewriting the exact cycle.
+fn recovery_transport(
+    host: &mut Host<'_>,
+    folder: &Path,
+    template: &Path,
+    cycle: &mut Value,
+    original: &Path,
+) -> Result<std::path::PathBuf> {
+    let selected_bytes = files::read(template, 600000)?;
+    let selected: crate::route_profile::Profile = serde_json::from_slice(&selected_bytes)?;
+    let route: crate::route_profile::Profile =
+        serde_json::from_slice(&files::read(original, 600000)?)?;
+    if route.relay == selected.relay && route.destination == selected.destination {
+        return Ok(original.into());
+    }
+    let old = route_record(&route)?;
+    let generation = number(cycle, "generation")?;
+    let template_digest = digest(&selected_bytes);
+    let previous = cycle.get("transport").cloned();
+    let mut transport = if let Some(value) = previous.as_ref()
+        && value["template"] == template_digest
+    {
+        value.clone()
+    } else {
+        ensure!(
+            previous.as_ref().is_none_or(|p| p["complete"] == true),
+            "finish the exact pending owner transport refresh first"
+        );
+        let revision = previous
+            .as_ref()
+            .map(|p| number(p, "revision"))
+            .transpose()?
+            .unwrap_or(0)
+            .checked_add(1)
+            .context("receiver transport refresh exhausted")?;
+        let value = json!({"revision":revision,"template":template_digest,"complete":false});
+        cycle["transport"] = value.clone();
+        host.remember("receiver-cycle", cycle.clone())?;
+        value
+    };
+    let revision = number(&transport, "revision")?;
+    let output = folder.join(format!("RecoveryTls{generation}-{revision}.json"));
+    if !output.exists() {
+        owner_route(host, exact_voucher_args(&old, template, &output)?)?;
+    }
+    let encoded = files::read(&output, 600000)?;
+    let refreshed: crate::route_profile::Profile = serde_json::from_slice(&encoded)?;
+    same_allowance(&old, &route_record(&refreshed)?)?;
+    ensure!(
+        refreshed.relay == selected.relay && refreshed.destination == selected.destination,
+        "receiver owner transport differs from reviewed certificates"
+    );
+    if transport["complete"] == true {
+        ensure!(
+            transport["sha256"] == digest(&encoded),
+            "receiver owner transport changed after retention"
+        );
+    } else {
+        transport["complete"] = json!(true);
+        transport["sha256"] = json!(digest(&encoded));
+        cycle["transport"] = transport;
+        host.remember("receiver-cycle", cycle.clone())?;
+    }
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.strip_prefix(&format!("RecoveryTls{generation}-")))
+            .and_then(|s| s.strip_suffix(".json"))
+            .and_then(|s| s.parse::<u64>().ok())
+            .is_some_and(|old| old.saturating_add(1) < revision)
+        {
+            retire_export(host, "Administrator", &entry.path())?;
+        }
+    }
+    Ok(output)
+}
+fn reusable_recovery(
+    host: &Host<'_>,
+    folder: &Path,
+    selected: &crate::route_profile::Profile,
+    now: u64,
+) -> Result<Option<Vec<u8>>> {
+    let Some(cycle) = host.remembered("receiver-cycle") else {
+        return Ok(None);
+    };
+    let generation = number(&cycle, "generation")?;
+    let path = if cycle["transport"]["complete"] == true {
+        folder.join(format!(
+            "RecoveryTls{generation}-{}.json",
+            number(&cycle["transport"], "revision")?
+        ))
+    } else {
+        folder.join(format!("Recovery{generation}.json"))
+    };
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let encoded = files::read(&path, 600000)?;
+    if cycle["transport"]["complete"] == true {
+        ensure!(
+            cycle["transport"]["sha256"] == digest(&encoded),
+            "retained receiver recovery transport changed"
+        );
+    }
+    let route: crate::route_profile::Profile = serde_json::from_slice(&encoded)?;
+    let record = route_record(&route)?;
+    let voucher = crate::authority_domains::routes::Voucher::parse(&record.payload)?;
+    if route.relay == selected.relay
+        && route.destination == selected.destination
+        && voucher.expires > now.saturating_add(1250)
+    {
+        Ok(Some(encoded))
+    } else {
+        Ok(None)
+    }
+}
+/// A stopped receiver changes only its certified TLS references within the original allowance.
+pub(super) fn refresh_certificates(host: &mut Host<'_>) -> Result<()> {
+    let Some(template) = selected_template(host)? else {
+        return Ok(());
+    };
+    if host.remembered("receiver-joined").is_none() {
+        return Ok(());
+    }
+    ensure!(
+        !units::active(host, "receiver")?,
+        "stop the receiver before refreshing its certificates"
+    );
+    let folder = host.dir("ReceiverClient")?;
+    let profile = folder.join("Profile.json");
+    let selected: crate::route_profile::Profile =
+        serde_json::from_slice(&files::read(&template, 600000)?)?;
+    let template_digest = digest(&files::read(&template, 600000)?);
+    let endpoint =
+        crate::private_route_client::Endpoint::load(&folder.join("Joined/AuthorityRoute.json"))?;
+    let current = clock_now(&host.c.root)?;
+    let prior = host.remembered("receiver-certificate-refresh");
+    let mut plan = if let Some(plan) = &prior
+        && plan["complete"] != true
+    {
+        ensure!(
+            plan["template"] == template_digest,
+            "finish the exact pending receiver certificate refresh first"
+        );
+        plan.clone()
+    } else {
+        let record = route_record(&endpoint.route)?;
+        let voucher = crate::authority_domains::routes::Voucher::parse(&record.payload)?;
+        if voucher.expires <= current {
+            return prepare(host);
+        }
+        if endpoint.route.relay == selected.relay
+            && endpoint.route.destination == selected.destination
+        {
+            return Ok(());
+        }
+        if hex::encode(voucher.sponsor) != string(&host.state.results["Receiver"], "publicKey")? {
+            // Normal setup retains a reviewed owner/candidate transport before it creates
+            // receiver authority. Its exact cycle owns the transport successor and own Issue.
+            return prepare(host);
+        }
+        ensure!(
+            hex::encode(record.reference.id) == host.id("receiver-authority-route")?,
+            "retained receiver authority voucher has another identifier"
+        );
+        let generation = prior
+            .as_ref()
+            .map(|p| number(p, "generation"))
+            .transpose()?
+            .unwrap_or(0)
+            .checked_add(1)
+            .context("receiver certificate refresh exhausted")?;
+        let original = folder.join(format!("CertificateOriginal{generation}.json"));
+        let encoded = serde_json::to_vec(&endpoint.route)?;
+        files::exact_file(&original, &encoded)?;
+        let plan = json!({"generation":generation,"template":template_digest,"expires":voucher.expires,
+            "originalSha256":digest(&encoded),"complete":false});
+        host.remember("receiver-certificate-refresh", plan.clone())?;
+        plan
+    };
+    let generation = number(&plan, "generation")?;
+    let original = files::read(
+        &folder.join(format!("CertificateOriginal{generation}.json")),
+        600000,
+    )?;
+    ensure!(
+        digest(&original) == string(&plan, "originalSha256")?,
+        "receiver certificate refresh original changed"
+    );
+    let original: crate::route_profile::Profile = serde_json::from_slice(&original)?;
+    let record = route_record(&original)?;
+    let old = crate::authority_domains::routes::Voucher::parse(&record.payload)?;
+    ensure!(
+        old.expires == number(&plan, "expires")?,
+        "receiver certificate refresh deadline changed"
+    );
+    let recovery = folder.join(format!("CertificateRecovery{generation}.json"));
+    let output = folder.join(format!("CertificateOwned{generation}.json"));
+    let owner_id = host.id("receiver-recovery-route")?;
+    let request = host.suite(&bytes(&[
+        "network",
+        "inspect-request",
+        "--request",
+        &text(&folder.join("Request.cbor"))?,
+    ]))?;
+    if old.expires <= current {
+        // Both exact pending issuances used this expiry. Resolve owner locally; normal
+        // prepare then obtains fresh transport and resolves the receiver's expired issue.
+        recover_owner(host, &owner_id, || {
+            owner_route(
+                host,
+                route_args(
+                    host,
+                    &owner_id,
+                    &request,
+                    (&host.root_grant()?, 0),
+                    old.expires,
+                    &template,
+                    &recovery,
+                )?,
+            )
+        })?;
+        // Retire this expired plan before normal setup; its native pending requests
+        // remain in their floors. A later live voucher may need its own exact plan.
+        plan["complete"] = json!(true);
+        plan["expired"] = json!(true);
+        host.remember("receiver-certificate-refresh", plan)?;
+        prepare(host)?;
+        return cleanup_certificates(host, &folder, generation);
+    } else {
+        if !recovery.exists()
+            && plan["recoveryStarted"] != true
+            && let Some(encoded) = reusable_recovery(host, &folder, &selected, current)?
+        {
+            files::exact_file(&recovery, &encoded)?;
+        }
+        if !recovery.exists() {
+            plan["recoveryStarted"] = json!(true);
+            host.remember("receiver-certificate-refresh", plan.clone())?;
+            owner_route(
+                host,
+                route_args(
+                    host,
+                    &owner_id,
+                    &request,
+                    (&host.root_grant()?, 0),
+                    old.expires,
+                    &template,
+                    &recovery,
+                )?,
+            )?;
+        }
+        retain(host, &profile, &recovery)?;
+        if !output.exists() {
+            own_route(
+                host,
+                &profile,
+                exact_voucher_args(&record, &template, &output)?,
+            )?;
+        }
+        let refreshed: crate::route_profile::Profile =
+            serde_json::from_slice(&files::read(&output, 600000)?)?;
+        same_allowance(&record, &route_record(&refreshed)?)?;
+        ensure!(
+            refreshed.relay == selected.relay && refreshed.destination == selected.destination,
+            "receiver certificate output differs from the reviewed template"
+        );
+        retain(host, &profile, &output)?;
+    }
+    plan["complete"] = json!(true);
+    host.remember("receiver-certificate-refresh", plan)?;
+    cleanup_certificates(host, &folder, generation)
+}
+
 pub fn prepare(host: &mut Host<'_>) -> Result<()> {
     if units::active(host, "receiver")? {
         let status = companion_status(&host.c.root, &host.state)?;
@@ -348,23 +737,7 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
         ]));
         host.suite(&a)?;
     }
-    let template = if let Some(selected) = host.remembered("receiver-route-template") {
-        let path = std::path::PathBuf::from(string(&selected, "path")?);
-        ensure!(
-            path.starts_with(host.p("Successor/Certificates")) && path.canonicalize()? == path,
-            "receiver certificate template escapes the reviewed successor directory"
-        );
-        crate::admission::private::directory(
-            path.parent().context("receiver template parent absent")?,
-        )?;
-        ensure!(
-            digest(&files::read(&path, 600000)?) == string(&selected, "sha256")?,
-            "receiver certificate template differs from its retained digest"
-        );
-        path
-    } else {
-        template
-    };
+    let template = selected_template(host)?.unwrap_or(template);
     let joined = folder.join("Joined");
     if host.remembered("receiver-joined").is_none() {
         let offer = folder.join("Offer.cbor");
@@ -528,6 +901,13 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
         )?;
         let voucher = crate::authority_domains::routes::Voucher::parse(&record.payload)?;
         if hex::encode(voucher.sponsor) == subject && voucher.expires > clock_now(&host.c.root)? {
+            let selected: crate::route_profile::Profile =
+                serde_json::from_slice(&files::read(&template, 600000)?)?;
+            if endpoint.route.relay != selected.relay
+                || endpoint.route.destination != selected.destination
+            {
+                refresh_certificates(host)?;
+            }
             host.remember("receiver-native", receiver)?;
             return Ok(());
         }
@@ -583,6 +963,7 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
             )?,
         )?;
     }
+    let recovery = recovery_transport(host, &folder, &template, &mut cycle, &recovery)?;
     retain(host, &profile, &recovery)?;
     if cycle["ownStarted"] != true {
         // A fresh owner transport permits resolving the receiver's old signed request without
@@ -647,74 +1028,17 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
         json!({"profile":profile,"member":subject,"directory":joined.join("Requester"),
         "authorityRoute":joined.join("AuthorityRoute.json"),"readerGrant":reader}),
     )?;
+    // An already exported own result may predate a certificate transaction. Preserve
+    // that exact completion first, then refresh only its TLS within the same allowance.
+    let selected: crate::route_profile::Profile =
+        serde_json::from_slice(&files::read(&template, 600000)?)?;
+    let own: crate::route_profile::Profile = serde_json::from_slice(&files::read(&own, 600000)?)?;
+    if own.relay != selected.relay || own.destination != selected.destination {
+        refresh_certificates(host)?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn exhausted_receiver_waits_for_original_expiry_before_recovery() {
-        let mut route = json!({"state":"quotaExhausted","expiresAtMs":5000,"recoveryAfterMs":5000});
-        assert!(!expired_route(&route, 4999).unwrap());
-        assert!(expired_route(&route, 5000).unwrap());
-        route["recoveryAfterMs"] = json!(1000);
-        assert!(expired_route(&route, 5000).is_err());
-        route["state"] = json!("current");
-        route["recoveryAfterMs"] = Value::Null;
-        assert!(expired_route(&route, 5000).unwrap());
-    }
-    #[test]
-    fn interrupted_recovery_replays_discovery_but_never_advances_waiting_or_uncertain_work() {
-        use std::cell::Cell;
-        let calls = Cell::new(0);
-        let replayed = Cell::new(false);
-        resolve_expired(
-            None,
-            || {
-                calls.set(calls.get() + 1);
-                if !replayed.get() {
-                    anyhow::bail!("pending RouteContext")
-                }
-                Ok(json!({"state":"RouteIssueRecovery","status":"Recovered"}))
-            },
-            || {
-                replayed.set(true);
-                anyhow::bail!("exact old issuance is expired")
-            },
-        )
-        .unwrap();
-        assert_eq!(calls.get(), 2);
-        assert_eq!(
-            unrecorded_expiry(
-                &json!({"state":"RouteIssueRecovery","status":"Waiting","expiresAtMs":5000}),
-                10000
-            )
-            .unwrap(),
-            5000
-        );
-        resolve_expired(
-            Some(5000),
-            || Ok(json!({"state":"RouteIssueRecovery","status":"Waiting","expiresAtMs":5000})),
-            || panic!("current exact command resumes outside recovery"),
-        )
-        .unwrap();
-        for status in ["Waiting", "RecoveryPending"] {
-            assert!(
-                resolve_expired(
-                    None,
-                    || Ok(json!({"state":"RouteIssueRecovery","status":status})),
-                    || panic!("live/uncertain request must not be replayed")
-                )
-                .is_err()
-            );
-        }
-        assert!(resolve_expired(None, || anyhow::bail!("unavailable"), || Ok(())).is_err());
-        let old = json!({"generation":7,"expires":5000,"complete":false,"previous":{"generation":6,"expires":1000}});
-        assert!(new_cycle(&old, 10000, 4999).is_err());
-        assert!(new_cycle(&old, 5000, 5000).is_err());
-        let next = new_cycle(&old, 10000, 5000).unwrap();
-        assert_eq!(next["previous"], json!({"generation":7,"expires":5000}));
-        assert_eq!(old["complete"], false);
-    }
-}
+#[path = "../../Tests/Unit/NativeHost/ReceiverTests.rs"]
+mod tests;
