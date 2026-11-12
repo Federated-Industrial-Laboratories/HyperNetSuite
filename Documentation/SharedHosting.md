@@ -124,6 +124,14 @@ An interrupted activation retains its exact request until the native completion
 is verified and reported. Completed request and receipt exports are bounded to
 the current and previous activations; native requester floors remain intact.
 
+A private receiver interrupted beyond a finite route deadline resolves only its
+own exact expired issuance before obtaining fresh transport. The host records
+selected deadlines before sending, retains the original member invitation and
+keys, and preserves requester floors and unresolved effects. A live exhausted
+allowance waits for its original expiry. Current and previous recovery exports
+are retained until a successor completes. Expired finite host or membership
+consent still requires its normal reviewed successor.
+
 For operation after logout and reboot, enable unattended user services from the
 dashboard. The desktop may request administrator authentication for this local
 system setting. The host supervisor uses service restart with backoff, without a

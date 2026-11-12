@@ -78,6 +78,13 @@ pub enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Fence only an expired interrupted Issue or Handover for this exact voucher identifier.
+    RecoverExpiredIssue {
+        #[command(flatten)]
+        online: Online,
+        #[arg(long)]
+        id: String,
+    },
     /// Register a pending candidate offer; this permits only its scoped join workflow.
     Invite {
         #[command(flatten)]
@@ -109,29 +116,31 @@ struct Client {
     socket: PathBuf,
 }
 impl Client {
-    fn new(online: &Online) -> Result<Self> {
+    fn open(online: &Online) -> Result<Self> {
         let bootstrap = control::bootstrap(&online.location)?;
-        let mut store = Store::open(&online.location.directory, bootstrap.descriptor().clone())?;
+        let store = Store::open(&online.location.directory, bootstrap.descriptor().clone())?;
         let clock = control::clock(&online.location, store.descriptor().voters())?;
         let key = domain_cli::signer(&online.key)?;
         store.require_requester(key.verifying_key().to_bytes())?;
-        let mut session = Session::new()?;
-        stream_client::resolve_refusal_local(
-            &store.descriptor().clone(),
-            &online.socket,
-            &key,
-            &mut store,
-            &mut session,
-            || clock.health(),
-        )?;
-        let mut client = Self {
+        Ok(Self {
             bootstrap,
             store,
-            session,
+            session: Session::new()?,
             key,
             clock,
             socket: online.socket.clone(),
-        };
+        })
+    }
+    fn new(online: &Online) -> Result<Self> {
+        let mut client = Self::open(online)?;
+        stream_client::resolve_refusal_local(
+            &client.store.descriptor().clone(),
+            &online.socket,
+            &client.key,
+            &mut client.store,
+            &mut client.session,
+            || client.clock.health(),
+        )?;
         if let Some(pending) = client.store.resume_ordinary()? {
             let intent = crate::authority_proof::Intent::from_signed(pending.signed())?;
             if intent.action == "AuthorityDomain" {
@@ -178,10 +187,94 @@ impl Client {
         Ok(())
     }
 }
+fn issue_expiry(intent: &crate::authority_proof::Intent, identifier: Digest) -> Result<u64> {
+    ensure!(
+        intent.action == "AuthorityDomain",
+        "pending request is not route issuance"
+    );
+    let (actual, expires) = match domain::Operation::parse(intent)?.command {
+        domain::Command::Route(routes::Command::Issue { id, expires, .. }) => (id, expires),
+        domain::Command::Route(routes::Command::Handover { voucher, expires }) => {
+            (voucher.id, expires)
+        }
+        _ => anyhow::bail!(
+            "pending request is not Issue or Handover; resume its exact normal command"
+        ),
+    };
+    ensure!(
+        actual == identifier && expires > 0,
+        "pending route issuance has another identifier"
+    );
+    Ok(expires)
+}
+fn recovery_stream(
+    intent: &crate::authority_proof::Intent,
+    metadata: &crate::authority_proof::OwnStreamMetadata,
+) -> Result<()> {
+    let state = metadata
+        .state()
+        .context("requester has no admitted stream")?;
+    ensure!(
+        metadata.scope().network == intent.network
+            && metadata.scope().incarnation == intent.incarnation
+            && metadata.requester() == intent.requester
+            && state.generation == intent.generation
+            && state.generation_id == intent.generation_id,
+        "expired issuance belongs to another current stream generation; retain its unresolved outcome"
+    );
+    Ok(())
+}
+fn recover_expired(online: &Online, identifier: &str) -> Result<()> {
+    let identifier = id(identifier)?;
+    let mut c = Client::open(online)?;
+    let fencing = c.store.resume_fence()?.is_some();
+    let pending = if fencing {
+        c.store.fence_subject()?
+    } else {
+        c.store.resume_ordinary()?
+    };
+    let Some(pending) = pending else {
+        ensure!(
+            !fencing,
+            "outstanding fence has no retained route issuance; resume the exact explicit fence"
+        );
+        return crate::print_value(
+            &json!({"state":"RouteIssueRecovery","status":"NothingPending","id":hex::encode(identifier)}),
+        );
+    };
+    let intent = crate::authority_proof::Intent::from_signed(pending.signed())?;
+    let expires = issue_expiry(&intent, identifier)?;
+    let now = c.clock.health()?.observe()?.wall_ms;
+    if now < expires {
+        return crate::print_value(
+            &json!({"state":"RouteIssueRecovery","status":"Waiting","id":hex::encode(identifier),
+            "pendingRequest":hex::encode(intent.digest),"expiresAtMs":expires}),
+        );
+    }
+    let result = stream_client::fence_local_guarded(
+        &c.store.descriptor().clone(),
+        &c.socket,
+        &c.key,
+        &mut c.store,
+        &mut c.session,
+        || c.clock.health(),
+        |metadata| recovery_stream(&intent, metadata),
+    )?;
+    let crate::authority_proof::StreamResponse::Fence { outcome, .. } = result else {
+        anyhow::bail!("route recovery returned another stream control result");
+    };
+    let complete = c.store.resume_fence()?.is_none() && c.store.resume_ordinary()?.is_none();
+    crate::print_value(
+        &json!({"state":"RouteIssueRecovery","status":if complete {"Recovered"} else {"RecoveryPending"},
+        "id":hex::encode(identifier),"pendingRequest":hex::encode(intent.digest),"expiresAtMs":expires,
+        "outcome":format!("{outcome:?}"),"committedHeight":c.store.prefix().height()}),
+    )
+}
 pub fn run(command: Command) -> Result<()> {
     let command = match command {
         Command::Profile(arguments) => return authoring::profile(arguments),
         Command::Template(arguments) => return authoring::template(arguments),
+        Command::RecoverExpiredIssue { online, id } => return recover_expired(&online, &id),
         command => command,
     };
     let online = match &command {
@@ -190,14 +283,14 @@ pub fn run(command: Command) -> Result<()> {
         | Command::Issue { online, .. }
         | Command::Invite { online, .. }
         | Command::Withdraw { online, .. } => online,
-        Command::Profile(_) | Command::Template(_) => {
+        Command::Profile(_) | Command::Template(_) | Command::RecoverExpiredIssue { .. } => {
             unreachable!("offline route command was handled")
         }
     };
     let mut c = Client::new(online)?;
     let mut issued = None;
     let result = match command {
-        Command::Profile(_) | Command::Template(_) => {
+        Command::Profile(_) | Command::Template(_) | Command::RecoverExpiredIssue { .. } => {
             unreachable!("offline route command was handled")
         }
         Command::Register { grant, profile, .. } => {
@@ -403,3 +496,7 @@ pub fn run(command: Command) -> Result<()> {
             "result":control::diagnostic(result.value),"issuedRoute":issued}),
     )
 }
+
+#[cfg(test)]
+#[path = "../../Tests/Unit/Routing/PrivateRouteRecoveryTests.rs"]
+mod recovery_tests;

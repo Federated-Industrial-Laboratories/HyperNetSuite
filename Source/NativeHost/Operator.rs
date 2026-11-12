@@ -260,7 +260,7 @@ pub fn operator(host: &Host<'_>, who: &str, arguments: &[String]) -> Result<Valu
         ),
         Some("routes") => matches!(
             arguments.get(1).map(String::as_str),
-            Some("register" | "issue" | "invite")
+            Some("register" | "issue" | "invite" | "recover-expired-issue")
         ),
         Some("streams") => matches!(
             arguments.get(1).map(String::as_str),

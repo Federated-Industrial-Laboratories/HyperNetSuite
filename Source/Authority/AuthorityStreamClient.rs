@@ -221,13 +221,28 @@ pub fn fence_local(
     signer: &SigningKey,
     store: &mut Store,
     session: &mut Session,
+    clock: impl FnMut() -> Result<ClockHealth>,
+) -> Result<StreamResponse> {
+    fence_local_guarded(descriptor, path, signer, store, session, clock, |_| Ok(()))
+}
+
+/// Limit a newly prepared fence using its authenticated comparison; retries retain exact bytes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fence_local_guarded(
+    descriptor: &TrustDescriptor,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
     mut clock: impl FnMut() -> Result<ClockHealth>,
+    guard: impl FnOnce(&OwnStreamMetadata) -> Result<()>,
 ) -> Result<StreamResponse> {
     store.require_requester(signer.verifying_key().to_bytes())?;
     let prepared = if let Some(pending) = store.resume_fence()? {
         pending
     } else {
         let metadata = status_local(descriptor, path, signer, store, session, &mut clock)?;
+        guard(&metadata)?;
         let state = metadata
             .state()
             .context("requester has no admitted stream")?;
