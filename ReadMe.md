@@ -98,6 +98,10 @@ and follow [signed offline installation](Documentation/Installation.md#signed-of
 Authenticate the publisher independently and follow the required update-trust
 procedure before installing a package.
 
+For a [coordinated Core/Suite package](Documentation/Installation.md#coordinated-first-installation),
+run `bash Tools/Install.sh` without a prefix. It installs the verified pair,
+registers the desktop link handler and opens **Join a server**.
+
 ### Build from source
 
 From an authenticated checkout with the build prerequisites installed:

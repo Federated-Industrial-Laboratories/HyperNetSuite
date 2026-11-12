@@ -126,11 +126,15 @@ signed Core and Suite 0.11.0 archives, archive signatures, signed target policie
 and publisher keys. After authenticating the outer release, run its
 `bash Tools/Install.sh` with no arguments. This entry authenticates the inner
 Suite with the pinned publisher and normal update policy, installs it directly
-into its final private prefix, then runs its coordinated installer. It never
-executes an adjacent unverified `Bin/HyperNetSuite`. The earlier source-build
-command with an explicit prefix remains available.
+into its final private prefix, then runs its coordinated installer. After both
+products verify, it registers the normal per-user desktop/link handler and opens
+**Join a server** through that verified installed Suite. It never executes an
+adjacent unverified `Bin/HyperNetSuite`. If link registration fails, the window
+still opens and the installer reports the registration failure. The earlier
+source-build command with an explicit prefix remains available.
 
-An already authenticated Suite exposes the same installer directly:
+For headless or machine-readable installation without opening a window, an
+already authenticated Suite exposes the same installer directly:
 
 ```sh
 /Installed/HyperNetSuite native-installation install \

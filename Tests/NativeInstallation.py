@@ -3,6 +3,7 @@
 """Check the authenticated bootstrap boundary with real signed inert packages."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -79,6 +80,59 @@ class Bootstrap(unittest.TestCase):
         self.assertEqual(Bundle.file_mode('Bin/HyperNetSuite', '0.10.3'), 0o700)
         self.assertEqual(Bundle.file_mode('Tools/Bundle.py'), 0o700)
         self.assertEqual(Bundle.file_mode('ReadMe.md'), 0o600)
+
+
+class InstallerEntry(unittest.TestCase):
+    """Exercise shell dispatch only; Bootstrap above covers signed package verification."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='HyperNetInstallerEntry')
+        self.root = Path(self.temporary.name)
+        self.release = self.root / 'Outer Release'
+        for name in ['Tools', 'Packages/Core', 'Packages/Suite', 'Bin']:
+            (self.release / name).mkdir(parents=True, mode=0o700, exist_ok=True)
+        self.script = self.release / 'Tools/Install.sh'
+        self.script.write_bytes((ROOT / 'Tools/Install.sh').read_bytes())
+        self.executable = self.root / 'Verified Installed Suite/Bin/HyperNetSuite'
+        self.executable.parent.mkdir(parents=True, mode=0o700)
+        self.log = self.root / 'Invocations.jsonl'
+        self.executable.write_text('#!/usr/bin/python3\nimport json,os,sys\n'
+            'with open(os.environ["ENTRY_LOG"],"a") as f: f.write(json.dumps({"args":sys.argv[1:],"stdin":sys.stdin.read() if sys.argv[1:3]==["join","desktop"] else None})+"\\n")\n'
+            'raise SystemExit(7 if sys.argv[1:]==["join","install"] and os.environ.get("ENTRY_HANDLER_FAIL")=="1" else 0)\n')
+        self.executable.chmod(0o755)
+        adjacent = self.release / 'Bin/HyperNetSuite'
+        adjacent.write_text('#!/bin/sh\nexit 93\n')
+        adjacent.chmod(0o755)
+        self.bootstrap('Ready')
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def bootstrap(self, status):
+        result = {'format':'HyperNetNativeInstallation/1','status':status,'suiteExecutable':str(self.executable)}
+        (self.release / 'Tools/Bundle.py').write_text('import json\nprint(json.dumps('+repr(result)+'))\n')
+
+    def run_entry(self, handler_fail=False):
+        return subprocess.run(['/bin/bash', str(self.script)], cwd=self.root, capture_output=True,
+            env={**os.environ, 'ENTRY_LOG':str(self.log), 'ENTRY_HANDLER_FAIL':str(int(handler_fail))})
+
+    def test_verified_installed_path_registers_links_then_opens_native_join(self):
+        result = self.run_entry()
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        values = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([v['args'] for v in values], [['join','install'],['join','desktop','--application','native']])
+        self.assertEqual(json.loads(values[1]['stdin']), {'location':None})
+
+    def test_link_registration_failure_preserves_direct_window_access(self):
+        result = self.run_entry(handler_fail=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn(b'link registration needs repair', result.stderr)
+        self.assertEqual(len(self.log.read_text().splitlines()), 2)
+
+    def test_unconfirmed_installation_never_launches_a_window(self):
+        self.bootstrap('Refused')
+        result = self.run_entry()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.log.exists())
 
 
 if __name__ == '__main__':
