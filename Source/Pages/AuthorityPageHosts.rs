@@ -44,8 +44,15 @@ pub enum Command {
         state_bytes: u64,
         #[arg(long)]
         maximum_asset_bytes: u64,
+        #[arg(
+            long,
+            required_unless_present = "retention_until_withdrawn",
+            conflicts_with = "retention_until_withdrawn"
+        )]
+        retention_ms: Option<u64>,
+        /// Retain host-readable Page content under permanent deployment consent.
         #[arg(long)]
-        retention_ms: u64,
+        retention_until_withdrawn: bool,
         /// Explicit JSON capacity partitions and opaque-hosting consent.
         #[arg(long)]
         content_policy: Option<PathBuf>,
@@ -136,6 +143,7 @@ pub(super) fn run(command: Command) -> Result<()> {
             state_bytes,
             maximum_asset_bytes,
             retention_ms,
+            retention_until_withdrawn,
             content_policy,
             output,
         } => {
@@ -175,7 +183,10 @@ pub(super) fn run(command: Command) -> Result<()> {
                 namespaces: namespace,
                 state_bytes,
                 maximum_asset_bytes,
-                retention_ms,
+                retention_ms: crate::trust_validity::End::selected(
+                    retention_ms,
+                    retention_until_withdrawn,
+                )?,
                 content: content_policy
                     .map(|path| content_policy_file(&path))
                     .transpose()?,

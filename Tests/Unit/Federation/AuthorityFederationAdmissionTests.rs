@@ -40,7 +40,7 @@ fn destination_with_search(search: bool) -> SourceFixture {
         namespaces: vec![f.treaty.destination_namespace.clone()],
         state_bytes: 8 * 1024 * 1024,
         maximum_asset_bytes: markup::media::MAX_PAGE_BYTES.min(8 * 1024 * 1024),
-        retention_ms: page::MAXIMUM_LIFETIME_MS,
+        retention_ms: page::MAXIMUM_LIFETIME_MS.into(),
         content: None,
         envelope: vec![],
     };
