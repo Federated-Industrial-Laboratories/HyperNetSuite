@@ -451,6 +451,24 @@ impl Store {
                         .is_some_and(|reply| reply.disposition == 1)
             }))
     }
+    /// Find an exact retained ordinary request without resolving or discarding its outcome.
+    pub(crate) fn retained_fence_target(&self, digest: Digest) -> Result<PreparedRequest> {
+        self.unchanged()?;
+        if let Some(ordinary) = &self.stored.tracker.ordinary {
+            let request = PreparedRequest::new(hex::decode(&ordinary.signed)?, None)?;
+            if request.digest() == digest {
+                return Ok(request);
+            }
+        }
+        let retained = self
+            .stored
+            .tracker
+            .outstanding_unknown
+            .iter()
+            .find(|old| !old.fence && old.request == digest)
+            .context("exact fence target is not retained")?;
+        PreparedRequest::new(hex::decode(&retained.signed)?, None)
+    }
     pub fn resume_fence(&self) -> Result<Option<PreparedRequest>> {
         self.unchanged()?;
         self.stored

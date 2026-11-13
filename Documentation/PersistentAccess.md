@@ -118,8 +118,8 @@ workflow with a persistent non-delegating grant: action `26` only, scope
 local consent must be persistent. Admission registrars and ordinary user activity
 use their own profiles.
 
-Obtain the current deployment context for this manager. Its first ordinary
-request is prepared with:
+Obtain the current deployment context for this manager. After those context
+reads complete, prepare its activation request with:
 
 ```sh
 HyperNetSuite authority-inspection deployments activation-request \
@@ -133,11 +133,39 @@ HyperNetSuite authority-inspection deployments activation-request \
 
 Use `ActivationRequest.cbor` as `--activation-request` in Core's ordinary
 `runtime services managed preview` and `enable` commands. The version2 request
-reserves the dedicated manager's first sequence. Keep that request pending;
+reserves one unacknowledged request in a positive dedicated manager stream
+generation, after any acknowledged context reads. Keep that request pending;
 `activation-complete` deliberately refuses to retire a persistent request.
 Do not advance or fence this manager profile while its persistent installation
-is in use. Software/profile successors require a newly reviewed activation and
-dedicated profile. No manager private key enters the serving container.
+is in use. No manager private key enters the serving container.
+
+For a software or certificate successor, stop the old managed service and
+complete cleanup before applying and certifying the exact reviewed new profile.
+The new profile must preserve the permanent identities, permissions, routes,
+storage and resource limits. Recheck stopped status and current certified
+registration before closing the old requester's stream generation. The normal
+requester fence retains the same manager key, application and grant; it does not
+refill authority budgets or resolve uncertain effects. Obtain fresh manager
+context in the certified successor generation and prepare its new exact
+persistent activation. Original request, receipt, floor and unknown-effect
+history remain retained. Existing native evidence and storage capacity checks
+still apply; reaching a bound refuses new work without discarding that history.
+
+The native host performs this review and succession during its stopped
+certificate/profile lifecycle. An interrupted fence is retried with the exact
+retained signed bytes. A later retry recognizes only the certified fence from
+the exact old generation and retained request; it cannot close another generation.
+An available old activation receipt is exported before fencing. After local
+initialization an interrupted activation may have no receipt; the host accepts
+only Core's explicit optional absence result. Other export failures stop
+succession. A profile that never initialized has no activation receipt.
+For explicit operator recovery, `authority-inspection stream-fence` supports the
+optional all-or-none flags `--expected-generation`, `--expected-generation-id`,
+`--expected-sequence` and `--expected-intent`. These identify the old request's
+stream tuple and digest, not its local profile generation. Status, comparison,
+preparation and retry occur under one requester lock. Omitting all four flags
+retains the ordinary explicit fence behaviour. These flags do not prove that a
+service stopped; the operator must first complete the stopped successor review.
 
 Every restart creates a new short-lived service challenge and reevaluates the
 manager grant, registrar authority, exact deployment and operator consent.

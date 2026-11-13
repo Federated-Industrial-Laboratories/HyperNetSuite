@@ -10,6 +10,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "ActivationSuccessor.rs"]
+mod successor;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attempt {
@@ -474,6 +477,32 @@ fn manager(host: &mut Host<'_>, name: &str) -> Result<(String, String)> {
     initialise(host, &who)?;
     Ok((who, grant))
 }
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreparedContext {
+    manager: String,
+    deployment: String,
+    grant: String,
+    role: u64,
+    attempt: Attempt,
+}
+impl PreparedContext {
+    fn required(&self, previous: Option<Value>) -> Result<bool> {
+        let Some(previous) = previous else {
+            return Ok(true);
+        };
+        let previous: Self = serde_json::from_value(previous)?;
+        ensure!(
+            previous.manager == self.manager
+                && previous.deployment == self.deployment
+                && previous.grant == self.grant
+                && previous.role == self.role
+                && previous.attempt <= self.attempt,
+            "retained activation context binding differs"
+        );
+        Ok(previous != *self)
+    }
+}
 fn request(host: &mut Host<'_>, name: &str, role: u64, generation: u64) -> Result<PathBuf> {
     let (who, grant) = manager(host, name)?;
     let persistent = host.c.hosting_end == End::UntilWithdrawn;
@@ -499,15 +528,33 @@ fn request(host: &mut Host<'_>, name: &str, role: u64, generation: u64) -> Resul
         "Activation/{name}/Request{generation}-{attempt}.cbor"
     ));
     if !path.exists() {
-        let mut a = bytes(&["authority-inspection", "deployments", "context"]);
-        a.extend(online(host, &who)?);
-        a.extend(bytes(&[
-            "--deployment",
-            &host.state.ids[&format!("deployment/{name}")],
-            "--grant",
-            &grant,
-        ]));
-        operator(host, &who, &a)?;
+        if persistent {
+            successor::prepare(host, name, &who, &grant, role, generation)?;
+        }
+        let context_key = format!("activation-context/{name}");
+        let context = PreparedContext {
+            manager: who.clone(),
+            deployment: host.state.ids[&format!("deployment/{name}")].clone(),
+            grant: grant.clone(),
+            role,
+            attempt: Attempt {
+                generation,
+                attempt,
+            },
+        };
+        if context.required(host.remembered(&context_key))? {
+            let mut a = bytes(&["authority-inspection", "deployments", "context"]);
+            a.extend(online(host, &who)?);
+            a.extend(bytes(&[
+                "--deployment",
+                &context.deployment,
+                "--grant",
+                &grant,
+            ]));
+            operator(host, &who, &a)?;
+            // Publish before preparation so a lost export resumes the exact pending activation.
+            host.remember(&context_key, serde_json::to_value(&context)?)?;
+        }
         let mut a = bytes(&["authority-inspection", "deployments", "activation-request"]);
         let mut common = online(host, &who)?;
         common.truncate(common.len() - 2);
@@ -662,6 +709,39 @@ pub fn activate(host: &mut Host<'_>, name: &str, operator_name: &str, role: u64)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_context_skips_discovery_after_interrupted_activation_export() {
+        let current = PreparedContext {
+            manager: "ManagerPageStore".into(),
+            deployment: "deployment".into(),
+            grant: "grant".into(),
+            role: 1,
+            attempt: Attempt {
+                generation: 1,
+                attempt: 0,
+            },
+        };
+        assert!(current.required(None).unwrap());
+        let retained = serde_json::to_value(&current).unwrap();
+        assert!(!current.required(Some(retained.clone())).unwrap());
+        let mut successor = current.clone();
+        successor.attempt.attempt = 1;
+        assert!(successor.required(Some(retained.clone())).unwrap());
+        assert!(
+            current
+                .required(Some(serde_json::to_value(&successor).unwrap()))
+                .is_err()
+        );
+        for field in ["manager", "deployment", "grant", "role"] {
+            let mut changed = retained.clone();
+            changed[field] = if field == "role" {
+                json!(2)
+            } else {
+                json!("other")
+            };
+            assert!(current.required(Some(changed)).is_err());
+        }
+    }
     #[test]
     fn interrupted_activation_requires_exact_reporting_before_active_return_or_new_attempt() {
         let attempt = Attempt {

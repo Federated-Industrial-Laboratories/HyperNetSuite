@@ -6,6 +6,8 @@ use ed25519_dalek::Signer;
 
 #[path = "AuthorityDeploymentDomainTests.rs"]
 mod domain;
+#[path = "AuthorityPersistentActivationClientTests.rs"]
+mod persistent_activation;
 #[path = "AuthorityDeploymentReplayTests.rs"]
 mod replay;
 fn certified(

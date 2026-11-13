@@ -338,6 +338,17 @@ pub fn operator(host: &Host<'_>, who: &str, arguments: &[String]) -> Result<Valu
         "unsupported native operator"
     );
     let allowed = match arguments.first().map(String::as_str) {
+        Some("authority-inspection") if arguments.get(1).is_some_and(|v| v == "stream-fence") => {
+            who.starts_with("Manager")
+                && [
+                    "--expected-generation",
+                    "--expected-generation-id",
+                    "--expected-sequence",
+                    "--expected-intent",
+                ]
+                .iter()
+                .all(|flag| arguments.iter().any(|v| v == flag))
+        }
         Some("authority-inspection") => matches!(
             arguments.get(1).map(String::as_str),
             Some(

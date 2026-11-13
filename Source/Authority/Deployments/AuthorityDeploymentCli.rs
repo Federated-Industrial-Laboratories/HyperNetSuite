@@ -76,7 +76,7 @@ pub enum Command {
         generation: u64,
         #[arg(long)]
         output: PathBuf,
-        /// Reserve the first intent of a dedicated activation-only manager profile for persistent hosting.
+        /// Retain one unacknowledged request from a dedicated activation-only manager for persistent hosting.
         #[arg(long)]
         persistent: bool,
     },

@@ -127,9 +127,17 @@ profile and releases its verified owned bridges. Hosting again requires a
 separately reviewed host. Neither action deletes user history or private recovery
 material. Unresolved cleanup remains visible and can be retried.
 
-An interrupted activation retains its exact request until the native completion
-is verified and reported. Completed request and receipt exports are bounded to
-the current and previous activations; native requester floors remain intact.
+An interrupted finite activation retains its exact request until the native
+completion is verified and reported. Completed finite request and receipt exports
+are bounded to the current and previous activations; native requester floors
+remain intact. Persistent activation remains pending while its installation is
+in use. After an exact newer profile is applied and certified, the stopped host
+checks complete cleanup and advances that same manager through the normal
+requester fence. Interrupted retries preserve the exact fence and cannot advance
+a second generation. The manager key, application and grant remain unchanged.
+Old persistent requests, receipts and uncertain effects remain retained under
+the existing native evidence and host inventory bounds. A capacity refusal does
+not discard that evidence or create another manager to bypass the bound.
 
 A private receiver interrupted beyond a finite route deadline resolves only its
 own exact expired issuance before obtaining fresh transport. The host records

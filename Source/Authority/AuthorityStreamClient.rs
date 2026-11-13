@@ -3,6 +3,10 @@
 use super::*;
 use crate::authority_proof::{OwnStreamMetadata, SignedRequest, StreamResponse};
 
+#[path = "AuthorityExactFence.rs"]
+mod exact;
+pub(crate) use exact::{FenceTarget, fence_exact_local};
+
 struct ControlPrepared {
     descriptor: TrustDescriptor,
     request: Vec<u8>,
@@ -243,27 +247,48 @@ pub(crate) fn fence_local_guarded(
     } else {
         let metadata = status_local(descriptor, path, signer, store, session, &mut clock)?;
         guard(&metadata)?;
-        let state = metadata
-            .state()
-            .context("requester has no admitted stream")?;
-        let request = wire::sign_envelope(
-            &wire::encode(&a(vec![
-                V::Uint(57),
-                V::Uint(1),
-                b(&descriptor.scope().network),
-                b(&descriptor.scope().incarnation),
-                b(&store.requester()),
-                b(&random_id()?),
-                V::Uint(store.prefix().scope().epoch),
-                V::Uint(store.prefix().height()),
-                V::Uint(state.generation),
-                b(&state.generation_id),
-                b(&wire::digest(metadata.canonical())),
-            ]))?,
-            signer,
-        )?;
-        store.prepare_fence(&request, metadata.canonical())?
+        prepare_fence(descriptor, signer, store, &metadata)?
     };
+    submit_fence(
+        descriptor, path, signer, store, session, &mut clock, prepared,
+    )
+}
+fn prepare_fence(
+    descriptor: &TrustDescriptor,
+    signer: &SigningKey,
+    store: &mut Store,
+    metadata: &OwnStreamMetadata,
+) -> Result<crate::authority_floor::PreparedRequest> {
+    let state = metadata
+        .state()
+        .context("requester has no admitted stream")?;
+    let request = wire::sign_envelope(
+        &wire::encode(&a(vec![
+            V::Uint(57),
+            V::Uint(1),
+            b(&descriptor.scope().network),
+            b(&descriptor.scope().incarnation),
+            b(&store.requester()),
+            b(&random_id()?),
+            V::Uint(store.prefix().scope().epoch),
+            V::Uint(store.prefix().height()),
+            V::Uint(state.generation),
+            b(&state.generation_id),
+            b(&wire::digest(metadata.canonical())),
+        ]))?,
+        signer,
+    )?;
+    store.prepare_fence(&request, metadata.canonical())
+}
+fn submit_fence(
+    descriptor: &TrustDescriptor,
+    path: &Path,
+    signer: &SigningKey,
+    store: &mut Store,
+    session: &mut Session,
+    clock: &mut impl FnMut() -> Result<ClockHealth>,
+    prepared: crate::authority_floor::PreparedRequest,
+) -> Result<StreamResponse> {
     let control = LocalControl::prepare_authority(path, store)?;
     ControlPrepared::new(
         descriptor,
@@ -274,7 +299,7 @@ pub(crate) fn fence_local_guarded(
         session,
         clock()?,
     )?
-    .local(&control, store, session, &mut clock)
+    .local(&control, store, session, clock)
 }
 
 /// Only authenticated own-stream metadata can distinguish original refusal from denied disclosure.
