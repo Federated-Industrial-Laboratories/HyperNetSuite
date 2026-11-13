@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Adapted from RelayChat's exact deployment and route authoring workflow.
 use super::{engine::*, files as native, operator::*};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+#[path = "InitialPossession.rs"]
+mod initial_possession;
+pub(super) fn offer(host: &Host<'_>, name: &str) -> Result<PathBuf> {
+    initial_possession::selected(host, name)
+}
 fn raw_id(s: &str) -> Result<Vec<u8>> {
     let v = hex::decode(s).map_err(|_| anyhow!("retained native deployment differs"))?;
     if v.len() != 32 {
@@ -45,14 +50,21 @@ pub(super) fn roles(
 }
 
 pub(super) fn active_directory(host: &Host<'_>, name: &str) -> Result<PathBuf> {
-    match host.remembered(&format!("active-service/{name}")) {
+    match host
+        .remembered(&format!("active-service/{name}"))
+        .or_else(|| host.remembered(&format!("service-input/{name}")))
+    {
         Some(value) => {
             let path = PathBuf::from(
                 value
                     .as_str()
                     .ok_or(anyhow!("retained native deployment differs"))?,
             );
-            if !path.starts_with(host.p("Successor")) {
+            if !path.starts_with(host.p("Successor/Certificates"))
+                || path
+                    .components()
+                    .any(|p| matches!(p, std::path::Component::ParentDir))
+            {
                 return Err(anyhow!("retained native deployment differs"));
             }
             Ok(path)
@@ -66,6 +78,17 @@ pub(super) fn author_route(
     manifest: &Path,
     profile: &str,
     output: &Path,
+) -> Result<()> {
+    let issuer = active_directory(host, role.0)?.join("Inputs/CertificateAuthority.pem");
+    author_route_with_issuer(host, role, manifest, profile, output, &issuer)
+}
+pub(super) fn author_route_with_issuer(
+    host: &Host<'_>,
+    role: (&str, &str, &str, &str),
+    manifest: &Path,
+    profile: &str,
+    output: &Path,
+    issuer: &Path,
 ) -> Result<()> {
     let (name, operator_name, id_name, protocol) = role;
     let mut a = bytes(&["routes", "profile"]);
@@ -90,7 +113,7 @@ pub(super) fn author_route(
         "--server-name",
         &host.c.advertised_address.to_string(),
         "--certificate-authority",
-        &text(&host.p(&format!("Services/{name}/Inputs/CertificateAuthority.pem")))?,
+        &text(issuer)?,
         "--assurance",
         "Organisational",
         "--maximum-bytes",
@@ -118,9 +141,14 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
     host.phase("Route deployment review")?;
     let bootstrap = host.bootstrap()?;
     for (name, operator_name, id_name, protocol) in roles(host) {
-        let folder = host.dir(&format!("Services/{name}"))?;
-        let inputs = host.dir(&format!("Services/{name}/Inputs"))?;
-        let peer = public_read(&host.p(&format!("Peers/{name}.json")))?;
+        if host.remembered(&format!("active-service/{name}")).is_some() {
+            continue;
+        }
+        let folder = active_directory(host, name)?;
+        host.dir(&text(folder.strip_prefix(&host.c.root)?)?)?;
+        let inputs = folder.join("Inputs");
+        native::directory(&inputs)?;
+        let peer = public_read(&super::certificates::peer(host, name)?)?;
         let role = host
             .remembered(&format!("role/{name}"))
             .ok_or(anyhow!("retained native deployment differs"))?;
@@ -162,7 +190,7 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
             let relay = host
                 .remembered("role/Relay")
                 .ok_or(anyhow!("retained native deployment differs"))?;
-            endpoints.push(json!({"endpointId":raw_id(&id)?,"serviceKey":raw_id(&string(&relay,"identity")?)?,"address":host.c.advertised_address,"port":host.c.relay_port,"transportKey":raw_id(&string(&relay,"transport")?)?,"leafDer":der(host,&host.p("Services/Relay/Inputs/Certificate.pem"))?}));
+            endpoints.push(json!({"endpointId":raw_id(&id)?,"serviceKey":raw_id(&string(&relay,"identity")?)?,"address":host.c.advertised_address,"port":host.c.relay_port,"transportKey":raw_id(&string(&relay,"transport")?)?,"leafDer":der(host,&active_directory(host,"Relay")?.join("Inputs/Certificate.pem"))?}));
         }
         endpoints.sort_by_key(|v| {
             v["endpointId"]
@@ -175,7 +203,7 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
             "volumes":[{"volumeId":raw_id(&volume)?,"readOnly":false,"storageAdmissionBytes":host.c.resources.state_bytes_per_role}],"endpoints":endpoints,"clock":{"monitorKey":raw_id(&host.monitor()?)?,"kernelBoot":"CurrentHost","witnessFileName":"ClockHealth.cbor","maximumErrorMs":250,"maximumObservationAgeMs":1000},"placement":{"hosts":[raw_id(&host_id)?],"volumes":[raw_id(&volume)?],"backups":[],"copies":1},"limits":[host.c.resources.connection_bytes,1024,if name=="Relay"{host.c.resources.relay_connections}else{host.c.resources.endpoint_connections},32],"consentPolicy":{"allowOpaque":true,"reviewerRoots":[]},"authorityConfig":null});
         host.immutable_json(&folder.join("Manifest.json"), &manifest)?;
         let profile = deployment(host, name, operator_name)?;
-        let offer = folder.join("Offer.cbor");
+        let offer = offer(host, name)?;
         let route = inputs.join("RouteProfile.cbor");
         if !route.exists() {
             author_route(
@@ -187,15 +215,7 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
             )?;
         }
         host.artifact(&route)?;
-        let config = if name == "Relay" {
-            json!({"version":1,"relayIdentity":null,"relayAddress":null})
-        } else {
-            let relay = host
-                .remembered("role/Relay")
-                .ok_or(anyhow!("retained native deployment differs"))?;
-            let peer = public_read(&host.p("Peers/Relay.json"))?;
-            json!({"version":1,"relayIdentity":{"service":raw_id(&host.state.ids["relay"])?,"serverName":host.c.advertised_address.to_string(),"transportKey":raw_id(&string(&relay,"transport")?)?,"leafDer":der(host,&host.p("Services/Relay/Inputs/Certificate.pem"))?,"certificateAuthorityPem":peer["authorityPem"]},"relayAddress":format!("{}:{}",host.c.advertised_address,host.c.relay_port)})
-        };
+        let config = relay_configuration(host, name)?;
         host.immutable_json(&folder.join("RelayConfiguration.json"), &config)?;
         if name != "ApplicationEndpoint" {
             host.immutable_json(&inputs.join("ServiceConfig.json"), &config)?;
@@ -226,14 +246,44 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
             let v = operator(host, "Administrator", &a)?;
             host.remember(&key, v)?;
         }
+        if host.remembered(&format!("service-input/{name}")).is_some() {
+            host.remember(&format!("active-service/{name}"), json!(folder))?;
+            host.state.results.remove(&format!("service-input/{name}"));
+            host.save()?;
+        }
     }
     Ok(())
 }
 
+pub(super) fn relay_configuration(host: &Host<'_>, name: &str) -> Result<Value> {
+    if name == "Relay" {
+        return Ok(json!({"version":1,"relayIdentity":null,"relayAddress":null}));
+    }
+    let relay = host
+        .remembered("role/Relay")
+        .ok_or(anyhow!("retained relay identity absent"))?;
+    let peer = public_read(&super::certificates::peer(host, "Relay")?)?;
+    Ok(
+        json!({"version":1,"relayIdentity":{"service":raw_id(&host.state.ids["relay"])?,
+        "serverName":host.c.advertised_address.to_string(),"transportKey":raw_id(&string(&relay,"transport")?)?,
+        "leafDer":crate::runtime_manifest::certificates::der(&string(&peer,"certificatePem")?)?,
+        "certificateAuthorityPem":peer["authorityPem"]},
+        "relayAddress":format!("{}:{}",host.c.advertised_address,host.c.relay_port)}),
+    )
+}
+
 pub(super) fn deployment(host: &mut Host<'_>, name: &str, operator_name: &str) -> Result<String> {
-    let folder = host.p(&format!("Services/{name}"));
+    let folder = active_directory(host, name)?;
     let inputs = folder.join("Inputs");
-    let prepared_key = format!("manifest/{name}");
+    let prepared_key = if folder == host.p(&format!("Services/{name}")) {
+        format!("manifest/{name}")
+    } else {
+        ensure!(
+            folder.starts_with(host.p("Successor/Certificates")),
+            "initial input path differs"
+        );
+        format!("manifest/{name}/{}", digest(text(&folder)?.as_bytes()))
+    };
     let prepared = if let Some(v) = host.remembered(&prepared_key) {
         v
     } else {
@@ -282,7 +332,10 @@ pub(super) fn deployment(host: &mut Host<'_>, name: &str, operator_name: &str) -
         ]));
         host.suite(&a)?;
     }
-    let expiry = host.c.hosting_end.bound(host.state.created_ms + 86_400_000);
+    let possession_start = now()?
+        .saturating_sub(crate::authority_governance::UNCERTAINTY_MS)
+        .max(host.state.created_ms);
+    let expiry = host.c.hosting_end.bound(possession_start + 86_400_000);
     let mut classes = vec![
         (
             "service",
@@ -315,7 +368,7 @@ pub(super) fn deployment(host: &mut Host<'_>, name: &str, operator_name: &str) -
                 flag,
                 &text(key)?,
                 "--not-before-ms",
-                &host.state.created_ms.to_string(),
+                &possession_start.to_string(),
                 "--expires-ms",
                 &expiry.to_string(),
                 "--output",
@@ -362,5 +415,8 @@ pub(super) fn deployment(host: &mut Host<'_>, name: &str, operator_name: &str) -
     }
     host.artifact(&offer)?;
     host.artifact(&consent)?;
+    if host.remembered(&format!("deployment/{name}")).is_none() {
+        initial_possession::refresh(host, name, &folder)?;
+    }
     Ok(profile)
 }

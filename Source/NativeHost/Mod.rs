@@ -4,6 +4,8 @@
 mod activation;
 #[path = "Bootstrap.rs"]
 mod bootstrap;
+#[path = "Certificates.rs"]
+mod certificates;
 #[path = "Chat.rs"]
 mod chat;
 #[path = "Configuration.rs"]
@@ -134,6 +136,7 @@ enum Action {
     Stop,
     Withdraw,
     RefreshReader,
+    RenewCertificates,
     PreviewSoftware,
     UpdateSoftware {
         #[serde(rename = "reviewDigest")]
@@ -264,6 +267,7 @@ fn supervise(root: &Path) -> Result<()> {
     let installation = state.installation_directory;
     let mut recovery = true;
     let mut failures = 0u32;
+    let mut next_certificate_check = Instant::now();
     while !STOP.load(Ordering::Acquire) {
         if permitted(root).is_err() {
             return Ok(());
@@ -273,6 +277,7 @@ fn supervise(root: &Path) -> Result<()> {
                 Ok(_) => {
                     failures = 0;
                     recovery = false;
+                    next_certificate_check = Instant::now() + Duration::from_secs(60);
                 }
                 Err(_) if STOP.load(Ordering::Acquire) => break,
                 Err(_) => {
@@ -280,8 +285,13 @@ fn supervise(root: &Path) -> Result<()> {
                 }
             }
         } else {
-            match lifecycle::tick(root, &STOP) {
-                Ok(true) => {}
+            let inspect_certificates = Instant::now() >= next_certificate_check;
+            match lifecycle::tick(root, &STOP, inspect_certificates) {
+                Ok(true) => {
+                    if inspect_certificates {
+                        next_certificate_check = Instant::now() + Duration::from_secs(60);
+                    }
+                }
                 Ok(false) => return Ok(()),
                 Err(_) => recovery = true,
             }
@@ -328,7 +338,11 @@ fn request(root: &Path, installation: &Path) -> Result<Value> {
     );
     let cancellation_stops = matches!(
         &request.action,
-        Action::Create { .. } | Action::Start | Action::Stop | Action::Withdraw
+        Action::Create { .. }
+            | Action::Start
+            | Action::Stop
+            | Action::Withdraw
+            | Action::RenewCertificates
     );
     let withdrawal = matches!(&request.action, Action::Withdraw);
     let result = (|| match request.action {
@@ -371,6 +385,28 @@ fn request(root: &Path, installation: &Path) -> Result<Value> {
         }
         Action::Start => {
             let result = start(root, installation, true)?;
+            ensure_supervisor(root)?;
+            Ok(result)
+        }
+        Action::RenewCertificates => {
+            ensure!(
+                !controller_update::pending(root)?,
+                "complete the reviewed software update before certificate maintenance"
+            );
+            let existing = journal(root)?;
+            ensure!(
+                existing.installation_directory == installation
+                    && existing.desired_running
+                    && existing.completed
+                    && !existing.withdrawn,
+                "certificate renewal requires an online, completed host"
+            );
+            let verified = Installation::inspect(installation, &STOP)?;
+            let mut host = Host::open(root, verified, existing.configuration, &STOP, None)?;
+            bootstrap::clock(&mut host)?;
+            certificates::renew_now(&mut host)?;
+            let result = lifecycle::complete(&mut host)?;
+            drop(host);
             ensure_supervisor(root)?;
             Ok(result)
         }

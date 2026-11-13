@@ -138,9 +138,19 @@ pub fn service_owner(host: &mut Host<'_>) -> Result<()> {
 }
 pub fn prepare_application(host: &mut Host<'_>) -> Result<()> {
     let folder = services::active_directory(host, "ApplicationEndpoint")?;
+    prepare_application_at(host, &folder, None, None)
+}
+pub(super) fn prepare_application_at(
+    host: &mut Host<'_>,
+    folder: &Path,
+    previous: Option<&Path>,
+    reference_override: Option<&str>,
+) -> Result<()> {
     let inputs = folder.join("Inputs");
-    let reference =
-        operator::record_reference(&host.state.results["route/ApplicationEndpoint"], 165)?;
+    let reference = match reference_override {
+        Some(reference) => reference.to_owned(),
+        None => operator::record_reference(&host.state.results["route/ApplicationEndpoint"], 165)?,
+    };
     let owner = string(&host.state.results["ServiceOwner"], "publicKey")?;
     let offer = folder.join("ServiceOffer.cbor");
     let accepted = folder.join("ServiceAccepted.cbor");
@@ -172,6 +182,16 @@ pub fn prepare_application(host: &mut Host<'_>) -> Result<()> {
             &text(&offer)?,
         ]));
         args.extend(end_arguments(host.c.hosting_end));
+        if let Some(previous) = previous {
+            args.extend(bytes(&[
+                "--renew-from",
+                &text(&previous.join("ServiceAccepted.cbor"))?,
+                "--certificate-previous-route",
+                &text(&previous.join("Inputs/RouteProfile.cbor"))?,
+                "--certificate-route",
+                &text(&inputs.join("RouteProfile.cbor"))?,
+            ]));
+        }
         host.suite(&args)?;
     }
     if !accepted.exists() {
@@ -233,6 +253,12 @@ pub fn register_application(host: &mut Host<'_>) -> Result<()> {
         ]));
         let result = operator::operator(host, "ServiceOwner", &args)?;
         host.remember("application-registration", result)?;
+    }
+    if host.remembered("application-consent").is_none() {
+        host.remember(
+            "application-consent",
+            json!({"directory":services::active_directory(host,"ApplicationEndpoint")?}),
+        )?;
     }
     Ok(())
 }
@@ -508,8 +534,38 @@ pub fn start_receiver(host: &mut Host<'_>) -> Result<()> {
         "receiver native identity differs from its retained key"
     );
     let selected = companion(host, "Receiver")?;
-    let accepted =
+    let current =
         services::active_directory(host, "ApplicationEndpoint")?.join("ServiceAccepted.cbor");
+    let accepted = match host.remembered("receiver-binding") {
+        Some(value) => PathBuf::from(string(&value, "path")?),
+        None => host.p("Services/ApplicationEndpoint/ServiceAccepted.cbor"),
+    };
+    ensure!(
+        accepted.starts_with(&host.c.root),
+        "receiver binding path leaves host"
+    );
+    let inspect = |path: &Path| -> Result<Value> {
+        let mut args = bytes(&["streams", "inspect-offer"]);
+        args.extend(host.trust()?);
+        args.extend(bytes(&[
+            "--offer",
+            &text(path)?,
+            "--owner-key",
+            &string(&host.state.results["ServiceOwner"], "publicKey")?,
+        ]));
+        host.suite(&args)
+    };
+    let retained = inspect(&accepted)?;
+    let successor = inspect(&current)?;
+    ensure!(
+        retained["binding"] == successor["binding"],
+        "renewed receiver binding changes permanent identity"
+    );
+    host.artifact(&accepted)?;
+    host.remember(
+        "receiver-binding",
+        json!({"path":accepted,"binding":retained["binding"]}),
+    )?;
     host.unit(
         "receiver",
         &host.c.suite,

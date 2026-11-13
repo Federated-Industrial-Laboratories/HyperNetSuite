@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Explicit fences preserve prior uncertain effects without retaining recursive request history.
 use super::*;
-fn fence(store: &mut Store, session: &mut Session, sample: ClockHealth) {
+fn pending_fence(store: &mut Store) -> PreparedRequest {
+    if let Some(pending) = store.resume_fence().unwrap() {
+        return pending;
+    }
     let old = store.stream_metadata().unwrap().unwrap();
     let prior = old.state().unwrap();
     let scope = store.prefix().scope();
@@ -22,7 +25,12 @@ fn fence(store: &mut Store, session: &mut Session, sample: ClockHealth) {
         &SigningKey::from_bytes(&[1; 32]),
     )
     .unwrap();
-    let pending = store.prepare_fence(&signed, old.canonical()).unwrap();
+    store.prepare_fence(&signed, old.canonical()).unwrap()
+}
+fn fence(store: &mut Store, session: &mut Session, sample: ClockHealth) {
+    let old = store.stream_metadata().unwrap().unwrap();
+    let prior = old.state().unwrap();
+    let pending = pending_fence(store);
     let V::Array(old_fields) = wire::decode(old.canonical()).unwrap() else {
         unreachable!()
     };
@@ -349,4 +357,40 @@ fn status_cannot_release_unknown_or_unconsumed_permit_after_disclosure_refusal()
             pending.signed()
         );
     }
+}
+
+#[test]
+fn interrupted_fence_retains_the_original_refused_request_after_reopen() {
+    let (directory, sample, mut session, mut store) = setup();
+    let (pending, permit) = prepare(&mut store, sample);
+    assert!(store.fence_subject().unwrap().is_none());
+    let refusal = observed_refusal(&mut store, &mut session, sample, &pending, &permit);
+    let completion = V::Array(vec![
+        V::Uint(1),
+        b(&pending.digest()),
+        V::Uint(1),
+        V::Uint(3),
+        b(&wire::digest(&refusal)),
+    ]);
+    let current = metadata(&store, completion);
+    status(&mut store, &mut session, sample, &current);
+    assert!(store.resume_ordinary().unwrap().is_none());
+    let exact_fence = pending_fence(&mut store);
+    let descriptor = store.descriptor.clone();
+    drop(store);
+    let mut store = Store::open(&directory.0, descriptor).unwrap();
+    assert_eq!(
+        store.fence_subject().unwrap().unwrap().signed(),
+        pending.signed()
+    );
+    assert_eq!(
+        store.resume_fence().unwrap().unwrap().signed(),
+        exact_fence.signed()
+    );
+    assert!(store.resume_ordinary().unwrap().is_none());
+    fence(&mut store, &mut session, sample);
+    assert!(store.fence_subject().unwrap().is_none());
+    assert!(store.resume_fence().unwrap().is_none());
+    assert!(store.stored.tracker.outstanding_unknown.is_empty());
+    assert_eq!(store.ordinary_slot().unwrap().generation(), 2);
 }

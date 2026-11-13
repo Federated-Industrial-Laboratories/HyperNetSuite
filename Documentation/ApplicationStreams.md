@@ -408,3 +408,12 @@ sessions until `recoveryAfterMs`, then renew through current external authority
 and restart the same retained profile. It must not repeatedly restart an
 exhausted credential before that boundary. Local control has no route expiry;
 unavailable local metadata may report null times and requires normal recovery.
+
+For an endpoint certificate change, `streams offer --renew-from` accepts
+paired `--certificate-previous-route` and `--certificate-route` files. Both are
+operator-signed native route profiles. The new one must be an actual same-key
+certificate successor for the retained endpoint. This explicit mode can preserve
+the exact service interval, including `UntilWithdrawn`, while advancing its route
+reference. It retains the accepted local binding, owner, operator, protocol and
+limits. Ordinary renewal still requires expiry advancement. Register the new
+route first, then use its exact certified reference when producing the offer.

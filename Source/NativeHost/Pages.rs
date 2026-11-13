@@ -49,7 +49,7 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
             "--grant",
             &host.root_grant()?,
             "--offer",
-            &text(&folder.join("Offer.cbor"))?,
+            &text(&services::offer(host, "PageStore")?)?,
         ]));
         let result = operator(host, "Administrator", &a)?;
         host.remember("deployment/PageStore", result)?;

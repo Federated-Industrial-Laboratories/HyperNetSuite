@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Retained setup and explicit owner stop/withdrawal compose the normal native controls.
-use super::{activation, bootstrap, chat, engine::*, pages, policy, receiver, services, units};
+use super::{
+    activation, bootstrap, certificates, chat, engine::*, pages, policy, receiver, services, units,
+};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -70,6 +72,7 @@ pub fn complete(host: &mut Host<'_>) -> Result<Value> {
         "this host remains offline or withdrawn; use explicit owner start for an offline host"
     );
     bootstrap::prepare(host)?;
+    certificates::maintain(host)?;
     bootstrap::activate(host)?;
     services::prepare(host)?;
     pages::prepare(host)?;
@@ -129,7 +132,7 @@ pub fn complete(host: &mut Host<'_>) -> Result<Value> {
     );
     Ok(observed)
 }
-fn observations(host: &Host<'_>) -> Result<(Value, bool, bool)> {
+fn observations(host: &Host<'_>, preserve_clock: bool) -> Result<(Value, bool, bool)> {
     let mut values = Vec::new();
     let mut active = true;
     let mut stopped = true;
@@ -141,7 +144,7 @@ fn observations(host: &Host<'_>) -> Result<(Value, bool, bool)> {
             .map(|values| values[index].as_str())
             .unwrap_or("Unavailable");
         active &= state == "active";
-        stopped &= matches!(state, "inactive" | "failed");
+        stopped &= (preserve_clock && role == "clock") || matches!(state, "inactive" | "failed");
         values.push(json!({"role":role,"unit":units::name(&host.c.root,role)?,"state":state}));
     }
     for (role, service) in service_roles(host)
@@ -219,7 +222,7 @@ fn readiness(
     }
 }
 pub fn status(host: &mut Host<'_>) -> Result<Value> {
-    let (observed, active, stopped) = observations(host)?;
+    let (observed, active, stopped) = observations(host, false)?;
     let certified = host.state.desired_running
         && !host.state.withdrawn
         && host.state.completed
@@ -292,16 +295,11 @@ fn authority_cleanup(host: &mut Host<'_>, name: &str, withdraw: bool) -> Result<
     );
     Ok(())
 }
-pub fn stop(host: &mut Host<'_>, withdraw: bool) -> Result<Value> {
-    // Publish the restart veto before any cleanup. Errors cannot silently restore desire.
-    host.state.desired_running = false;
-    host.state.withdrawn |= withdraw;
-    host.save()?;
-    host.phase(if host.state.withdrawn {
-        "Withdrawing"
-    } else {
-        "Stopping"
-    })?;
+fn stop_workloads(
+    host: &mut Host<'_>,
+    withdraw: bool,
+    stop_controller: bool,
+) -> Result<Vec<String>> {
     let mut failed = Vec::new();
     for purpose in [
         "supervisor",
@@ -314,6 +312,9 @@ pub fn stop(host: &mut Host<'_>, withdraw: bool) -> Result<Value> {
         "relay",
         "pagestore",
     ] {
+        if purpose == "supervisor" && !stop_controller {
+            continue;
+        }
         if units::stop(host, purpose).is_err() {
             failed.push(purpose.to_owned());
         }
@@ -325,11 +326,7 @@ pub fn stop(host: &mut Host<'_>, withdraw: bool) -> Result<Value> {
         let result = host.core(&bytes(&[
             "runtime",
             "services",
-            if host.state.withdrawn {
-                "withdraw"
-            } else {
-                "stop"
-            },
+            if withdraw { "withdraw" } else { "stop" },
             "--directory",
             &text(&host.p(role))?,
         ]));
@@ -341,15 +338,43 @@ pub fn stop(host: &mut Host<'_>, withdraw: bool) -> Result<Value> {
         if units::stop(host, &format!("a{n}")).is_err() {
             failed.push(format!("a{n}"));
         }
-        let withdrawn = host.state.withdrawn;
-        if authority_cleanup(host, &format!("A{n}"), withdrawn).is_err() {
+        if authority_cleanup(host, &format!("A{n}"), withdraw).is_err() {
             failed.push(format!("A{n}"));
         }
     }
-    if units::stop(host, "clock").is_err() {
+    if stop_controller && units::stop(host, "clock").is_err() {
         failed.push("clock".into());
     }
-    let (observed, _, stopped) = observations(host)?;
+    Ok(failed)
+}
+/// Stop only the workloads before an exact certificate successor transaction.
+pub(super) fn maintenance_stop(host: &mut Host<'_>) -> Result<()> {
+    ensure!(
+        host.state.desired_running && !host.state.withdrawn,
+        "certificate maintenance requires an online, non-withdrawn host"
+    );
+    host.phase("Stopping services for certificate renewal")?;
+    let failed = stop_workloads(host, false, false)?;
+    let (_, _, stopped) = observations(host, true)?;
+    ensure!(
+        stopped && failed.is_empty(),
+        "certificate maintenance is waiting for ordinary workload cleanup"
+    );
+    Ok(())
+}
+pub fn stop(host: &mut Host<'_>, withdraw: bool) -> Result<Value> {
+    // Publish the restart veto before any cleanup. Errors cannot silently restore desire.
+    host.state.desired_running = false;
+    host.state.withdrawn |= withdraw;
+    host.save()?;
+    host.phase(if host.state.withdrawn {
+        "Withdrawing"
+    } else {
+        "Stopping"
+    })?;
+    let withdrawn = host.state.withdrawn;
+    let failed = stop_workloads(host, withdrawn, true)?;
+    let (observed, _, stopped) = observations(host, false)?;
     let complete = stopped && failed.is_empty();
     let label = if host.state.withdrawn {
         if complete {
@@ -369,7 +394,7 @@ pub fn stop(host: &mut Host<'_>, withdraw: bool) -> Result<Value> {
     Ok(result)
 }
 /// A heartbeat reads local service and companion health without changing authority or budgets.
-pub fn tick(directory: &Path, cancel: &AtomicBool) -> Result<bool> {
+pub fn tick(directory: &Path, cancel: &AtomicBool, inspect_certificates: bool) -> Result<bool> {
     let current: Journal = serde_json::from_value(read(&directory.join("Hosting.json"))?)?;
     ensure!(
         current.format == "HyperNetNativeHost/1"
@@ -386,6 +411,13 @@ pub fn tick(directory: &Path, cancel: &AtomicBool) -> Result<bool> {
             .all(|s| s == "active"),
         "one or more native services need recovery"
     );
+    if inspect_certificates {
+        let certificates = certificates::probe(directory, &current, cancel)?;
+        ensure!(
+            !certificates.due && !certificates.pending,
+            "native transport certificates need maintenance"
+        );
+    }
     if current.configuration.hrc.is_some() {
         ensure!(
             !receiver::recovery_due(directory, &current)?,

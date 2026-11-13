@@ -99,8 +99,16 @@ impl Offer {
             possessions: outputs,
         })
     }
+    /// Expired signed successors may advance retained history, never current serving authority.
+    pub fn historical(&self, at: u64) -> Result<bool> {
+        let transport = self.manifest.transport_interval()?;
+        Ok(self.manifest.generation > 1
+            && at >= self.manifest.validity.0
+            && transport.is_none_or(|(start, _)| at >= start)
+            && (at >= self.manifest.validity.1 || transport.is_some_and(|(_, end)| at >= end)))
+    }
     pub fn current(&self, at: u64) -> Result<bool> {
-        if !current(at, self.manifest.validity) {
+        if !current(at, self.manifest.validity) || self.manifest.current_transport(at).is_err() {
             return Ok(false);
         }
         for bytes in &self.possessions {
@@ -112,6 +120,17 @@ impl Offer {
             }
         }
         Ok(true)
+    }
+    /// The signed, finite possession window never extends initial admission authority.
+    pub fn possession_expiry(&self) -> Result<Option<u64>> {
+        self.possessions
+            .iter()
+            .map(|bytes| {
+                let (payload, _) = wire::envelope(bytes, 1)?;
+                wire::decode(&payload)?.array(12)?[11].array(2)?[1].uint()
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(|ends| ends.into_iter().min())
     }
     pub fn possessions_value(&self) -> V {
         a(self.possessions.iter().map(|p| b(p)).collect())
@@ -509,13 +528,18 @@ impl Operation {
                 d.expires_ms = if *historical {
                     c.expires_ms
                 } else {
-                    offer.manifest.validity.1.bound(c.expires_ms)
+                    offer
+                        .manifest
+                        .validity
+                        .1
+                        .bound(c.expires_ms)
+                        .min(offer.manifest.transport_expiry()?.unwrap_or(c.expires_ms))
                 };
                 if !all.contains(grant) {
                     d.refuse(12)
                 }
                 if if *historical {
-                    offer.manifest.generation <= 1 || at < offer.manifest.validity.1
+                    !offer.historical(at)?
                 } else {
                     !current(at, offer.manifest.validity) || (!replay && !offer.current(at)?)
                 } {

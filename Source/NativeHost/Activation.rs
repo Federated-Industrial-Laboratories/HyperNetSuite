@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Each deployment receives a separate activation-only application and retained requester state.
-use super::{bootstrap, engine::*, files, operator::*, units};
+use super::{bootstrap, engine::*, files, operator::*, services, units};
 use crate::{authority_runtime_activation as activation, trust_validity::End, trust_wire};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -548,7 +548,7 @@ pub fn activate(host: &mut Host<'_>, name: &str, operator_name: &str, role: u64)
     if active {
         return Ok(());
     }
-    let folder = host.p(&format!("Services/{name}"));
+    let folder = services::active_directory(host, name)?;
     let runtime = host.p(name);
     let input = folder.join("Inputs");
     if !runtime.exists() {

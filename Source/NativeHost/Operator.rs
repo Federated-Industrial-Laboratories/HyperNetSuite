@@ -6,7 +6,9 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::Read,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -232,6 +234,101 @@ pub fn online(host: &Host<'_>, who: &str) -> Result<Vec<String>> {
     ]));
     Ok(a)
 }
+fn offer_name(name: &str) -> bool {
+    name.strip_prefix("Generation")
+        .and_then(|v| v.strip_suffix(".cbor"))
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|n| n > 1 && name == format!("Generation{n:020}.cbor"))
+}
+fn public_directory(path: &Path) -> Result<()> {
+    let m = std::fs::symlink_metadata(path)?;
+    ensure!(
+        m.is_dir()
+            && m.uid() == unsafe { libc::geteuid() }
+            && m.mode() & 0o022 == 0
+            && path.canonicalize()? == path,
+        "public offer directory differs"
+    );
+    Ok(())
+}
+fn offer_inventory(root: &Path, source: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+    let name = source
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|v| v.to_str())
+        .context("offer runtime absent")?;
+    ensure!(
+        [
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "Relay",
+            "AuthorityEndpoint",
+            "PageEndpoint",
+            "ApplicationEndpoint"
+        ]
+        .contains(&name)
+            && source == root.join(name).join("OperationalOffers"),
+        "offer directory is not a retained runtime"
+    );
+    public_directory(root)?;
+    public_directory(&root.join(name))?;
+    public_directory(source)?;
+    let mut entries = BTreeMap::new();
+    let mut size = 0;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("invalid public offer name"))?;
+        ensure!(
+            entries.len() < 64 && offer_name(&name),
+            "public offer inventory exceeds bound or differs"
+        );
+        let m = std::fs::symlink_metadata(entry.path())?;
+        ensure!(
+            m.is_file() && m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o022 == 0,
+            "public offer metadata differs"
+        );
+        let data = files::public_file(&entry.path(), 98_304)?;
+        size += data.len();
+        ensure!(size <= 6_291_456, "public offer inventory exceeds bound");
+        entries.insert(name, data);
+    }
+    Ok(entries)
+}
+fn mapped_offers(host: &Host<'_>, root: &Path, source: &Path) -> Result<String> {
+    let inventory = offer_inventory(&host.c.root, source)?;
+    let name = format!("Offers-{}", digest(text(source)?.as_bytes()));
+    let destination = root.join("Inputs").join(&name);
+    directory(host, &destination)?;
+    let listing = podman(
+        host,
+        &bytes(&["unshare", "/usr/bin/ls", "-1A", "--", &text(&destination)?]),
+    )?;
+    let listing = std::str::from_utf8(&listing)?;
+    let previous = listing.lines().collect::<Vec<_>>();
+    ensure!(
+        previous.len() <= 64 && previous.iter().all(|n| offer_name(n)),
+        "mapped offer inventory differs"
+    );
+    // A fixed directory avoids retaining a complete history copy for each successor.
+    for (name, data) in &inventory {
+        mapped_write(host, &destination, name, "mapped-input", data)?;
+    }
+    ensure!(
+        offer_inventory(&host.c.root, source)? == inventory,
+        "public offer inventory changed during staging"
+    );
+    for name in previous {
+        if !inventory.contains_key(name) {
+            mapped_write(host, &destination, name, "mapped-remove", &[])?;
+        }
+    }
+    Ok(format!("/Operator/Inputs/{name}"))
+}
 pub fn operator(host: &Host<'_>, who: &str, arguments: &[String]) -> Result<Value> {
     ensure!(
         ["Administrator", "ServiceOwner"].contains(&who)
@@ -261,7 +358,13 @@ pub fn operator(host: &Host<'_>, who: &str, arguments: &[String]) -> Result<Valu
         ),
         Some("routes") => matches!(
             arguments.get(1).map(String::as_str),
-            Some("register" | "issue" | "invite")
+            Some(
+                "register"
+                    | "issue"
+                    | "invite"
+                    | "recover-expired-issue"
+                    | "recover-expired-registration"
+            )
         ),
         Some("streams") => matches!(
             arguments.get(1).map(String::as_str),
@@ -302,6 +405,14 @@ pub fn operator(host: &Host<'_>, who: &str, arguments: &[String]) -> Result<Valu
                 "native progress escapes host"
             );
             converted.push(format!("/Operator/Progress-{}", digest(arg.as_bytes())));
+        } else if index > 0 && arguments[index - 1] == "--offers-directory" {
+            ensure!(
+                arguments
+                    .get(..3)
+                    .is_some_and(|a| a == ["authority-inspection", "deployments", "synchronise"]),
+                "public offers require deployment synchronisation"
+            );
+            converted.push(mapped_offers(host, &root, Path::new(arg))?);
         } else if index > 0
             && (arguments[index - 1] == "--output"
                 || (arguments[index - 1] == "--receipt"
@@ -520,6 +631,51 @@ pub fn retire_exports(host: &Host<'_>, who: &str, entries: &[RetiredExport]) -> 
             && who.bytes().all(|c| c.is_ascii_alphanumeric()),
         "retired exports require an activation manager"
     );
+    retire_mapped(host, who, entries)
+}
+
+/// Retire only exact obsolete public certificate exports selected by the retained transaction.
+pub fn retire_certificate_exports(
+    host: &Host<'_>,
+    who: &str,
+    entries: &[(PathBuf, ExportKind, String)],
+) -> Result<()> {
+    ensure!(
+        matches!(who, "Administrator" | "ServiceOwner"),
+        "unexpected certificate operator"
+    );
+    let mut mapped = Vec::new();
+    for (path, kind, hash) in entries {
+        ensure!(
+            (path.starts_with(host.p("Successor/Certificates"))
+                || path.starts_with(host.p("Successor/InitialOffers")))
+                && path.components().all(|c| matches!(
+                    c,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                ))
+                && crate::admission::protocol::identifier(hash),
+            "unexpected retired certificate export"
+        );
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => ensure!(
+                digest(&files::read(path, 1_048_576)?) == *hash,
+                "retired certificate export changed"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        mapped.push(RetiredExport {
+            kind: *kind,
+            name: match kind {
+                ExportKind::Input => hash.clone(),
+                ExportKind::Output => digest(text(path)?.as_bytes()),
+            },
+            sha256: hash.clone(),
+        });
+    }
+    retire_mapped(host, who, &mapped)
+}
+fn retire_mapped(host: &Host<'_>, who: &str, entries: &[RetiredExport]) -> Result<()> {
     valid_exports(entries)?;
     let root = host.p(&format!("Op{who}"));
     let arguments = bytes(&[
@@ -616,6 +772,48 @@ pub fn retire_input(inputs: &Path, outputs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn public_offer_inventory_confines_paths_and_rejects_unsafe_files() {
+        let root =
+            std::env::temp_dir().join(format!("hypernet-offers-{}", crate::random_hex::<16>()));
+        files::directory(&root).unwrap();
+        let outcome = (|| -> Result<()> {
+            let runtime = root.join("Relay");
+            let offers = runtime.join("OperationalOffers");
+            files::directory(&runtime)?;
+            files::directory(&offers)?;
+            let name = "Generation00000000000000000002.cbor";
+            let path = offers.join(name);
+            files::exact_file(&path, b"public offer")?;
+            assert_eq!(offer_inventory(&root, &offers)?[name], b"public offer");
+            assert!(offer_inventory(&root, &runtime).is_err());
+            assert!(!offer_name("Generation2.cbor"));
+            assert!(!offer_name("Generation00000000000000000001.cbor"));
+            let secret = root.join("Identity.json");
+            files::exact_file(&secret, b"private sentinel")?;
+            files::remove(&path)?;
+            std::os::unix::fs::symlink(&secret, &path)?;
+            assert!(offer_inventory(&root, &offers).is_err());
+            std::fs::remove_file(&path)?;
+            std::fs::hard_link(&secret, &path)?;
+            assert!(offer_inventory(&root, &offers).is_err());
+            std::fs::remove_file(&path)?;
+            files::exact_file(&offers.join("Identity.json"), b"unexpected input")?;
+            assert!(offer_inventory(&root, &offers).is_err());
+            files::remove(&offers.join("Identity.json"))?;
+            for n in 2..=66 {
+                files::exact_file(
+                    &offers.join(format!("Generation{n:020}.cbor")),
+                    b"public offer",
+                )?;
+            }
+            assert!(offer_inventory(&root, &offers).is_err());
+            assert_eq!(files::read(&secret, 32)?, b"private sentinel");
+            Ok(())
+        })();
+        std::fs::remove_dir_all(root).unwrap();
+        outcome.unwrap();
+    }
     #[test]
     fn retired_exports_check_complete_batch_and_resume_exact_missing_files() {
         let root =

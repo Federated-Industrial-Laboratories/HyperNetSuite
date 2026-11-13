@@ -401,25 +401,43 @@ fn connected(online: Online, work: Work) -> Result<()> {
                 &mut session,
                 &source,
             )?;
-            let request = Request::Register {
-                grant: context.version(102, grant)?,
-                historical: false,
-                offer,
+            let reference = context.version(102, grant)?;
+            let expected_offer = offer.clone();
+            let request = if store.resume_ordinary()?.is_none()
+                && context.registered(&offer, signer.verifying_key().to_bytes(), &reference)?
+            {
+                Request::Get {
+                    deployment: offer.manifest.deployment,
+                    grant: Some(grant),
+                }
+            } else {
+                Request::Register {
+                    grant: reference.clone(),
+                    historical: false,
+                    offer,
+                }
             };
-            (
-                "DeploymentRegistered",
-                client::local(
-                    &verified,
-                    request,
-                    Some(&context),
-                    &online.socket,
-                    &signer,
-                    &mut store,
-                    &mut session,
-                    || source.health(),
+            let result = client::local(
+                &verified,
+                request,
+                Some(&context),
+                &online.socket,
+                &signer,
+                &mut store,
+                &mut session,
+                || source.health(),
+            )?;
+            ensure!(
+                result.cache.registered(
+                    &expected_offer,
+                    signer.verifying_key().to_bytes(),
+                    &reference
                 )?,
-            )
+                "certified registration changed during exact retry"
+            );
+            ("DeploymentRegistered", result)
         }
+
         Work::Get(deployment, grant) => {
             let context = if let Some(grant) = grant {
                 Some(scoped(
@@ -532,8 +550,13 @@ fn connected(online: Online, work: Work) -> Result<()> {
             )
         }
     };
+    let registered_profile = result.cache.public_registration()?.map(|r| {
+        json!({"manifest":r.manifest,
+        "profileDigest":hex::encode(r.profile.digest),"consentDigest":hex::encode(r.consent.digest),
+        "withdrawn":result.cache.version(130,r.deployment).is_ok()})
+    });
     crate::print_value(
-        &json!({"status":status,"deployment":hex::encode(result.cache.deployment),"committedHeight":result.prefix.height(),"value":diagnostic(result.value),"currentPermission":false}),
+        &json!({"status":status,"deployment":hex::encode(result.cache.deployment),"committedHeight":result.prefix.height(),"value":diagnostic(result.value),"currentPermission":false,"registeredProfile":registered_profile}),
     )
 }
 fn synchronise(online: Online, grant: [u8; 32], directory: &Path) -> Result<()> {
@@ -624,7 +647,7 @@ fn synchronise(online: Online, grant: [u8; 32], directory: &Path) -> Result<()> 
             );
             let historical = match resumed {
                 Some(value) => value,
-                None => source.health()?.observe()?.wall_ms >= offer.manifest.validity.1,
+                None => offer.historical(source.health()?.observe()?.wall_ms)?,
             };
             let request = Request::Register {
                 grant: context.version(102, grant)?,
@@ -650,9 +673,13 @@ fn synchronise(online: Online, grant: [u8; 32], directory: &Path) -> Result<()> 
         "Retained offer history did not complete the exact pending registration"
     );
     let final_manifest = previous.context("No retained operational offers found")?;
+    let at = source.health()?.observe()?.wall_ms;
+    let fresh_final = at >= final_manifest.validity.0
+        && at < final_manifest.validity.1
+        && final_manifest.current_transport(at).is_ok();
     crate::print_value(
         &json!({"status":"DeploymentSynchronised","deployment":hex::encode(final_manifest.deployment),
-        "generation":final_generation,"currentPermission":false,"freshFinalConsent":source.health()?.observe()?.wall_ms < final_manifest.validity.1}),
+        "generation":final_generation,"currentPermission":false,"freshFinalConsent":fresh_final}),
     )
 }
 pub fn run(command: Command) -> Result<()> {
