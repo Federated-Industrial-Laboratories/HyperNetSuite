@@ -299,8 +299,18 @@ fn context(
     )
 }
 fn mutation_output(status: &str, result: &client::ResultState) -> Result<()> {
-    let f = result.value.array(5)?;
-    let bytes = f[4].bytes()?;
+    crate::print_value(&mutation_report(
+        status,
+        &result.value,
+        result.prefix.height(),
+    )?)
+}
+pub(crate) fn mutation_report(status: &str, result: &V, height: u64) -> Result<Value> {
+    let f = result.array(6)?;
+    f[5].uint()?;
+    record_report(status, f[4].bytes()?, height)
+}
+fn record_report(status: &str, bytes: &[u8], height: u64) -> Result<Value> {
     let value = wire::decode(bytes)?;
     let fields = value.list(17)?;
     let kind = fields[0].uint()?;
@@ -319,9 +329,72 @@ fn mutation_output(status: &str, result: &client::ResultState) -> Result<()> {
     } else {
         None
     };
-    crate::print_value(
-        &json!({"status":status,"application":hex::encode(application),"grant":grant,"recordDigest":hex::encode(wire::digest(bytes)),"committedHeight":result.prefix.height(),"record":diagnostic(value)}),
+    Ok(
+        json!({"status":status,"application":hex::encode(application),"grant":grant,"recordDigest":hex::encode(wire::digest(bytes)),"committedHeight":height,"record":diagnostic(value)}),
     )
+}
+// A completed delegation can be followed by another request before its CLI report is saved.
+// Recover its immutable declaration, never a new snapshot or a renewed capability.
+pub(crate) fn recovered_delegation(
+    bytes: &[u8],
+    parent: &crate::authority_proof::VersionRef,
+    child: &V,
+    requester: [u8; 32],
+    height: u64,
+) -> Result<Value> {
+    let record = wire::decode(bytes)?;
+    let f = record.array(17)?;
+    let declared = a(vec![
+        f[6].clone(),
+        f[8].clone(),
+        f[9].clone(),
+        f[10].clone(),
+        f[11].clone(),
+        f[12].clone(),
+        f[14].clone(),
+        f[15].clone(),
+    ]);
+    crate::authority_membership::ChildSpec::parse(child, f[2].fixed()?)?;
+    ensure!(
+        f[0] == V::Uint(102)
+            && f[1] == V::Uint(1)
+            && f[4] == V::Uint(1)
+            && f[5] == V::Null
+            && f[7].fixed::<32>()? == requester
+            && f[13] == reference(parent)
+            && declared == *child,
+        "existing delegation differs from requested declaration"
+    );
+    let mut report = record_report("ApplicationGrantDelegated", bytes, height)?;
+    report["recovered"] = json!(true);
+    report["currentPermission"] = json!(false);
+    Ok(report)
+}
+fn delegation_selection(
+    mut selection: Selection,
+    grant: [u8; 32],
+    retained: bool,
+    pending: Option<&crate::authority_proof::Intent>,
+) -> Result<Selection> {
+    if let Some(pending) = pending {
+        if pending.action == "AuthorityDelegationContext" {
+            let value = wire::decode(&pending.parameters)?;
+            let f = value.array(8)?;
+            ensure!(
+                f[0] == V::Uint(200)
+                    && f[1] == V::Uint(1)
+                    && f[2] == V::Text(pending.action.clone())
+                    && f[3] == b(&selection.parent)
+                    && f[4] == b(&selection.tier)
+                    && (f[5] == V::Null || f[5] == b(&grant)),
+                "another exact delegation context remains unresolved"
+            );
+            selection.child = if f[5] == V::Null { None } else { Some(grant) };
+        }
+    } else if retained {
+        selection.child = Some(grant);
+    }
+    Ok(selection)
 }
 fn state_output(result: &client::ResultState) -> Result<()> {
     let f = result.value.array(7)?;
@@ -483,7 +556,19 @@ pub fn run(command: Command) -> Result<()> {
             let source = clock(&online.location, store.descriptor().voters())?;
             let mut session = Session::new()?;
             let grant = id(&grant)?;
-            let selected = scope.selection(None)?;
+            let pending = store
+                .resume_ordinary()?
+                .map(|pending| crate::authority_proof::Intent::from_signed(pending.signed()))
+                .transpose()?;
+            let selected = delegation_selection(
+                scope.selection(None)?,
+                grant,
+                store
+                    .generations()
+                    .iter()
+                    .any(|r| r.kind == 102 && r.id == grant),
+                pending.as_ref(),
+            )?;
             let context = context(
                 &verified,
                 &online,
@@ -526,6 +611,43 @@ pub fn run(command: Command) -> Result<()> {
                     a(limits.into_iter().map(V::Uint).collect()),
                 ]),
             };
+            if store.resume_ordinary()?.is_none()
+                && store
+                    .generations()
+                    .iter()
+                    .any(|r| r.kind == 102 && r.id == grant)
+            {
+                let current = if context.selection.child == Some(grant) {
+                    context
+                } else {
+                    DelegationContext::refresh_local(
+                        &verified,
+                        scope.selection(Some(grant))?,
+                        &online.socket,
+                        &signer,
+                        &mut store,
+                        &mut session,
+                        || source.health(),
+                    )?
+                };
+                ensure!(
+                    !store
+                        .generations()
+                        .iter()
+                        .any(|r| r.kind == 126 && r.id == grant),
+                    "existing delegation has been revoked"
+                );
+                let Request::Delegate { parent, child } = &request else {
+                    unreachable!()
+                };
+                return crate::print_value(&recovered_delegation(
+                    current.record(102, grant)?,
+                    parent,
+                    child,
+                    signer.verifying_key().to_bytes(),
+                    store.prefix().height(),
+                )?);
+            }
             let result = client::local(
                 &verified,
                 request,

@@ -736,3 +736,110 @@ fn weaker_policy_discovery_finishes_metadata_before_requiring_explicit_acceptanc
     crate::authority_inspection::policy::require_accepted(&f.bootstrap, &f.store).unwrap();
     DelegationContext::load(&f.bootstrap, &f.store, selection()).unwrap();
 }
+
+#[test]
+fn delegation_cli_recovers_after_certified_followup_without_another_mutation() {
+    let mut f = Fixture::new();
+    let app = SigningKey::from_bytes(&[41; 32]);
+    let context = delegated(&mut f, &app);
+    context.current(&f.store).unwrap();
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    let parent = context.version(102, [23; 32]).unwrap();
+    let tier = context.version(101, [22; 32]).unwrap();
+    let parent_record = wire::decode(context.record(102, parent.id).unwrap()).unwrap();
+    let child = a(vec![
+        b(&[40; 32]),
+        b(&app.verifying_key().to_bytes()),
+        version_value(&tier),
+        a(vec![V::Uint(0)]),
+        a(vec![a(vec![V::Uint(0), b(&[20; 32])])]),
+        parent_record.array(17).unwrap()[12].clone(),
+        V::Uint(0),
+        a(vec![V::Uint(0), V::Uint(1), V::Uint(0), V::Uint(1)]),
+    ]);
+    let height = f.store.prefix().height();
+    let record = context.record(102, [40; 32]).unwrap().to_vec();
+    // A fresh mutation cannot stand in for recovering the completed declaration.
+    assert!(
+        Prepared::new(
+            &f.bootstrap,
+            Request::Delegate {
+                parent: parent.clone(),
+                child: child.clone()
+            },
+            Some(&context),
+            None,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            f.issued,
+        )
+        .is_err()
+    );
+    let report = crate::applications::recovered_delegation(
+        &record,
+        &parent,
+        &child,
+        f.signer.verifying_key().to_bytes(),
+        height,
+    )
+    .unwrap();
+    assert_eq!(report["status"], "ApplicationGrantDelegated");
+    assert_eq!(report["recovered"], true);
+    assert_eq!(report["currentPermission"], false);
+    assert_eq!(report["recordDigest"], hex::encode(wire::digest(&record)));
+    assert_eq!(f.store.prefix().height(), height);
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    let mut changed_tier = tier.clone();
+    changed_tier.digest = [91; 32];
+    let mut changed_validity = child.array(8).unwrap()[5].array(2).unwrap().to_vec();
+    changed_validity[0] = V::Uint(changed_validity[0].uint().unwrap() + 1);
+    let alternatives = [
+        b(&[90; 32]),
+        b(&SigningKey::from_bytes(&[42; 32]).verifying_key().to_bytes()),
+        version_value(&changed_tier),
+        a(vec![V::Uint(9)]),
+        a(vec![a(vec![V::Uint(5), b(&[92; 32])])]),
+        a(changed_validity),
+        V::Uint(1),
+        a(vec![V::Uint(0), V::Uint(2), V::Uint(0), V::Uint(1)]),
+    ];
+    for (index, alternative) in alternatives.into_iter().enumerate() {
+        let mut changed = child.array(8).unwrap().to_vec();
+        changed[index] = alternative;
+        let changed = a(changed);
+        membership::ChildSpec::parse(&changed, [20; 32]).unwrap();
+        assert!(
+            crate::applications::recovered_delegation(
+                &record,
+                &parent,
+                &changed,
+                f.signer.verifying_key().to_bytes(),
+                height,
+            )
+            .is_err()
+        );
+    }
+    let mut changed_parent = parent.clone();
+    changed_parent.digest = [91; 32];
+    assert!(
+        crate::applications::recovered_delegation(
+            &record,
+            &changed_parent,
+            &child,
+            f.signer.verifying_key().to_bytes(),
+            height,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::applications::recovered_delegation(
+            &record,
+            &parent,
+            &child,
+            app.verifying_key().to_bytes(),
+            height,
+        )
+        .is_err()
+    );
+}
