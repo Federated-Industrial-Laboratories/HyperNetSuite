@@ -696,7 +696,273 @@ fn admission_reused_slot_snapshot_survives_certified_enrolment_and_reopen() {
     );
 }
 
+#[test]
+fn admission_legacy_closure_replaces_manual_membership_and_reopens() {
+    use crate::authority_admission as native;
+
+    let (mut f, policy, candidate, prior, old) = admission_reserved_fixture_with_legacy(true);
+    let old_governance = Governance::parse([20; 32], [21; 32], &prior).unwrap();
+    let legacy = &policy.legacy[0];
+    let mut operation = admission_enrol(&f, &prior, &policy, &old, &candidate);
+    operation.transition = native::Transition::Adopt;
+    operation.legacy = vec![
+        old_governance
+            .record_bytes(125, legacy.id)
+            .unwrap()
+            .to_vec(),
+    ];
+    operation.snapshot = admission_snapshot(&f, &prior);
+    let parent = wire::decode(old_governance.record_bytes(102, policy.parent.id).unwrap()).unwrap();
+    let tier = crate::authority_membership::version(&parent.array(17).unwrap()[9]).unwrap();
+    let mut next = native::Slot::parse(&operation.next, [20; 32], [21; 32]).unwrap();
+    next.legacy_streams = vec![candidate.verifying_key().to_bytes()];
+    next.material = native::enrol_material(
+        &policy,
+        &old,
+        &tier,
+        &operation.snapshot,
+        [20; 32],
+        [21; 32],
+    )
+    .unwrap();
+    operation.next = admission_record(
+        native::SLOT,
+        old.reference.id,
+        next.payload(),
+        &operation.snapshot,
+        Some(&old.bytes),
+    );
+    let (verified, current, _) = certified_admission(&mut f, &operation, &prior, None);
+    let governance = Governance::parse([20; 32], [21; 32], &current).unwrap();
+    let retired = references(
+        &[governance.record_bytes(125, legacy.id).unwrap().to_vec()],
+        [20; 32],
+        [21; 32],
+    )
+    .unwrap()
+    .remove(0);
+    assert_eq!(retired.generation, 2);
+    let reader = governance
+        .versions()
+        .into_iter()
+        .find(|r| {
+            r.kind == 102 && r.id == native::identifier(policy.reference.id, 0, 0, 1).unwrap()
+        })
+        .unwrap();
+    let query = Request {
+        command: domains::page::Command::Context {
+            action: 0,
+            scope_kind: 0,
+            resource: [20; 32],
+            namespace: None,
+        }
+        .into(),
+        grant: Some(reader),
+    }
+    .operation(&f.store, &[])
+    .unwrap();
+    let signed = crate::authority_deployment_tests::signed(
+        &candidate,
+        "AuthorityDomain",
+        query.command.resource(),
+        0,
+        wire::decode(&query.parameters().unwrap()).unwrap(),
+        vec![],
+    );
+    let envelope = wire::decode(&signed).unwrap();
+    let mut payload = wire::decode(envelope.array(4).unwrap()[2].bytes().unwrap())
+        .unwrap()
+        .array(17)
+        .unwrap()
+        .to_vec();
+    payload[13] = V::Uint(query.snapshot.epoch);
+    payload[14] = V::Uint(query.snapshot.height);
+    let signed = wire::sign_envelope(&wire::encode(&a(payload)).unwrap(), &candidate).unwrap();
+    let intent = Intent::from_signed(&signed).unwrap();
+    let state = State::empty([20; 32], [21; 32]);
+    let at = f.current.observe().unwrap().wall_ms;
+    let result = query
+        .prepare(
+            &state,
+            &current,
+            &Reservations(f.bootstrap.reservations().to_vec()),
+            &intent,
+            at,
+            false,
+            true,
+        )
+        .unwrap();
+    assert_eq!(result.code, 0);
+    assert!(result.versions.contains(&retired));
+    assert!(
+        !result
+            .versions
+            .iter()
+            .any(|r| r.index() == policy.legacy[1].index())
+    );
+    let challenge = f
+        .session
+        .issue(
+            &signed,
+            &candidate,
+            random_id().unwrap(),
+            DURATION,
+            f.current,
+        )
+        .unwrap();
+    let ordered = wire::encode(&a(vec![
+        V::Uint(22),
+        V::Uint(1),
+        f.store.descriptor().scope().value(),
+        b(&signed),
+        b(&challenge),
+        V::Uint(Challenge::from_signed(&challenge).unwrap().expires_at_ms),
+    ]))
+    .unwrap();
+    let independently_verify = |value: V, retained: &[Vec<u8>]| {
+        let (packet, node) = certified_request(
+            f.store.descriptor(),
+            &signed,
+            &challenge,
+            &ordered,
+            value,
+            at,
+            *f.store.prefix().node(),
+            f.store.prefix().height() + 1,
+            0,
+        );
+        let packet = wire::decode(&packet).unwrap();
+        let fields = packet.array(10).unwrap();
+        proof::verify_response(
+            f.store.descriptor(),
+            proof::ProofContext {
+                intent: &signed,
+                challenge: &challenge,
+                restrictions: Restrictions::default(),
+                minimum_height: f.store.prefix().height(),
+                maximum_effect: 1,
+                expected_stream: None,
+            },
+            proof::Response {
+                ordered_request: &ordered,
+                operation_result: fields[8].bytes().unwrap(),
+                certificate: fields[7].bytes().unwrap(),
+                ancestry: std::slice::from_ref(&node),
+            },
+            |intent, result, executed| {
+                let checked = domains::result::verify(
+                    &f.bootstrap,
+                    &state,
+                    retained,
+                    intent,
+                    result,
+                    executed,
+                    &[],
+                )?;
+                ensure!(
+                    checked.versions.contains(&retired),
+                    "legacy successor omitted"
+                );
+                proof::ActionValidation::new(checked.versions)
+            },
+        )
+    };
+    independently_verify(result.value.clone(), &prior).unwrap();
+    independently_verify(result.value.clone(), f.bootstrap.governance_records()).unwrap();
+    for omit in [false, true] {
+        let mut value = result.value.array(5).unwrap().to_vec();
+        let mut body = value[4].array(4).unwrap().to_vec();
+        let mut records = body[2].list(64).unwrap().to_vec();
+        let index = records
+            .iter()
+            .position(|v| {
+                references(&[v.bytes().unwrap().to_vec()], [20; 32], [21; 32]).unwrap()
+                    == [retired.clone()]
+            })
+            .unwrap();
+        if omit {
+            records.remove(index);
+            value[3] = a(result
+                .versions
+                .iter()
+                .filter(|r| *r != &retired)
+                .map(version_value)
+                .collect());
+        } else {
+            let mut changed = wire::decode(records[index].bytes().unwrap())
+                .unwrap()
+                .array(12)
+                .unwrap()
+                .to_vec();
+            changed[5] = b(&[254; 32]);
+            records[index] = b(&wire::encode(&a(changed)).unwrap());
+        }
+        body[2] = a(records);
+        value[4] = a(body);
+        let error = independently_verify(a(value), &prior).err().unwrap();
+        assert!(format!("{error:#}").contains(if omit {
+            "duplicate membership signing key"
+        } else {
+            "domain result references differ from its exact records"
+        }));
+    }
+    f.session.discard(&challenge).unwrap();
+    f.store
+        .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
+        .unwrap()
+        .perform_with_clock(
+            &mut f.store,
+            &mut f.session,
+            &mut || Ok(f.current),
+            1,
+            |_| Ok(()),
+            |_, store| {
+                let authenticated = current
+                    .iter()
+                    .filter(|bytes| {
+                        references(std::slice::from_ref(bytes), [20; 32], [21; 32])
+                            .is_ok_and(|refs| store.generations().contains(&refs[0]))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let context = ContextState::retained(
+                    &f.bootstrap,
+                    store,
+                    &merge(&f.bootstrap, &authenticated)?,
+                )?;
+                context.save(store)?;
+                Cache::retain_context(&f.bootstrap, store, &context)
+            },
+        )
+        .unwrap();
+    assert!(f.store.generations().contains(&retired));
+    assert!(!f.store.generations().contains(legacy));
+    let cached = Cache::load(&f.bootstrap, &f.store).unwrap().records;
+    let floor = std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap();
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert_eq!(Cache::load(&f.bootstrap, &f.store).unwrap().records, cached);
+    assert!(crate::authority_inspection::admission::retained(&f.bootstrap, &f.store).is_ok());
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+        floor
+    );
+}
+
 fn admission_reserved_fixture() -> (
+    Fixture,
+    crate::authority_admission::Policy,
+    SigningKey,
+    Vec<Vec<u8>>,
+    crate::authority_admission::Slot,
+) {
+    admission_reserved_fixture_with_legacy(false)
+}
+
+fn admission_reserved_fixture_with_legacy(
+    legacy: bool,
+) -> (
     Fixture,
     crate::authority_admission::Policy,
     SigningKey,
@@ -714,6 +980,49 @@ fn admission_reserved_fixture() -> (
         .find(|r| r.kind == 102)
         .unwrap();
     let now = f.current.observe().unwrap().wall_ms;
+    let candidate = SigningKey::from_bytes(&[92; 32]);
+    let member = candidate.verifying_key().to_bytes();
+    let mut legacy_refs = vec![];
+    if legacy {
+        let governance = Governance::parse([20; 32], [21; 32], &source).unwrap();
+        let parent_bytes = governance.record_bytes(102, parent.id).unwrap();
+        let unrelated = SigningKey::from_bytes(&[94; 32]).verifying_key().to_bytes();
+        for (index, principal) in [member, unrelated].iter().enumerate() {
+            let mut fields = wire::decode(parent_bytes)
+                .unwrap()
+                .array(17)
+                .unwrap()
+                .to_vec();
+            fields[6] = b(&[230 + 2 * index as u8; 32]);
+            fields[8] = b(principal);
+            fields[10] = a(vec![V::Uint(0)]);
+            fields[13] = version_value(&parent);
+            fields[14] = V::Uint(0);
+            fields[16] = snapshot.value.clone();
+            let reader = wire::encode(&a(fields)).unwrap();
+            let reader_ref = references(std::slice::from_ref(&reader), [20; 32], [21; 32])
+                .unwrap()
+                .remove(0);
+            let manual = wire::encode(&a(vec![
+                V::Uint(125),
+                V::Uint(1),
+                b(&[20; 32]),
+                b(&[21; 32]),
+                V::Uint(1),
+                V::Null,
+                b(&[231 + 2 * index as u8; 32]),
+                b(principal),
+                crate::trust_validity::Validity(now - 2000, (now + 600000).into()).value(),
+                V::Bool(false),
+                version_value(&reader_ref),
+                snapshot.value.clone(),
+            ]))
+            .unwrap();
+            legacy_refs
+                .extend(references(std::slice::from_ref(&manual), [20; 32], [21; 32]).unwrap());
+            source.extend([reader, manual]);
+        }
+    }
     let policy = native::Policy::parse(
         &admission_record(
             native::POLICY,
@@ -741,7 +1050,7 @@ fn admission_reserved_fixture() -> (
                     }
                     .value(),
                 ]),
-                a(vec![]),
+                a(legacy_refs.iter().map(version_value).collect()),
             ]),
             &snapshot,
             None,
@@ -752,8 +1061,6 @@ fn admission_reserved_fixture() -> (
     .unwrap();
     source.push(policy.bytes.clone());
     crate::authority_membership::sort_records(&mut source).unwrap();
-    let candidate = SigningKey::from_bytes(&[92; 32]);
-    let member = candidate.verifying_key().to_bytes();
     let relay = SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes();
     let role = native::Role {
         role: 0,
@@ -808,7 +1115,26 @@ fn admission_reserved_fixture() -> (
         legacy: vec![],
         snapshot,
     };
-    let (reserved_records, reserve_intent) = complete_admission(&mut f, &reserve, &source);
+    let (reserved_records, reserve_intent) = if legacy {
+        // The reservation certifies the policy and slot; unused manual grants
+        // remain evaluator inputs until a result independently authenticates them.
+        let (verified, records, intent) = certified_admission(&mut f, &reserve, &source, None);
+        f.store
+            .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
+            .unwrap()
+            .perform_with_clock(
+                &mut f.store,
+                &mut f.session,
+                &mut || Ok(f.current),
+                1,
+                |_| Ok(()),
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        (records, intent)
+    } else {
+        complete_admission(&mut f, &reserve, &source)
+    };
     assert_eq!(Intent::from_signed(&reserve_intent).unwrap().sequence, 1);
     let old = native::Slot::parse(&reserved, [20; 32], [21; 32]).unwrap();
     (f, policy, candidate, reserved_records, old)

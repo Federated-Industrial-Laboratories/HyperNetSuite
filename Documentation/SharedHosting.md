@@ -201,6 +201,17 @@ private. The registrar authenticates Unix peer identities and accepts owner
 controls only from its separate owner UID. Ordinary participants
 cannot select helper programs, paths, native grants or owner credentials.
 
+Joining uses separate bounded request and admission-action budgets. The public
+listener and registrar each allow up to 256 requests per source and 512 overall
+per minute, with at most eight active TLS workers. This accommodates previews,
+two-request continuations and clients sharing an address. Descriptor, challenge
+and completed-membership status requests still obtain fresh native evidence;
+they do not reuse a stale permission response. Enrolment, password checks and
+renewal retain a separate limit of 24 actions per source and 120 overall per
+minute. Status consumes that action budget when it must resume unfinished
+enrolment or other admission work. Frame limits and operation deadlines remain
+independent of both budgets.
+
 Native policy bounds constrain the registrar even if its public-facing input is
 hostile. Each slot has fixed purpose, selected roles, quotas and no delegation
 rights. Password rotation and invitation changes do not create new native
