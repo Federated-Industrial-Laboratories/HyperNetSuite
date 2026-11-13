@@ -70,6 +70,6 @@ fn external_navigation_waits_for_busy_work_and_forms_until_explicit_navigation()
     browser.open_queued();
     assert!(matches!(result.try_recv().unwrap().0,reader::Action::Address(a)if a==address));
     assert!(browser.busy);
-    browser.shutdown();
+    drop(browser);
     assert!(!sender.is_attached());
 }
