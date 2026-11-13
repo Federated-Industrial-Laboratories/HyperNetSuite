@@ -157,6 +157,9 @@ For operation after logout and reboot, enable unattended user services from the
 dashboard. The desktop may request administrator authentication for this local
 system setting. The host supervisor uses service restart with backoff, without a
 service lifetime timer. A stopped host stays stopped until explicitly resumed.
+The supervisor checks health before recovering services. Status waits for an
+active host operation to finish before reading its state. That wait supports
+cancellation and shares the normal bounded request deadline with the status check.
 
 Export **redacted diagnosis** to inspect native phase, joining readiness and
 unattended startup status. It omits private invitations, passwords, key bytes and

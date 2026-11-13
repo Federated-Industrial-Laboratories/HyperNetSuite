@@ -501,6 +501,66 @@ fn admission_lost_first_reply_uses_certified_status_before_late_exact_replay() {
     admission_recovery_after_expiry(true);
 }
 
+#[test]
+fn admission_current_domain_context_accepts_renewed_vouchers_and_rejects_malformed_records() {
+    use crate::authority_admission::Disclosure;
+    let mut original = State::empty([20; 32], [21; 32]);
+    let reference = |kind, id| VersionRef {
+        kind,
+        id: [id; 32],
+        generation: 1,
+        digest: [id + 1; 32],
+    };
+    let mut voucher = domains::routes::Voucher {
+        relay: reference(165, 204),
+        destination: reference(165, 205),
+        sponsor: SigningKey::from_bytes(&[92; 32]).verifying_key().to_bytes(),
+        grant: reference(102, 206),
+        possession: SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+        action: 0,
+        scope: (3, [205; 32]),
+        connections: 16,
+        bytes: 65536,
+        expires: 120000,
+        creation: [207; 32],
+        baseline: Some((0, 0)),
+    };
+    let first = domains::Record::next(&original, 166, [208; 32], voucher.value()).unwrap();
+    original.put(first).unwrap();
+    voucher.expires = 240000;
+    let renewed = domains::Record::next(&original, 166, [208; 32], voucher.value()).unwrap();
+    assert_eq!(renewed.reference.generation, 2);
+    assert!(
+        State::empty([20; 32], [21; 32])
+            .put(renewed.clone())
+            .is_err()
+    );
+    let context =
+        Disclosure::domain_context(std::slice::from_ref(&renewed.bytes), [20; 32], [21; 32])
+            .unwrap();
+    assert_eq!(context.record(166, [208; 32]).unwrap().bytes, renewed.bytes);
+    assert!(
+        Disclosure::domain_context(
+            &[renewed.bytes.clone(), renewed.bytes.clone()],
+            [20; 32],
+            [21; 32]
+        )
+        .is_err()
+    );
+    let mut malformed = wire::decode(&renewed.bytes)
+        .unwrap()
+        .array(8)
+        .unwrap()
+        .to_vec();
+    let mut payload = malformed[7].list(14).unwrap().to_vec();
+    let mut grant = payload[4].array(4).unwrap().to_vec();
+    grant[0] = V::Uint(165);
+    payload[4] = a(grant);
+    malformed[7] = a(payload);
+    let malformed = wire::encode(&a(malformed)).unwrap();
+    assert!(Disclosure::domain_context(&[malformed], [20; 32], [21; 32]).is_err());
+}
+
 fn complete_admission(
     f: &mut Fixture,
     operation: &crate::authority_admission::Operation,

@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: MIT
 // User services preserve explicit hosting choices across logout and restart without a lifetime timer.
 use super::{helper, protocol, runtime, saved};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use std::{
     fs::{File, OpenOptions},
-    io::Write,
+    io::{ErrorKind, Write},
     os::{
         fd::AsRawFd,
         unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
-    time::Duration,
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
 };
-pub fn lock(directory: &Path, name: &str) -> Result<File> {
+fn lock_file(directory: &Path, name: &str) -> Result<File> {
     super::private::directory(directory)?;
     let file = OpenOptions::new()
         .read(true)
@@ -31,11 +31,46 @@ pub fn lock(directory: &Path, name: &str) -> Result<File> {
             && m.mode() & 0o077 == 0,
         "host lock is not private"
     );
-    ensure!(
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-        "host operation already running"
-    );
     Ok(file)
+}
+fn acquire(file: &File) -> std::io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+pub fn lock(directory: &Path, name: &str) -> Result<File> {
+    let file = lock_file(directory, name)?;
+    acquire(&file).context("host operation lock unavailable")?;
+    Ok(file)
+}
+fn remaining(cancel: &AtomicBool, end: Instant) -> Result<Duration> {
+    ensure!(
+        !cancel.load(Ordering::Acquire),
+        "host operation lock wait cancelled"
+    );
+    let remaining = end.saturating_duration_since(Instant::now());
+    ensure!(!remaining.is_zero(), "host operation lock wait timed out");
+    Ok(remaining)
+}
+/// Wait for the current owner without reading protected state or extending the request deadline.
+pub fn lock_until(directory: &Path, name: &str, cancel: &AtomicBool, end: Instant) -> Result<File> {
+    remaining(cancel, end)?;
+    let file = lock_file(directory, name)?;
+    loop {
+        let available = remaining(cancel, end)?;
+        match acquire(&file) {
+            Ok(()) => {
+                remaining(cancel, end)?;
+                return Ok(file);
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(available.min(Duration::from_millis(100)));
+            }
+            Err(error) => return Err(error).context("host operation lock unavailable"),
+        }
+    }
 }
 pub fn unit(directory: &Path) -> String {
     format!(
@@ -305,5 +340,106 @@ pub fn linger_enabled() -> bool {
             return false;
         };
         path.join(name).is_file()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("HostOperationLock{}", crate::random_hex::<8>()));
+            saved::create_directory(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn host_status_lock_wait_preserves_owner_deadline_and_cancellation() {
+        let fixture = Fixture::new();
+        let mut owner = lock(&fixture.0, "Operation.lock").unwrap();
+        owner.write_all(b"retained owner").unwrap();
+        let identity = owner.metadata().unwrap().ino();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (ready, waiting) = std::sync::mpsc::channel();
+        let (done, result) = std::sync::mpsc::channel();
+        let root = fixture.0.clone();
+        let cancelled = cancel.clone();
+        let waiter = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            let error = lock_until(
+                &root,
+                "Operation.lock",
+                &cancelled,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap_err();
+            done.send(error.to_string()).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        cancel.store(true, Ordering::Release);
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .contains("cancelled")
+        );
+        waiter.join().unwrap();
+        assert!(lock(&fixture.0, "Operation.lock").is_err());
+        let error = lock_until(
+            &fixture.0,
+            "Operation.lock",
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(lock(&fixture.0, "Operation.lock").is_err());
+        assert_eq!(owner.metadata().unwrap().ino(), identity);
+        assert_eq!(
+            fs::read(fixture.0.join("Operation.lock")).unwrap(),
+            b"retained owner"
+        );
+        drop(owner);
+        let acquired = lock_until(
+            &fixture.0,
+            "Operation.lock",
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(acquired.metadata().unwrap().ino(), identity);
+    }
+
+    #[test]
+    fn host_status_lock_wait_refuses_non_private_files_and_links() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("Shared.lock");
+        drop(lock(&fixture.0, "Shared.lock").unwrap());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let cancel = AtomicBool::new(false);
+        let end = Instant::now() + Duration::from_secs(5);
+        assert!(
+            lock_until(&fixture.0, "Shared.lock", &cancel, end)
+                .unwrap_err()
+                .to_string()
+                .contains("not private")
+        );
+        std::os::unix::fs::symlink(&path, fixture.0.join("Linked.lock")).unwrap();
+        assert!(lock_until(&fixture.0, "Linked.lock", &cancel, end).is_err());
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o640);
     }
 }

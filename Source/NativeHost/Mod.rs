@@ -265,7 +265,7 @@ fn supervise(root: &Path) -> Result<()> {
     let state = permitted(root)?;
     software(&state)?;
     let installation = state.installation_directory;
-    let mut recovery = true;
+    let mut recovery = !state.completed;
     let mut failures = 0u32;
     let mut next_certificate_check = Instant::now();
     while !STOP.load(Ordering::Acquire) {
@@ -428,7 +428,11 @@ fn request(root: &Path, installation: &Path) -> Result<Value> {
                     Instant::now() + Duration::from_secs(60),
                 )?;
             }
-            let mut host = Host::retained(root, &STOP)?;
+            let mut host = if matches!(action, Action::Status) {
+                Host::retained_wait(root, &STOP, Instant::now() + Duration::from_secs(1500))?
+            } else {
+                Host::retained(root, &STOP)?
+            };
             ensure!(
                 host.c.installation == installation,
                 "retained installation differs"

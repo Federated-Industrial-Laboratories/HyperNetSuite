@@ -336,6 +336,24 @@ impl<'a> Host<'a> {
     pub fn retained(root: &Path, cancel: &'a AtomicBool) -> Result<Self> {
         private::directory(root)?;
         let lock = host_service::lock(root, "Operation.lock")?;
+        Self::retained_locked(
+            root,
+            cancel,
+            Instant::now() + Duration::from_secs(1500),
+            lock,
+        )
+    }
+    pub fn retained_wait(root: &Path, cancel: &'a AtomicBool, end: Instant) -> Result<Self> {
+        let lock = host_service::lock_until(root, "Operation.lock", cancel, end)?;
+        Self::retained_locked(root, cancel, end, lock)
+    }
+    fn retained_locked(
+        root: &Path,
+        cancel: &'a AtomicBool,
+        end: Instant,
+        lock: File,
+    ) -> Result<Self> {
+        check(cancel, end)?;
         let state: Journal = saved::read(&root.join("Hosting.json"))?;
         ensure!(
             state.format == "HyperNetNativeHost/1"
@@ -358,7 +376,7 @@ impl<'a> Host<'a> {
         Ok(Self {
             c,
             cancel,
-            end: Instant::now() + Duration::from_secs(1500),
+            end,
             state,
             _lock: lock,
         })
@@ -533,6 +551,80 @@ pub fn end_arguments(end: crate::trust_validity::End) -> Vec<String> {
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::MetadataExt};
+
+    #[test]
+    fn host_status_wait_reads_committed_state_under_the_original_deadline() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("NativeStatusWait{}", crate::random_hex::<8>())),
+        );
+        saved::create_directory(&fixture.0).unwrap();
+        let owner = host_service::lock(&fixture.0, "Operation.lock").unwrap();
+        // No journal exists until the operation publishes its completed state.
+        let end = Instant::now() + Duration::from_secs(5);
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (observed, result) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let root = fixture.0.clone();
+        let waiter = std::thread::spawn(move || {
+            let cancel = AtomicBool::new(false);
+            started.send(()).unwrap();
+            let host = Host::retained_wait(&root, &cancel, end).unwrap();
+            observed.send((host.state.phase.clone(), host.end)).unwrap();
+            released.recv_timeout(Duration::from_secs(2)).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        let configuration: Configuration = serde_json::from_value(serde_json::json!({
+            "name":"Hosted Pages", "advertisedAddress":"192.0.2.10", "bindAddress":"192.0.2.10",
+            "relayPort":4001, "authorityFirstPort":4100, "subnetOctet":40,
+            "sameOrganisation":true, "accessEnd":{"untilWithdrawn":1},
+            "hostingEnd":{"untilWithdrawn":1}, "maximumParticipants":8,
+            "clock":{"chronyc":"/usr/bin/chronyc", "socket":"/run/chrony/chronyd.sock"},
+            "resources":{"memoryBytesPerRole":268435456, "stateBytesPerRole":1073741824,
+                "cpuQuotaPerRole":10000, "pidsPerRole":32, "connectionBytes":1048576,
+                "connectionSeconds":60, "relayConnections":8, "endpointConnections":2}
+        }))
+        .unwrap();
+        let state = Journal {
+            format: "HyperNetNativeHost/1".into(),
+            configuration_digest: protocol::digest_value(&configuration).unwrap(),
+            review_digest: "review".into(),
+            configuration,
+            installation_directory: fixture.0.join("Installation"),
+            installation: serde_json::json!({"coreExecutable":"/installed/Core", "suiteExecutable":"/installed/Suite"}),
+            hrc_digest: None,
+            image: "retained image".into(),
+            created_ms: 1,
+            phase: "Running".into(),
+            ids: BTreeMap::new(),
+            results: BTreeMap::new(),
+            artifacts: BTreeMap::new(),
+            completed: true,
+            desired_running: true,
+            withdrawn: false,
+        };
+        write(&fixture.0.join("Hosting.json"), &state).unwrap();
+        let bytes = fs::read(fixture.0.join("Hosting.json")).unwrap();
+        drop(owner);
+        assert_eq!(
+            result.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ("Running".to_string(), end)
+        );
+        assert!(host_service::lock(&fixture.0, "Operation.lock").is_err());
+        release.send(()).unwrap();
+        waiter.join().unwrap();
+        let _owner = host_service::lock(&fixture.0, "Operation.lock").unwrap();
+        assert_eq!(fs::read(fixture.0.join("Hosting.json")).unwrap(), bytes);
+    }
 
     #[test]
     fn service_directories_accept_relative_paths_and_preserve_retry_boundaries() {
