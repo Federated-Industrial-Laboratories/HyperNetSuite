@@ -503,16 +503,38 @@ pub fn operator(host: &Host<'_>, who: &str, arguments: &[String]) -> Result<Valu
             ),
         ]));
     }
-    if arguments.first().is_some_and(|s| s == "pages")
-        && host.p("PageStore/Launch/State/Control").is_dir()
-    {
-        command.extend(bytes(&[
-            "--volume",
-            &format!(
-                "{}:/Content:ro,nosuid,nodev",
-                host_isolation::argument(&host.p("PageStore/Launch/State/Control"))?
-            ),
-        ]));
+    if arguments.first().is_some_and(|s| s == "pages") {
+        let launch = host.p("PageStore/Launch");
+        match std::fs::symlink_metadata(&launch) {
+            Ok(metadata) => {
+                ensure!(metadata.is_dir(), "PageStore launch directory differs");
+                let control = launch.join("State/Control");
+                let metadata = podman(
+                    host,
+                    &bytes(&[
+                        "unshare",
+                        "/usr/bin/stat",
+                        "-c",
+                        "%F %u:%g:%a",
+                        "--",
+                        &text(&control)?,
+                    ]),
+                )?;
+                ensure!(
+                    metadata == b"directory 1001:1001:700\n",
+                    "PageStore control directory differs"
+                );
+                command.extend(bytes(&[
+                    "--volume",
+                    &format!(
+                        "{}:/Content:ro,nosuid,nodev",
+                        host_isolation::argument(&control)?
+                    ),
+                ]));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     command.push(host.state.image.clone());
     command.extend(converted);
