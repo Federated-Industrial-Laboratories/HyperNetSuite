@@ -123,7 +123,7 @@ pub enum Command {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Import exact signed consent and all possession envelopes without contacting a host.
+    /// Import exact signed consent and initial possession envelopes without contacting a host.
     Assemble {
         #[command(flatten)]
         trust: Offline,
@@ -131,7 +131,8 @@ pub enum Command {
         manifest: PathBuf,
         #[arg(long)]
         consent: PathBuf,
-        #[arg(long, required = true)]
+        /// Initial admission requires every possession; an exact successor may omit all of them.
+        #[arg(long)]
         possession: Vec<PathBuf>,
         #[arg(long)]
         output: PathBuf,

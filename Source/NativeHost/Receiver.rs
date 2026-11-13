@@ -647,7 +647,7 @@ pub fn prepare(host: &mut Host<'_>) -> Result<()> {
             "--bootstrap",
             &text(&host.p("Network/Bootstrap.cbor"))?,
             "--fingerprint",
-            &host.bootstrap_file_digest()?,
+            &string(&host.bootstrap()?, "fingerprint")?,
             "--minimum-route",
             "Organisational",
             "--output",
