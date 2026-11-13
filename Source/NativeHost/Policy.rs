@@ -212,69 +212,128 @@ pub fn owner_install(host: &mut Host<'_>) -> Result<Value> {
             value
         }
     };
-    let challenge = registrar(
-        host,
-        json!({"operation":"challenge","claim":claim,"requestDigest":request_digest,"roles":roles,"applicationBinding":application}),
-    )?;
-    let ready = if challenge["status"] == "ready" {
-        challenge
+    let binding = if let Some(binding) = host.remembered("owner-binding") {
+        binding
     } else {
-        let challenge = expected(challenge, "challenge")?;
-        let acceptance = expected(
-            candidate(
-                host,
-                json!({"operation":"acceptChallenge","challenge":challenge["challenge"],
-            "applicationBinding":application,"requestDigest":request_digest,"claim":claim}),
-            )?,
-            "acceptance",
+        let challenge = registrar(
+            host,
+            json!({"operation":"challenge","claim":claim,"requestDigest":request_digest,"roles":roles,"applicationBinding":application}),
         )?;
-        expected(
+        let enrolled = if challenge["status"] == "ready" || renewal_required(&challenge) {
+            challenge
+        } else {
+            let challenge = expected(challenge, "challenge")?;
+            let acceptance = expected(
+                candidate(
+                    host,
+                    json!({"operation":"acceptChallenge","challenge":challenge["challenge"],
+            "applicationBinding":application,"requestDigest":request_digest,"claim":claim}),
+                )?,
+                "acceptance",
+            )?;
             registrar(
                 host,
                 json!({"operation":"enrol","challenge":challenge["challenge"],"acceptance":acceptance["acceptance"]}),
-            )?,
-            "ready",
-        )?
+            )?
+        };
+        ensure!(
+            enrolled["status"] == "ready" || renewal_required(&enrolled),
+            "owner enrolment is incomplete or refused"
+        );
+        enrolled["binding"].clone()
     };
-    host.remember("owner-binding", ready["binding"].clone())?;
-    let current = expected(
-        registrar(
-            host,
-            json!({"operation":"status","binding":ready["binding"]}),
-        )?,
-        "ready",
-    )?;
-    let installed = expected(
-        candidate(
-            host,
-            json!({"operation":"acceptResult","result":current["result"]}),
-        )?,
-        "installed",
+    validate_owner_binding(&binding, &host.state.ids["policy"], &claim, &request_digest)?;
+    // Enrolment may be complete while its finite route vouchers have expired.
+    // Save the exact admitted binding before renewal so interruption cannot start a new claim.
+    host.remember("owner-binding", binding.clone())?;
+    let installed = install_owner(
+        &binding,
+        |request| registrar(host, request),
+        |request| candidate(host, request),
     )?;
     host.remember("owner-installed", installed)
+}
+fn renewal_required(value: &Value) -> bool {
+    value["status"] == "pending" && value["code"] == "RenewalRequired"
+}
+fn validate_owner_binding(
+    binding: &Value,
+    policy: &str,
+    claim: &str,
+    request_digest: &str,
+) -> Result<()> {
+    let binding: crate::authority_inspection::admission::types::Claim =
+        serde_json::from_value(binding.clone())?;
+    ensure!(
+        binding.policy == policy
+            && binding.claim == claim
+            && binding.request_digest == request_digest
+            && binding.slot < crate::authority_admission::MAX_SLOTS
+            && binding.generation > 0,
+        "owner binding differs from the retained exact request"
+    );
+    Ok(())
+}
+fn bound(value: Value, binding: &Value) -> Result<Value> {
+    ensure!(
+        value["binding"] == *binding,
+        "owner admission response changes the retained binding"
+    );
+    Ok(value)
+}
+fn renew_owner(
+    binding: &Value,
+    registrar: &mut impl FnMut(Value) -> Result<Value>,
+    candidate: &mut impl FnMut(Value) -> Result<Value>,
+) -> Result<Value> {
+    let challenge = expected(
+        bound(
+            registrar(json!({"operation":"renewalChallenge","binding":binding}))?,
+            binding,
+        )?,
+        "challenge",
+    )?;
+    let proof = candidate(json!({"operation":"renewalProof","challenge":challenge["challenge"]}))?;
+    let proof = expected(proof, "acceptance")?;
+    expected(
+        bound(
+            registrar(json!({"operation":"renew","binding":binding,"proof":proof["acceptance"]}))?,
+            binding,
+        )?,
+        "ready",
+    )
+}
+fn install_owner(
+    binding: &Value,
+    mut registrar: impl FnMut(Value) -> Result<Value>,
+    mut candidate: impl FnMut(Value) -> Result<Value>,
+) -> Result<Value> {
+    let current = bound(
+        registrar(json!({"operation":"status","binding":binding}))?,
+        binding,
+    )?;
+    let ready = if renewal_required(&current) || current["status"] == "challenge" {
+        // A retained binding also covers interruption after RenewalChallenge or Renew.
+        renew_owner(binding, &mut registrar, &mut candidate)?
+    } else {
+        expected(current, "ready")?
+    };
+    expected(
+        bound(
+            candidate(json!({"operation":"acceptResult","result":ready["result"]}))?,
+            binding,
+        )?,
+        "installed",
+    )
 }
 pub fn refresh(host: &mut Host<'_>, roles: Vec<u64>) -> Result<Value> {
     let binding = host
         .remembered("owner-binding")
         .context("owner admission is absent")?;
-    let challenge = expected(
-        registrar(
-            host,
-            json!({"operation":"renewalChallenge","binding":binding}),
-        )?,
-        "challenge",
-    )?;
-    let proof = candidate(
-        host,
-        json!({"operation":"renewalProof","challenge":challenge["challenge"]}),
-    )?;
-    let proof = expected(proof, "acceptance")?;
-    let ready = expected(
-        registrar(
-            host,
-            json!({"operation":"renew","binding":binding,"proof":proof["acceptance"]}),
-        )?,
-        "ready",
+    let ready = renew_owner(
+        &binding,
+        &mut |request| registrar(host, request),
+        &mut |request| candidate(host, request),
     )?;
     let installed = expected(
         candidate(
@@ -323,4 +382,174 @@ pub fn owner_report(host: &mut Host<'_>) -> Result<Value> {
         "chatProfile":chat.map(|p|p["profile"].clone()),"chatCompanion":host.state.results.get("owner-chat").and_then(|p|p.get("companion")),
         "hrcProfile":host.state.results.get("hrc").and_then(|h|h.get("ownerProfile"))}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::RefCell, collections::VecDeque};
+
+    type Step = (&'static str, Value, Option<Value>);
+
+    fn binding() -> Value {
+        json!({"policy":"11".repeat(32),"slot":0,"generation":1,
+            "claim":"22".repeat(32),"requestDigest":"33".repeat(32)})
+    }
+
+    fn run(binding: &Value, steps: Vec<Step>) -> Result<Value> {
+        let steps = RefCell::new(VecDeque::from(steps));
+        let invoke = |target: &str, request: Value| {
+            let (expected_target, expected_request, response) = steps
+                .borrow_mut()
+                .pop_front()
+                .expect("unexpected owner admission call");
+            assert_eq!(target, expected_target);
+            assert_eq!(request, expected_request);
+            response.context("simulated interrupted helper response")
+        };
+        let result = install_owner(
+            binding,
+            |request| invoke("registrar", request),
+            |request| invoke("candidate", request),
+        );
+        assert!(steps.borrow().is_empty());
+        result
+    }
+
+    fn renewal(binding: &Value, current: Value) -> Vec<Step> {
+        vec![
+            (
+                "registrar",
+                json!({"operation":"status","binding":binding}),
+                Some(current),
+            ),
+            (
+                "registrar",
+                json!({"operation":"renewalChallenge","binding":binding}),
+                Some(json!({"status":"challenge","binding":binding,"challenge":"fresh"})),
+            ),
+            (
+                "candidate",
+                json!({"operation":"renewalProof","challenge":"fresh"}),
+                Some(json!({"status":"acceptance","acceptance":"proof"})),
+            ),
+            (
+                "registrar",
+                json!({"operation":"renew","binding":binding,"proof":"proof"}),
+                Some(json!({"status":"ready","binding":binding,"result":"current"})),
+            ),
+            (
+                "candidate",
+                // Initial installation must omit partial-refresh roles, even after renewal.
+                json!({"operation":"acceptResult","result":"current"}),
+                Some(json!({"status":"installed","binding":binding,"profiles":[]})),
+            ),
+        ]
+    }
+
+    #[test]
+    fn owner_initial_install_renews_expired_routes_with_the_accepted_claim() {
+        let binding = binding();
+        let steps = renewal(
+            &binding,
+            json!({"status":"pending","code":"RenewalRequired","binding":binding}),
+        );
+        let installed = run(&binding, steps).unwrap();
+        assert_eq!(installed["binding"], binding);
+        assert_eq!(installed["status"], "installed");
+    }
+
+    #[test]
+    fn owner_initial_install_resumes_interrupted_renewal_and_completed_handoff() {
+        let binding = binding();
+        let mut interrupted = renewal(
+            &binding,
+            json!({"status":"pending","code":"RenewalRequired","binding":binding}),
+        );
+        interrupted.truncate(4);
+        interrupted[3].2 = None;
+        assert!(run(&binding, interrupted).is_err());
+        let resumed = renewal(
+            &binding,
+            json!({"status":"challenge","binding":binding,"challenge":"retained"}),
+        );
+        assert_eq!(run(&binding, resumed).unwrap()["binding"], binding);
+
+        // Lost publication after Renew must use current status, without another renewal.
+        let ready = || {
+            vec![
+                (
+                    "registrar",
+                    json!({"operation":"status","binding":binding}),
+                    Some(json!({"status":"ready","binding":binding,"result":"current"})),
+                ),
+                (
+                    "candidate",
+                    json!({"operation":"acceptResult","result":"current"}),
+                    Some(json!({"status":"installed","binding":binding,"profiles":[]})),
+                ),
+            ]
+        };
+        let mut interrupted = ready();
+        interrupted[1].2 = None;
+        assert!(run(&binding, interrupted).is_err());
+        assert_eq!(run(&binding, ready()).unwrap()["binding"], binding);
+    }
+
+    #[test]
+    fn owner_initial_install_refuses_changed_binding_and_unrelated_pending_states() {
+        let binding = binding();
+        validate_owner_binding(
+            &binding,
+            &"11".repeat(32),
+            &"22".repeat(32),
+            &"33".repeat(32),
+        )
+        .unwrap();
+        for (field, value) in [
+            ("policy", json!("44".repeat(32))),
+            ("claim", json!("44".repeat(32))),
+            ("requestDigest", json!("44".repeat(32))),
+            ("slot", json!(crate::authority_admission::MAX_SLOTS)),
+            ("generation", json!(0)),
+        ] {
+            let mut changed = binding.clone();
+            changed[field] = value;
+            assert!(
+                validate_owner_binding(
+                    &changed,
+                    &"11".repeat(32),
+                    &"22".repeat(32),
+                    &"33".repeat(32),
+                )
+                .is_err()
+            );
+        }
+        let mut changed = binding.clone();
+        changed["generation"] = json!(2);
+        for current in [
+            json!({"status":"ready","binding":changed,"result":"foreign"}),
+            json!({"status":"retired","binding":binding}),
+            json!({"status":"pending","code":"ClockUnavailable","binding":binding}),
+        ] {
+            assert!(
+                run(
+                    &binding,
+                    vec![(
+                        "registrar",
+                        json!({"operation":"status","binding":binding}),
+                        Some(current),
+                    )],
+                )
+                .is_err()
+            );
+        }
+        let mut changed_challenge = renewal(
+            &binding,
+            json!({"status":"pending","code":"RenewalRequired","binding":binding}),
+        );
+        changed_challenge.truncate(2);
+        changed_challenge[1].2.as_mut().unwrap()["binding"] = changed;
+        assert!(run(&binding, changed_challenge).is_err());
+    }
 }
