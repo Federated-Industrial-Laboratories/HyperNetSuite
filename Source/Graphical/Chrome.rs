@@ -389,6 +389,13 @@ impl Browser {
                         self.help_open = true;
                     }
                 });
+                if self.navigation.as_ref().is_some_and(|n|n.queued()>0) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("A Page link is waiting. Your current form is kept until you leave this page.");
+                        if ui.add_enabled(self.can_navigate(),egui::Button::new("Leave page and open queued link")).clicked() {self.open_queued();}
+                        if ui.button("Dismiss next link").clicked() && let Some(navigation)=&mut self.navigation {navigation.next();}
+                    });
+                }
             });
     }
 

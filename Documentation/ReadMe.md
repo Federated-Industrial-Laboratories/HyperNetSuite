@@ -13,6 +13,10 @@ client access through accepted relay routes and local operator control.
 
 ## Start here
 
+For link, QR or password access, use [Join a server](SimpleJoining.md).
+To provide a shared server, use [Shared hosting](SharedHosting.md).
+The manual native trust and invitation workflows remain available below.
+
 1. Check [supported platforms](SupportedPlatforms.md) and [install the client](Installation.md).
 2. [Preview the supplied Page](Installation.md#try-a-local-page) without network access.
 3. Learn the [native browser](GraphicalBrowser.md) or [terminal browser](Browser.md).

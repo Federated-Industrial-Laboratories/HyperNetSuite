@@ -79,6 +79,21 @@ install the terminal-only build. A terminal-only executable refuses `--gui`
 before starting a browser connection. CLI, terminal and plain output remain
 available. The `mail gui` and `transfers gui` subcommands require a graphical build.
 
+## Coordinated simple access
+
+The coordinated release includes Core and Suite packages for shared joining and
+hosting. Use **Install / repair components** in the join window to verify and
+install them from its local `Packages` folder. The installer uses pinned publisher
+trust, signed target policies and retained rollback state. It makes no downloads
+selected by a server invitation. Ordinary joining does not import a Podman image;
+hosting loads the verified image when required.
+
+After installation, choose **Join a server** or **Create / manage a server**.
+See [Simple joining](SimpleJoining.md) and [Shared hosting](SharedHosting.md).
+Registering native links is optional through `HyperNetSuite join install`.
+That command creates the current user's desktop and private-bus activation
+entries. Opening an invitation starts a review window; it does not silently join.
+
 ## Try a local Page
 
 With the source installation above:
