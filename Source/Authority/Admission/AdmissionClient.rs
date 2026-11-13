@@ -152,6 +152,13 @@ pub(crate) fn retained(bootstrap: &Verified, store: &Store) -> Result<Vec<Vec<u8
         .unwrap_or_else(|| bootstrap.governance_records().to_vec());
     tier::refresh_cached_tiers(bootstrap, store, &mut records)?;
     policy::refresh_cached_policies(bootstrap, store, &mut records)?;
+    if ContextState::retained(bootstrap, store, &records).is_ok() {
+        return Ok(records);
+    }
+    // Normal domain use can certify governance without updating the admission cache.
+    // Authenticate that cache before requiring the same complete retained context.
+    let cache = domain_client::Cache::load(bootstrap, store)?;
+    let records = crate::authority_domains::result::merge(bootstrap, &cache.records)?;
     ContextState::retained(bootstrap, store, &records)?;
     Ok(records)
 }
@@ -190,6 +197,120 @@ fn publish(bootstrap: &Verified, store: &Store, records: &[Vec<u8>]) -> Result<(
     context.save(store)?;
     policy::retain_records(bootstrap, store, records)?;
     domain_client::Cache::retain_context(bootstrap, store, &context)
+}
+// Used inside verify_response after its quorum, exact request, result and freshness binding.
+pub(crate) fn validate_permit(
+    bootstrap: &Verified,
+    store: &Store,
+    operation: &native::Operation,
+    source: &[Vec<u8>],
+    intent: &Intent,
+    result: &proof::OperationResult,
+    executed: &proof::ExecutedResult,
+) -> Result<(Vec<Vec<u8>>, ActionValidation)> {
+    let pending = store
+        .resume_ordinary()?
+        .context("admission permit has no retained request")?;
+    ensure!(
+        pending.digest() == intent.digest
+            && operation.parameters()? == native::Operation::parse(intent)?.parameters()?
+            && result.disposition == Disposition::Permit,
+        "admission permit differs from the exact retained operation"
+    );
+    let successor = native::record_reference(&operation.next, intent.network, intent.incarnation)?;
+    let known_successor = store.generations().contains(&successor);
+    let completed = store.stream_metadata()?.is_some_and(|metadata| {
+        metadata.scope() == store.descriptor().scope()
+            && metadata.requester() == intent.requester
+            && metadata.state().is_some_and(|state| {
+                state.generation == intent.generation
+                    && state.generation_id == intent.generation_id
+                    && state.completion.as_ref().is_some_and(|completion| {
+                        completion.sequence == intent.sequence
+                            && completion.intent == intent.digest
+                            && completion.disposition == Disposition::Permit
+                            && completion.result_digest == executed.result
+                    })
+            })
+    });
+    let replay = known_successor || completed;
+    let current;
+    let records = if known_successor {
+        // The retained quorum floor and context must independently establish this
+        // exact successor. A pending request alone does not establish a replay.
+        current = retained(bootstrap, store)?;
+        ensure!(
+            current.iter().any(|record| record == &operation.next),
+            "certified admission successor is absent from retained context"
+        );
+        current.as_slice()
+    } else if completed {
+        // Certified own-stream status binds the original completion even when
+        // its first reply was lost. Reconstruct only its signed deterministic
+        // records; the fresh bound permit still checks current authority below.
+        let owned = if successor.kind == native::POLICY {
+            vec![successor.index()]
+        } else {
+            let mut owned =
+                native::Slot::parse(&operation.next, intent.network, intent.incarnation)?
+                    .owned()?;
+            owned.push(successor.index());
+            owned
+        };
+        let mut map = BTreeMap::new();
+        for bytes in source {
+            let reference = Governance::record_versions(
+                intent.network,
+                intent.incarnation,
+                std::slice::from_ref(bytes),
+            )?
+            .remove(0);
+            if !owned.contains(&reference.index()) {
+                map.insert(reference.index(), bytes.clone());
+            }
+        }
+        for bytes in operation
+            .derive(intent.network, intent.incarnation)?
+            .into_iter()
+            .chain(operation.retired_legacy(intent.network, intent.incarnation)?)
+        {
+            let reference = Governance::record_versions(
+                intent.network,
+                intent.incarnation,
+                std::slice::from_ref(&bytes),
+            )?
+            .remove(0);
+            map.insert(reference.index(), bytes);
+        }
+        current = map.into_values().collect::<Vec<_>>();
+        current.as_slice()
+    } else {
+        source
+    };
+    let selected = operation.authorise(
+        records,
+        &crate::authority_membership::Reservations(bootstrap.reservations().to_vec()),
+        intent,
+        executed.evaluated_at_ms,
+        replay,
+    )?;
+    let refs =
+        operation.result_references(&selected.dependencies, intent.network, intent.incarnation)?;
+    ensure!(
+        wire::decode(&result.value)?
+            == a(vec![
+                V::Uint(201),
+                V::Uint(1),
+                V::Text("AuthorityAdmission".into()),
+                a(refs.iter().map(version_value).collect()),
+                b(&operation.next),
+            ]),
+        "admission result differs from independently checked transition"
+    );
+    Ok((
+        selected.records,
+        ActionValidation::mutation(refs, operation.updates(intent.network, intent.incarnation)?)?,
+    ))
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn query(
@@ -288,6 +409,7 @@ pub(crate) fn mutate(
     requested: Option<native::Operation>,
 ) -> Result<()> {
     let descriptor = store.descriptor().clone();
+    let resuming = store.resume_ordinary()?.is_some();
     let (operation, intent, source) = if let Some(pending) = store.resume_ordinary()? {
         let intent = Intent::from_signed(pending.signed())?;
         let operation = native::Operation::parse(&intent)?;
@@ -332,6 +454,18 @@ pub(crate) fn mutate(
         store.prepare_ordinary(store.ordinary_slot()?, &intent)?;
         (operation, intent, source)
     };
+    if resuming
+        && !store.generations().contains(&native::record_reference(
+            &operation.next,
+            descriptor.scope().network,
+            descriptor.scope().incarnation,
+        )?)
+    {
+        // A fresh read must not bypass an unresolved ordinary effect. Certified
+        // own-stream status can recover its original outcome without replacing
+        // the request, acknowledging its effect or advancing its generation.
+        stream_client::status_local(&descriptor, socket, key, store, session, &mut *clock)?;
+    }
     let control = LocalControl::prepare_authority(socket, store)?;
     let health = clock()?;
     let now = health.observe()?;
@@ -379,31 +513,11 @@ pub(crate) fn mutate(
             if result.disposition != Disposition::Permit {
                 return ActionValidation::new(vec![]);
             }
-            let selected = operation.authorise(
-                &source,
-                &crate::authority_membership::Reservations(bootstrap.reservations().to_vec()),
-                intent,
-                executed.evaluated_at_ms,
-                false,
+            let (records, validation) = validate_permit(
+                bootstrap, store, &operation, &source, intent, result, executed,
             )?;
-            let refs = operation.result_references(
-                &selected.dependencies,
-                intent.network,
-                intent.incarnation,
-            )?;
-            let expected = a(vec![
-                V::Uint(201),
-                V::Uint(1),
-                V::Text("AuthorityAdmission".into()),
-                a(refs.iter().map(version_value).collect()),
-                b(&operation.next),
-            ]);
-            ensure!(
-                wire::decode(&result.value)? == expected,
-                "admission result differs from independently checked transition"
-            );
-            prospective = Some(selected.records);
-            ActionValidation::mutation(refs, operation.updates(intent.network, intent.incarnation)?)
+            prospective = Some(records);
+            Ok(validation)
         },
     )?;
     let verified = evidence.attach(store, verified)?;

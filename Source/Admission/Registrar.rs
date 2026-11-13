@@ -85,23 +85,28 @@ pub struct Registrar {
     key: SigningKey,
     boot: String,
     budget: Budget,
+    work_budget: Budget,
 }
 struct Budget {
     start: Instant,
-    total: u16,
-    sources: BTreeMap<String, u16>,
+    total: usize,
+    sources: BTreeMap<String, usize>,
+    per_source: usize,
+    maximum: usize,
 }
 impl Budget {
-    fn new() -> Self {
+    fn new(per_source: usize, maximum: usize) -> Self {
         Self {
             start: Instant::now(),
             total: 0,
             sources: BTreeMap::new(),
+            per_source,
+            maximum,
         }
     }
     fn admit(&mut self, source: &str) -> Result<()> {
         if self.start.elapsed() >= Duration::from_secs(60) {
-            *self = Self::new();
+            *self = Self::new(self.per_source, self.maximum);
         }
         let source: std::net::IpAddr = source.parse()?;
         let source = match source {
@@ -112,13 +117,43 @@ impl Budget {
         }
         .to_string();
         ensure!(
-            self.total < 120 && (self.sources.contains_key(&source) || self.sources.len() < 128),
+            self.total < self.maximum
+                && (self.sources.contains_key(&source) || self.sources.len() < 128),
             "AdmissionRateLimited"
         );
         let count = self.sources.entry(source).or_default();
-        ensure!(*count < 24, "AdmissionRateLimited");
+        ensure!(*count < self.per_source, "AdmissionRateLimited");
         *count += 1;
         self.total += 1;
+        Ok(())
+    }
+}
+struct Work<'a> {
+    source: &'a str,
+    charged: bool,
+}
+impl<'a> Work<'a> {
+    fn request(budget: &mut Budget, source: &'a str, action: &protocol::Action) -> Result<Self> {
+        let mut work = Self {
+            source,
+            charged: false,
+        };
+        if !matches!(action, protocol::Action::Status) {
+            work.require(budget)?;
+        }
+        Ok(work)
+    }
+    fn require(&mut self, budget: &mut Budget) -> Result<()> {
+        if !self.charged {
+            budget.admit(self.source)?;
+            self.charged = true;
+        }
+        Ok(())
+    }
+    fn recovery(&mut self, budget: &mut Budget, phase: Phase, bound: bool) -> Result<()> {
+        if phase != Phase::Ready || !bound {
+            self.require(budget)?;
+        }
         Ok(())
     }
 }
@@ -164,7 +199,11 @@ impl Registrar {
             store,
             key,
             boot: crate::random_hex::<32>(),
-            budget: Budget::new(),
+            budget: Budget::new(
+                super::edge::REQUESTS_PER_SOURCE,
+                super::edge::REQUESTS_TOTAL,
+            ),
+            work_budget: Budget::new(24, 120),
         })
     }
     fn native_description(&self, stop: &AtomicBool) -> Result<Value> {
@@ -391,7 +430,13 @@ impl Registrar {
             Ok(())
         })
     }
-    fn begin_native(&mut self, mut claim: Claim, stop: &AtomicBool) -> Result<Response> {
+    fn begin_native(
+        &mut self,
+        mut claim: Claim,
+        stop: &AtomicBool,
+        work: &mut Work<'_>,
+    ) -> Result<Response> {
+        work.require(&mut self.work_budget)?;
         let native=self.config.native.call(json!({"operation":"challenge","claim":claim.native_claim,"requestDigest":claim.intent_digest,"roles":claim.intent.roles,"applicationBinding":claim.intent.application_binding()?}),stop)?;
         match status(&native)? {
             "challenge" => {
@@ -416,7 +461,7 @@ impl Registrar {
                 self.save(claim)?;
                 Ok(Response::NativeChallenge { challenge })
             }
-            "ready" => self.native_ready(claim, native, stop),
+            "ready" => self.native_ready(claim, native, stop, work),
             "pending" => Ok(Response::Pending {
                 code: "NativeAdmissionPending".into(),
             }),
@@ -431,6 +476,7 @@ impl Registrar {
         mut claim: Claim,
         native: Value,
         stop: &AtomicBool,
+        work: &mut Work<'_>,
     ) -> Result<Response> {
         ensure!(status(&native)? == "ready", "NativeAdmissionPending");
         let binding = native
@@ -457,6 +503,9 @@ impl Registrar {
                     && p.get("relay").and_then(Value::as_str) == Some(&r.relay)),
             "certified native principals differ from join intent"
         );
+        if claim.intent.hrc.is_some() && claim.hrc_result.is_none() {
+            work.require(&mut self.work_budget)?;
+        }
         claim.native_binding = Some(binding.clone());
         claim.phase = if claim.hrc_result.is_some() || claim.intent.hrc.is_none() {
             Phase::Ready
@@ -519,22 +568,32 @@ impl Registrar {
             hrc: claim.hrc_invitation,
         })
     }
-    fn recover(&mut self, claim: Claim, stop: &AtomicBool) -> Result<Response> {
+    fn recover(
+        &mut self,
+        claim: Claim,
+        stop: &AtomicBool,
+        work: &mut Work<'_>,
+    ) -> Result<Response> {
         if matches!(claim.phase, Phase::Revoking | Phase::Retired) {
             return Ok(Response::Refused {
                 code: "ParticipantRemoved".into(),
             });
         }
+        work.recovery(
+            &mut self.work_budget,
+            claim.phase,
+            claim.native_binding.is_some(),
+        )?;
         if claim.native_binding.is_none() {
-            return self.begin_native(claim, stop);
+            return self.begin_native(claim, stop, work);
         }
         let native = self.config.native.call(
             json!({"operation":"status","binding":claim.native_binding}),
             stop,
         )?;
         match status(&native)? {
-            "ready" => self.native_ready(claim, native, stop),
-            "challenge" | "pending" => self.begin_native(claim, stop),
+            "ready" => self.native_ready(claim, native, stop, work),
+            "challenge" | "pending" => self.begin_native(claim, stop, work),
             "retired" | "refused" => Ok(Response::Refused {
                 code: "NativeAccessUnavailable".into(),
             }),
@@ -599,7 +658,7 @@ impl Registrar {
         );
         Ok(store::OperatorAuthorization { operator, maximum })
     }
-    pub fn request(&mut self, signed: Signed, stop: &AtomicBool) -> Result<Response> {
+    pub fn request(&mut self, signed: Signed, source: &str, stop: &AtomicBool) -> Result<Response> {
         let (challenge, request) = self.authenticated(&signed)?;
         if let Some(receipt) = self.store.state()?.retirement(
             &challenge.attempt,
@@ -615,6 +674,7 @@ impl Registrar {
                 result: receipt.result,
             });
         }
+        let mut work = Work::request(&mut self.work_budget, source, &request.action)?;
         match request.action {
             protocol::Action::AcknowledgeRemoval { .. } => Ok(Response::Refused {
                 code: "RemovalReceiptAbsent".into(),
@@ -678,12 +738,15 @@ impl Registrar {
                     )
                 })?;
                 if claim.phase == Phase::Reserved {
-                    self.begin_native(claim, stop)
+                    self.begin_native(claim, stop, &mut work)
                 } else {
-                    self.recover(claim, stop)
+                    self.recover(claim, stop, &mut work)
                 }
             }
-            protocol::Action::Status => self.recover(self.retained(&challenge)?, stop),
+            protocol::Action::Status => {
+                let claim = self.retained(&challenge)?;
+                self.recover(claim, stop, &mut work)
+            }
             protocol::Action::AcceptNative { acceptance } => {
                 ensure!(
                     protocol::artifact(&acceptance, 16384),
@@ -691,11 +754,11 @@ impl Registrar {
                 );
                 let claim = self.retained(&challenge)?;
                 if claim.phase != Phase::Challenged {
-                    return self.recover(claim, stop);
+                    return self.recover(claim, stop, &mut work);
                 }
                 let native=self.config.native.call(json!({"operation":"enrol","challenge":claim.challenge,"acceptance":acceptance}),stop)?;
                 match status(&native)? {
-                    "ready" => self.native_ready(claim, native, stop),
+                    "ready" => self.native_ready(claim, native, stop, &mut work),
                     "pending" => Ok(Response::Pending {
                         code: "NativeAdmissionPending".into(),
                     }),
@@ -726,7 +789,7 @@ impl Registrar {
                 claim.hrc_result = Some(response);
                 claim.phase = Phase::Ready;
                 self.save(claim.clone())?;
-                self.recover(claim, stop)
+                self.recover(claim, stop, &mut work)
             }
             protocol::Action::RenewalChallenge => {
                 let claim = self.retained(&challenge)?;
@@ -753,7 +816,7 @@ impl Registrar {
                     json!({"operation":"renew","binding":claim.native_binding,"proof":proof}),
                     stop,
                 )?;
-                self.native_ready(claim, native, stop)
+                self.native_ready(claim, native, stop, &mut work)
             }
         }
     }
@@ -772,9 +835,161 @@ impl Registrar {
             super::edge::Operation::Challenge { body } => Ok(serde_json::to_value(
                 self.challenge(serde_json::from_value(body)?, stop)?,
             )?),
-            super::edge::Operation::Claim { body } => Ok(serde_json::to_value(
-                self.request(serde_json::from_value(body)?, stop)?,
-            )?),
+            super::edge::Operation::Claim { body } => Ok(serde_json::to_value(self.request(
+                serde_json::from_value(body)?,
+                &request.source,
+                stop,
+            )?)?),
         }
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn admission_budget_password_enrolment_and_renewal_actions_use_the_stricter_limit() {
+        let intent = protocol::Intent {
+            attempt: "01".repeat(32),
+            control_key: "02".repeat(32),
+            descriptor_digest: "03".repeat(32),
+            display_name: "Member".into(),
+            roles: vec![protocol::Role {
+                role: 0,
+                member: "04".repeat(32),
+                relay: "05".repeat(32),
+                request: "01".into(),
+            }],
+            hrc: None,
+            invitation: None,
+        };
+        let actions = [
+            protocol::Action::Start {
+                intent: intent.clone(),
+                admission: protocol::Admission::Password {
+                    password: "test password".into(),
+                },
+            },
+            protocol::Action::Start {
+                intent: intent.clone(),
+                admission: protocol::Admission::Invite {
+                    secret: "test invitation".into(),
+                },
+            },
+            protocol::Action::Start {
+                intent,
+                admission: protocol::Admission::Public,
+            },
+            protocol::Action::AcceptNative {
+                acceptance: "01".into(),
+            },
+            protocol::Action::AcceptHrc {
+                registration: json!({}),
+            },
+            protocol::Action::RenewalChallenge,
+            protocol::Action::Renew { proof: "01".into() },
+        ];
+        let mut budget = Budget::new(24, 120);
+        for action in actions.iter().cycle().take(24) {
+            let before = budget.total;
+            let mut work = Work::request(&mut budget, "192.0.2.1", action).unwrap();
+            assert!(work.charged);
+            work.recovery(&mut budget, Phase::Challenged, true).unwrap();
+            work.require(&mut budget).unwrap();
+            assert_eq!(budget.total, before + 1);
+        }
+        for action in &actions {
+            assert!(Work::request(&mut budget, "192.0.2.1", action).is_err());
+        }
+        assert_eq!(budget.total, 24);
+    }
+
+    #[test]
+    fn admission_budget_ready_reads_and_recovery_fallback_charge_the_action_limit_once() {
+        let mut budget = Budget::new(24, 120);
+        for _ in 0..80 {
+            let mut work =
+                Work::request(&mut budget, "192.0.2.1", &protocol::Action::Status).unwrap();
+            work.recovery(&mut budget, Phase::Ready, true).unwrap();
+            assert!(!work.charged);
+        }
+        assert_eq!(budget.total, 0);
+        for phase in [Phase::Reserved, Phase::Challenged, Phase::NativeReady] {
+            let before = budget.total;
+            let mut work =
+                Work::request(&mut budget, "192.0.2.1", &protocol::Action::Status).unwrap();
+            work.recovery(&mut budget, phase, true).unwrap();
+            // A resumed native challenge and HRC preparation share this request's charge.
+            work.require(&mut budget).unwrap();
+            work.require(&mut budget).unwrap();
+            assert_eq!(budget.total, before + 1);
+        }
+        for bound in [false, true] {
+            let before = budget.total;
+            let mut work =
+                Work::request(&mut budget, "192.0.2.1", &protocol::Action::Status).unwrap();
+            work.recovery(&mut budget, Phase::Ready, bound).unwrap();
+            // Missing binding, a fresh pending/challenge result, or HRC preparation needs work.
+            work.require(&mut budget).unwrap();
+            work.require(&mut budget).unwrap();
+            assert_eq!(budget.total, before + 1);
+        }
+        while budget.total < 24 {
+            Work {
+                source: "192.0.2.1",
+                charged: false,
+            }
+            .require(&mut budget)
+            .unwrap();
+        }
+        let mut work = Work::request(&mut budget, "192.0.2.1", &protocol::Action::Status).unwrap();
+        work.recovery(&mut budget, Phase::Ready, true).unwrap();
+        assert!(work.require(&mut budget).is_err());
+        assert!(!work.charged);
+        assert_eq!(budget.total, 24);
+    }
+
+    #[test]
+    fn admission_budget_read_and_action_limits_remain_independent_and_bounded() {
+        for (per_source, maximum) in [(256, 512), (24, 120)] {
+            let mut budget = Budget::new(per_source, maximum);
+            for _ in 0..per_source {
+                budget.admit("2001:db8::1").unwrap();
+            }
+            assert!(budget.admit("2001:db8::2").is_err());
+            for n in 1..maximum / per_source {
+                for _ in 0..per_source {
+                    budget.admit(&format!("192.0.2.{n}")).unwrap();
+                }
+            }
+            assert_eq!(budget.total, maximum);
+            assert!(budget.admit("198.51.100.1").is_err());
+            budget.start -= Duration::from_secs(60);
+            budget.admit("198.51.100.1").unwrap();
+            assert_eq!(
+                (budget.total, budget.per_source, budget.maximum),
+                (1, per_source, maximum)
+            );
+        }
+        let mut read = Budget::new(
+            super::super::edge::REQUESTS_PER_SOURCE,
+            super::super::edge::REQUESTS_TOTAL,
+        );
+        let mut work = Budget::new(24, 120);
+        for _ in 0..24 {
+            work.admit("192.0.2.1").unwrap();
+        }
+        for _ in 0..80 {
+            read.admit("192.0.2.1").unwrap();
+        }
+        assert!(work.admit("192.0.2.1").is_err());
+        assert_eq!(work.total, 24);
+        assert_eq!(read.total, 80);
+        let mut sources = Budget::new(256, 512);
+        for n in 0..128 {
+            sources.admit(&format!("198.51.100.{n}")).unwrap();
+        }
+        assert!(sources.admit("203.0.113.1").is_err());
     }
 }

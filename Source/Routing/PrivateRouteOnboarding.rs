@@ -20,6 +20,12 @@ pub struct Join {
     /// Current health from this client's local clock monitor.
     #[arg(long)]
     pub clock_witness: PathBuf,
+    /// Independently accepted successor transport after the invitation's original voucher expires.
+    #[arg(long, requires = "authority_route_digest")]
+    pub authority_route: Option<PathBuf>,
+    /// SHA256 of the exact successor route; the original invitation binding remains unchanged.
+    #[arg(long, requires = "authority_route")]
+    pub authority_route_digest: Option<String>,
 }
 fn key(identity: &Identity) -> Result<SigningKey> {
     let secret = Zeroizing::new(trust::hex32(&identity.secret_key)?);
@@ -197,6 +203,96 @@ fn exact_file(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     Ok(())
 }
+fn successor_reference(
+    previous: &crate::authority_proof::VersionRef,
+    next: &crate::authority_proof::VersionRef,
+) -> bool {
+    previous.kind == next.kind
+        && previous.id == next.id
+        && (next == previous || next.generation > previous.generation)
+}
+fn successor_voucher(
+    previous: &crate::authority_domains::routes::Voucher,
+    next: &crate::authority_domains::routes::Voucher,
+    now: u64,
+) -> Result<()> {
+    ensure!(
+        previous.expires <= now && next.expires > now.saturating_add(1250),
+        "join transport replacement requires an expired original voucher and a current successor"
+    );
+    ensure!(
+        previous.action == 10
+            && next.action == previous.action
+            && next.scope == previous.scope
+            && next.sponsor == previous.sponsor
+            && next.possession == previous.possession
+            && next.connections == previous.connections
+            && next.bytes == previous.bytes
+            && successor_reference(&previous.grant, &next.grant)
+            && successor_reference(&previous.relay, &next.relay)
+            && successor_reference(&previous.destination, &next.destination),
+        "join transport successor changes purpose, identity, authority or budget"
+    );
+    Ok(())
+}
+fn successor_route(
+    original: &crate::route_profile::Profile,
+    path: &Path,
+    fingerprint: &str,
+    now: u64,
+) -> Result<crate::route_profile::Profile> {
+    let bytes = files::read_single(path, 600000, false)?;
+    ensure!(
+        sha2::Sha256::digest(&bytes).as_slice() == trust::hex32(fingerprint)?,
+        "join transport differs from its independently accepted fingerprint"
+    );
+    let next: crate::route_profile::Profile = serde_json::from_slice(&bytes)?;
+    next.validate()?;
+    let mut template = next.clone();
+    template.voucher.clone_from(&original.voucher);
+    for (next_identity, old_identity) in [
+        (&next.relay, &original.relay),
+        (&next.destination, &original.destination),
+    ] {
+        if next_identity != old_identity {
+            next_identity.certificate_successor_of(old_identity)?;
+            crate::runtime_manifest::certificates::current(
+                &next_identity.leaf_der,
+                &crate::runtime_manifest::certificates::der(
+                    &next_identity.certificate_authority_pem,
+                )?,
+                next_identity.server_name.parse()?,
+                now,
+            )?;
+        }
+    }
+    template.relay.clone_from(&original.relay);
+    template.destination.clone_from(&original.destination);
+    ensure!(
+        &template == original,
+        "join transport successor changes the pinned relay or destination profile"
+    );
+    let before = crate::authority_domains::Record::parse(
+        &original.voucher,
+        original.network,
+        original.incarnation,
+    )?;
+    let after =
+        crate::authority_domains::Record::parse(&next.voucher, next.network, next.incarnation)?;
+    ensure!(
+        before.reference.kind == 166
+            && after.reference.kind == 166
+            && before.reference.id == after.reference.id
+            && after.reference.generation > before.reference.generation,
+        "join transport successor changes voucher identity or rolls back its generation"
+    );
+    successor_voucher(
+        &crate::authority_domains::routes::Voucher::parse(&before.payload)?,
+        &crate::authority_domains::routes::Voucher::parse(&after.payload)?,
+        now,
+    )?;
+    Ok(next)
+}
 pub fn join(arguments: Join) -> Result<()> {
     use crate::{
         authority_challenge::Session,
@@ -259,7 +355,7 @@ pub fn join(arguments: Join) -> Result<()> {
         "join paths must be absolute"
     );
     let clock = crate::authority_clock::Source::select(&arguments.clock_witness, None, None)?;
-    clock.health()?;
+    let current = clock.health()?.observe()?.wall_ms;
     if let Some(joined) = &profile.joined {
         ensure!(
             joined.directory == arguments.directory
@@ -272,6 +368,18 @@ pub fn join(arguments: Join) -> Result<()> {
             return workflow::status(&arguments.profile);
         }
     }
+    let authority_route = match (
+        &arguments.authority_route,
+        &arguments.authority_route_digest,
+    ) {
+        (Some(path), Some(fingerprint)) => {
+            successor_route(&invitation.authority_route, path, fingerprint, current)?
+        }
+        (None, None) => invitation.authority_route.clone(),
+        _ => anyhow::bail!(
+            "join transport replacement needs both route and independently accepted digest"
+        ),
+    };
     let binding = serde_json::to_vec(
         &json!({"format":"HyperNetJoinBinding/1","client":profile.client_id,
         "bootstrapDigest":hex::encode(bootstrap.file_digest()),"invitationDigest":arguments.invitation_digest,
@@ -327,7 +435,7 @@ pub fn join(arguments: Join) -> Result<()> {
     workflow::retain_route(
         &arguments.profile,
         &arguments.directory,
-        invitation.authority_route,
+        authority_route,
         accepted.candidate,
     )?;
     profile.joined = Some(Joined {
@@ -437,3 +545,7 @@ pub fn join(arguments: Join) -> Result<()> {
         "next":"Issue a normal route voucher and retain its profile before the bootstrap voucher expires"}),
     )
 }
+
+#[cfg(test)]
+#[path = "../../Tests/Unit/Routing/PrivateRouteJoinRecoveryTests.rs"]
+mod recovery_tests;

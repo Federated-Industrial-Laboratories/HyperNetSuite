@@ -16,6 +16,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+// A continuation uses a challenge and request, sharing its source with previews and other clients.
+pub(super) const REQUESTS_PER_SOURCE: usize = 256;
+pub(super) const REQUESTS_TOTAL: usize = 512;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configuration {
@@ -102,7 +106,7 @@ impl Budget {
         if self.start.elapsed() >= Duration::from_secs(60) {
             *self = Self::new();
         }
-        if self.total >= 120 {
+        if self.total >= REQUESTS_TOTAL {
             return false;
         }
         let source = match source {
@@ -113,7 +117,7 @@ impl Budget {
             return false;
         }
         let count = self.sources.entry(source).or_default();
-        if *count >= 12 {
+        if *count >= REQUESTS_PER_SOURCE {
             return false;
         }
         *count += 1;
@@ -261,6 +265,178 @@ mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn admission_budget_transport_retains_source_global_and_inventory_bounds() {
+        let mut budget = Budget::new();
+        let source: IpAddr = "2001:db8::1".parse().unwrap();
+        for _ in 0..256 {
+            assert!(budget.admit(source));
+        }
+        assert!(!budget.admit("2001:db8::2".parse().unwrap()));
+        for _ in 0..256 {
+            assert!(budget.admit("192.0.2.1".parse().unwrap()));
+        }
+        assert!(!budget.admit("192.0.2.2".parse().unwrap()));
+        budget.start -= Duration::from_secs(60);
+        for n in 0u16..256 {
+            assert!(budget.admit(IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, n as u8))));
+        }
+        assert!(!budget.admit("203.0.113.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn admission_budget_real_tls_join_and_clock_wait_polls_share_one_source() {
+        use std::os::unix::net::UnixListener;
+        let directory =
+            std::env::temp_dir().join(format!("admission-flow-{}", crate::random_hex::<8>()));
+        super::super::saved::create_directory(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let pin = certificates::initialise(&directory, "127.0.0.1").unwrap();
+        let reserve = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reserve.local_addr().unwrap();
+        drop(reserve);
+        let origin = format!("https://{address}/");
+        let location = super::super::location::Location::parse(&format!(
+            "{origin}join#v=1&pin={}&ca={}",
+            URL_SAFE_NO_PAD.encode([4; 32]),
+            URL_SAFE_NO_PAD.encode(hex::decode(pin).unwrap())
+        ))
+        .unwrap();
+        let socket = directory.join("Registrar.sock");
+        let registrar = UnixListener::bind(&socket).unwrap();
+        registrar.set_nonblocking(true).unwrap();
+        let config = Configuration {
+            version: 1,
+            origin,
+            native_link: location.url(true).unwrap(),
+            listen: address,
+            tls: certificates::Configuration::Private {
+                directory: directory.clone(),
+                host: "127.0.0.1".into(),
+            },
+            registrar: socket,
+            registrar_uid: unsafe { libc::geteuid() },
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        // This responder checks transport forwarding only; native admission remains independently verified.
+        let bridge = thread::spawn(move || -> Result<()> {
+            while !stopped.load(Ordering::Acquire) {
+                let (mut stream, _) = match registrar.accept() {
+                    Ok(v) => v,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+                let mut size = [0; 4];
+                stream.read_exact(&mut size)?;
+                let size = u32::from_be_bytes(size) as usize;
+                ensure!(size <= 4096, "test bridge request exceeds bound");
+                let mut body = vec![0; size];
+                stream.read_exact(&mut body)?;
+                let request: RegistrarRequest = serde_json::from_slice(&body)?;
+                ensure!(
+                    request.format == "HyperNetAdmissionEdge/1" && request.source == "127.0.0.1",
+                    "test bridge source differs"
+                );
+                let action = match request.action {
+                    Operation::Descriptor => "descriptor",
+                    Operation::Challenge { .. } => "challenge",
+                    Operation::Claim { .. } => "claim",
+                };
+                let result =
+                    serde_json::to_vec(&serde_json::json!({"status":"Pending","action":action}))?;
+                stream.write_all(&(result.len() as u32).to_be_bytes())?;
+                stream.write_all(&result)?;
+            }
+            Ok(())
+        });
+        let stopped = stop.clone();
+        let listener = thread::spawn(move || serve(config, stopped));
+        struct Running {
+            stop: Arc<AtomicBool>,
+            workers: Vec<thread::JoinHandle<Result<()>>>,
+        }
+        impl Drop for Running {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Release);
+                for worker in self.workers.drain(..) {
+                    let _ = worker.join();
+                }
+            }
+        }
+        let _running = Running {
+            stop,
+            workers: vec![listener, bridge],
+        };
+        let client = super::super::transport::client(&location).unwrap();
+        let get = || {
+            client
+                .get(location.endpoint("/v1/admission/descriptor").unwrap())
+                .send()
+        };
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match get() {
+                Ok(response) => {
+                    assert!(response.status().is_success());
+                    break;
+                }
+                Err(_) => {
+                    assert!(Instant::now() < until);
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+        // Three owner probes and two previews share the same NAT address as a fresh joining client.
+        for _ in 0..4 {
+            assert!(get().unwrap().status().is_success());
+        }
+        let post = |path: &str, action: &str| {
+            let response = client
+                .post(location.endpoint(path).unwrap())
+                .json(&serde_json::json!({"operation":action}))
+                .send()
+                .unwrap();
+            let bytes = super::super::transport::response(response).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        };
+        for action in ["start", "acceptNative"] {
+            assert_eq!(
+                post("/v1/admission/challenge", action)["action"],
+                "challenge"
+            );
+            assert_eq!(post("/v1/admission/request", action)["action"], "claim");
+        }
+        // The second continuation's claim is connection13, which previously closed before TLS.
+        for _ in 0..32 {
+            assert_eq!(
+                post("/v1/admission/challenge", "status")["action"],
+                "challenge"
+            );
+            assert_eq!(post("/v1/admission/request", "status")["action"], "claim");
+        }
+        // Another client and an owner probe use the source without replacing the listener.
+        for _ in 0..3 {
+            assert!(get().unwrap().status().is_success());
+        }
+        for action in ["start", "acceptNative"] {
+            post("/v1/admission/challenge", action);
+            post("/v1/admission/request", action);
+        }
+    }
+
     #[test]
     fn real_tls_landing_uses_no_registrar_and_rejects_unpinned_trust() {
         let directory =

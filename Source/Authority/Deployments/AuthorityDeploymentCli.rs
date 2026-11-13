@@ -76,7 +76,7 @@ pub enum Command {
         generation: u64,
         #[arg(long)]
         output: PathBuf,
-        /// Reserve the first intent of a dedicated activation-only manager profile for persistent hosting.
+        /// Retain one unacknowledged request from a dedicated activation-only manager for persistent hosting.
         #[arg(long)]
         persistent: bool,
     },
@@ -123,7 +123,7 @@ pub enum Command {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Import exact signed consent and all possession envelopes without contacting a host.
+    /// Import exact signed consent and initial possession envelopes without contacting a host.
     Assemble {
         #[command(flatten)]
         trust: Offline,
@@ -131,7 +131,8 @@ pub enum Command {
         manifest: PathBuf,
         #[arg(long)]
         consent: PathBuf,
-        #[arg(long, required = true)]
+        /// Initial admission requires every possession; an exact successor may omit all of them.
+        #[arg(long)]
         possession: Vec<PathBuf>,
         #[arg(long)]
         output: PathBuf,
@@ -401,25 +402,43 @@ fn connected(online: Online, work: Work) -> Result<()> {
                 &mut session,
                 &source,
             )?;
-            let request = Request::Register {
-                grant: context.version(102, grant)?,
-                historical: false,
-                offer,
+            let reference = context.version(102, grant)?;
+            let expected_offer = offer.clone();
+            let request = if store.resume_ordinary()?.is_none()
+                && context.registered(&offer, signer.verifying_key().to_bytes(), &reference)?
+            {
+                Request::Get {
+                    deployment: offer.manifest.deployment,
+                    grant: Some(grant),
+                }
+            } else {
+                Request::Register {
+                    grant: reference.clone(),
+                    historical: false,
+                    offer,
+                }
             };
-            (
-                "DeploymentRegistered",
-                client::local(
-                    &verified,
-                    request,
-                    Some(&context),
-                    &online.socket,
-                    &signer,
-                    &mut store,
-                    &mut session,
-                    || source.health(),
+            let result = client::local(
+                &verified,
+                request,
+                Some(&context),
+                &online.socket,
+                &signer,
+                &mut store,
+                &mut session,
+                || source.health(),
+            )?;
+            ensure!(
+                result.cache.registered(
+                    &expected_offer,
+                    signer.verifying_key().to_bytes(),
+                    &reference
                 )?,
-            )
+                "certified registration changed during exact retry"
+            );
+            ("DeploymentRegistered", result)
         }
+
         Work::Get(deployment, grant) => {
             let context = if let Some(grant) = grant {
                 Some(scoped(
@@ -532,8 +551,13 @@ fn connected(online: Online, work: Work) -> Result<()> {
             )
         }
     };
+    let registered_profile = result.cache.public_registration()?.map(|r| {
+        json!({"manifest":r.manifest,
+        "profileDigest":hex::encode(r.profile.digest),"consentDigest":hex::encode(r.consent.digest),
+        "withdrawn":result.cache.version(130,r.deployment).is_ok()})
+    });
     crate::print_value(
-        &json!({"status":status,"deployment":hex::encode(result.cache.deployment),"committedHeight":result.prefix.height(),"value":diagnostic(result.value),"currentPermission":false}),
+        &json!({"status":status,"deployment":hex::encode(result.cache.deployment),"committedHeight":result.prefix.height(),"value":diagnostic(result.value),"currentPermission":false,"registeredProfile":registered_profile}),
     )
 }
 fn synchronise(online: Online, grant: [u8; 32], directory: &Path) -> Result<()> {

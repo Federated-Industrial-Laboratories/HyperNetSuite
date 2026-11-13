@@ -995,7 +995,33 @@ fn stream_transport_setup_failure_precedes_challenge_and_clock_sample() {
 
 #[test]
 fn immediate_stream_status_accepts_a_quick_certificate_without_challenge_ageing() {
+    immediate_stream_status(false);
+}
+
+#[test]
+fn stream_status_preserves_an_unfinished_ordinary_request() {
+    immediate_stream_status(true);
+}
+
+fn immediate_stream_status(retain_pending: bool) {
     let mut f = Fixture::new();
+    let pending = if retain_pending {
+        f.context
+            .prepare(request(), &f.signer, &mut f.store, &mut f.session, f.issued)
+            .unwrap()
+            .cancel(&mut f.session)
+            .unwrap();
+        Some(
+            f.store
+                .resume_ordinary()
+                .unwrap()
+                .unwrap()
+                .signed()
+                .to_vec(),
+        )
+    } else {
+        None
+    };
     let socket = f.directory.0.join("Quick.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1047,6 +1073,12 @@ fn immediate_stream_status_accepts_a_quick_certificate_without_challenge_ageing(
     server.join().unwrap();
     assert_eq!(result.unwrap().canonical(), expected);
     assert_eq!(f.store.prefix().height(), 2);
+    if let Some(pending) = pending {
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().signed(),
+            pending
+        );
+    }
 }
 
 #[test]
@@ -1252,8 +1284,31 @@ pub(super) fn live_clock() -> Result<ClockHealth> {
 
 #[test]
 fn lost_fence_response_resumes_exact_signed_fence_and_verifies_committed_ancestry() {
+    fence_response_recovery(false);
+}
+#[test]
+fn exact_fence_retries_once_and_recognizes_certified_successor_after_reopen() {
+    fence_response_recovery(true);
+}
+fn fence_response_recovery(bound: bool) {
     let mut f = Fixture::new();
     let descriptor = f.bootstrap.descriptor().clone();
+    let target = if bound {
+        let pending = f
+            .context
+            .prepare(request(), &f.signer, &mut f.store, &mut f.session, f.issued)
+            .unwrap();
+        let intent = Intent::from_signed(&pending.intent).unwrap();
+        Some(stream_client::FenceTarget {
+            generation: intent.generation,
+            generation_id: intent.generation_id,
+            sequence: intent.sequence,
+            intent: intent.digest,
+        })
+    } else {
+        None
+    };
+    let ordinary = f.store.resume_ordinary().unwrap();
     let metadata = f
         .store
         .stream_metadata()
@@ -1375,31 +1430,116 @@ fn lost_fence_response_resumes_exact_signed_fence_and_verifies_committed_ancestr
         ]))
         .unwrap();
         send_control(stream, &history);
+        if bound {
+            let (stream, packet) = receive_control(&listener);
+            let (ordered, request, challenge) = submitted(&packet);
+            assert!(matches!(
+                proof::SignedRequest::from_signed(&request).unwrap(),
+                proof::SignedRequest::StreamStatus(_)
+            ));
+            let (reply, _) = certified_request(
+                &server_descriptor,
+                &request,
+                &challenge,
+                &ordered,
+                wire::decode(&replacement).unwrap(),
+                mature(&challenge),
+                wire::digest(&retry_node),
+                5,
+                0,
+            );
+            send_control(stream, &reply);
+        }
         original_fence
     });
-    let failed = stream_client::fence_local(
-        &descriptor,
-        &socket,
-        &f.signer,
-        &mut f.store,
-        &mut f.session,
-        live_clock,
-    );
+    let failed = if let Some(target) = target {
+        let floor = std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap();
+        for changed in [
+            stream_client::FenceTarget {
+                generation: target.generation + 1,
+                ..target
+            },
+            stream_client::FenceTarget {
+                intent: [255; 32],
+                ..target
+            },
+        ] {
+            assert!(
+                stream_client::fence_exact_local(
+                    &descriptor,
+                    &socket,
+                    &f.signer,
+                    &mut f.store,
+                    &mut f.session,
+                    live_clock,
+                    changed
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+            floor
+        );
+        stream_client::fence_exact_local(
+            &descriptor,
+            &socket,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            live_clock,
+            target,
+        )
+    } else {
+        stream_client::fence_local_guarded(
+            &descriptor,
+            &socket,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            live_clock,
+            |metadata| {
+                ensure!(
+                    metadata.state().unwrap().generation == 1,
+                    "initial stream differs"
+                );
+                Ok(())
+            },
+        )
+    };
     assert!(failed.is_err());
     assert_eq!(f.store.prefix().height(), 2);
     let pending = f.store.resume_fence().unwrap().unwrap();
     let original = pending.signed().to_vec();
     assert!(f.store.ordinary_slot().is_err());
-    let response = stream_client::fence_local(
-        &descriptor,
-        &socket,
-        &f.signer,
-        &mut f.store,
-        &mut f.session,
-        live_clock,
-    )
+    if bound {
+        drop(f.store);
+        f.store = Store::open(&f.directory.0, descriptor.clone()).unwrap();
+        f.session = Session::new().unwrap();
+        assert_eq!(f.store.resume_fence().unwrap().unwrap().signed(), original);
+    }
+    let response = if let Some(target) = target {
+        stream_client::fence_exact_local(
+            &descriptor,
+            &socket,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            live_clock,
+            target,
+        )
+    } else {
+        stream_client::fence_local_guarded(
+            &descriptor,
+            &socket,
+            &f.signer,
+            &mut f.store,
+            &mut f.session,
+            live_clock,
+            |_| panic!("an already signed fence must resume its original comparison"),
+        )
+    }
     .unwrap();
-    assert_eq!(server.join().unwrap(), original);
     assert!(matches!(
         response,
         proof::StreamResponse::Fence {
@@ -1414,10 +1554,111 @@ fn lost_fence_response_resumes_exact_signed_fence_and_verifies_committed_ancestr
     assert_eq!(slot.generation(), 2);
     assert_eq!(slot.sequence(), 1);
     drop(f.store);
-    let reopened = Store::open(&f.directory.0, descriptor).unwrap();
+    let mut reopened = Store::open(&f.directory.0, descriptor.clone()).unwrap();
     assert_eq!(reopened.prefix().height(), 4);
     assert_eq!(
         reopened.stream_metadata().unwrap().unwrap(),
         *response.metadata()
     );
+    if let Some(target) = target {
+        assert_eq!(
+            reopened
+                .retained_fence_target(target.intent)
+                .unwrap()
+                .signed(),
+            ordinary.unwrap().signed()
+        );
+        let response = stream_client::fence_exact_local(
+            &descriptor,
+            &socket,
+            &f.signer,
+            &mut reopened,
+            &mut f.session,
+            live_clock,
+            target,
+        )
+        .unwrap();
+        assert!(matches!(
+            response,
+            proof::StreamResponse::Fence {
+                outcome: proof::FenceOutcome::AlreadyApplied,
+                ..
+            }
+        ));
+        assert_eq!(reopened.prefix().height(), 5);
+        assert_eq!(reopened.ordinary_slot().unwrap().generation(), 2);
+        assert!(reopened.resume_fence().unwrap().is_none());
+        let floor: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            floor["tracker"]["outstandingUnknown"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    assert_eq!(server.join().unwrap(), original);
+}
+
+#[test]
+fn limited_fence_guard_uses_authenticated_status_before_preparing_any_fence() {
+    let mut f = Fixture::new();
+    let descriptor = f.bootstrap.descriptor().clone();
+    let metadata = f
+        .store
+        .stream_metadata()
+        .unwrap()
+        .unwrap()
+        .canonical()
+        .to_vec();
+    let original_parent = *f.store.prefix().node();
+    let socket = f.directory.0.join("GuardedFence.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server_descriptor = descriptor.clone();
+    let server = std::thread::spawn(move || {
+        let (stream, packet) = receive_control(&listener);
+        let (ordered, request, challenge) = submitted(&packet);
+        assert!(matches!(
+            proof::SignedRequest::from_signed(&request).unwrap(),
+            proof::SignedRequest::StreamStatus(_)
+        ));
+        let (reply, _) = certified_request(
+            &server_descriptor,
+            &request,
+            &challenge,
+            &ordered,
+            wire::decode(&metadata).unwrap(),
+            mature(&challenge),
+            original_parent,
+            2,
+            0,
+        );
+        send_control(stream, &reply);
+    });
+    let result = stream_client::fence_local_guarded(
+        &descriptor,
+        &socket,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        live_clock,
+        |metadata| {
+            assert_eq!(metadata.state().unwrap().generation, 1);
+            anyhow::bail!("original issuance generation differs")
+        },
+    );
+    server.join().unwrap();
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("original issuance generation differs")
+    );
+    assert_eq!(f.store.prefix().height(), 2);
+    assert!(f.store.resume_fence().unwrap().is_none());
+    assert_eq!(f.store.ordinary_slot().unwrap().generation(), 1);
 }

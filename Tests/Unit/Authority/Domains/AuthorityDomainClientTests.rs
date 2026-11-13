@@ -23,12 +23,20 @@ fn reply(p: &Prepared, f: &Fixture) -> (CertifiedReply, AncestryEvidence) {
     reply_at(p, f.current.observe().unwrap().wall_ms, f.store.prefix())
 }
 fn reply_at(p: &Prepared, at: u64, prefix: &Prefix) -> (CertifiedReply, AncestryEvidence) {
+    reply_with_records(p, at, prefix, p.bootstrap.governance_records())
+}
+fn reply_with_records(
+    p: &Prepared,
+    at: u64,
+    prefix: &Prefix,
+    records: &[Vec<u8>],
+) -> (CertifiedReply, AncestryEvidence) {
     let intent = Intent::from_signed(&p.intent).unwrap();
     let result = Operation::parse(&intent)
         .unwrap()
         .prepare(
             &p.prior.state,
-            p.bootstrap.governance_records(),
+            records,
             &Reservations(p.bootstrap.reservations().to_vec()),
             &intent,
             at,
@@ -60,6 +68,158 @@ fn reply_at(p: &Prepared, at: u64, prefix: &Prefix) -> (CertifiedReply, Ancestry
     )
 }
 
+#[test]
+fn admission_context_reopens_after_domain_discovery_without_replacing_its_floor() {
+    use crate::authority_inspection::admission;
+
+    let mut f = Fixture::with_actions(vec![0, 11, 20]);
+    f.context.save(&f.store).unwrap();
+    let initial = std::fs::read(f.directory.0.join("Governance.cbor")).unwrap();
+    let names = [
+        "AdmissionRecordsPending.cbor",
+        "AdmissionRecords.cbor",
+        "Governance.cbor",
+    ];
+    for name in names {
+        files::atomic_at(
+            f.store.profile_directory(),
+            OsStr::new(name),
+            &initial,
+            true,
+        )
+        .unwrap();
+    }
+    admission::retained(&f.bootstrap, &f.store).unwrap();
+
+    let parent = domain_request(&f).grant.unwrap();
+    let mut fields = wire::decode(
+        f.context
+            .governance
+            .record_bytes(parent.kind, parent.id)
+            .unwrap(),
+    )
+    .unwrap()
+    .array(17)
+    .unwrap()
+    .to_vec();
+    fields[6] = b(&[24; 32]);
+    fields[13] = version_value(&parent);
+    fields[14] = V::Uint(7);
+    fields[16] = a(vec![
+        a(vec![
+            V::Uint(f.store.prefix().scope().epoch),
+            V::Uint(f.store.prefix().height()),
+            b(f.store.prefix().policy_state()),
+        ]),
+        a(vec![version_value(&parent)]),
+    ]);
+    let delegated = wire::encode(&a(fields.clone())).unwrap();
+    let child = VersionRef {
+        kind: 102,
+        id: [24; 32],
+        generation: 1,
+        digest: wire::digest(&delegated),
+    };
+    let mut authority = f.bootstrap.governance_records().to_vec();
+    authority.push(delegated.clone());
+    crate::authority_membership::sort_records(&mut authority).unwrap();
+    Governance::parse([20; 32], [21; 32], &authority).unwrap();
+    let mut request = domain_request(&f);
+    request.grant = Some(child.clone());
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    let prepared = Prepared::new_with_objects(
+        &f.bootstrap,
+        request,
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
+    )
+    .unwrap();
+    let (reply, evidence) = reply_with_records(
+        &prepared,
+        f.current.observe().unwrap().wall_ms,
+        f.store.prefix(),
+        &authority,
+    );
+    // The normal typed domain verifier accepts and publishes the newly learned grant.
+    prepared
+        .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
+            Ok(f.current)
+        })
+        .unwrap();
+    assert!(f.store.generations().contains(&child));
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert!(ContextState::load(&f.bootstrap, &f.store, &f.directory.0).is_err());
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    let floor = std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap();
+    let witness = std::fs::read(f.directory.0.join("AuthorityWitness.json")).unwrap();
+    let records = admission::retained(&f.bootstrap, &f.store).unwrap();
+    assert!(records.contains(&delegated));
+    ContextState::retained(&f.bootstrap, &f.store, &records).unwrap();
+
+    let path = f.directory.0.join(CACHE);
+    let retained = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(admission::retained(&f.bootstrap, &f.store).is_err());
+    for tamper in [false, true] {
+        let mut value = wire::decode_state(&retained)
+            .unwrap()
+            .array(5)
+            .unwrap()
+            .to_vec();
+        let V::Array(records) = &mut value[4] else {
+            unreachable!()
+        };
+        let index = records.iter().position(|r| *r == b(&delegated)).unwrap();
+        if tamper {
+            fields[14] = V::Uint(6);
+            let changed = wire::encode(&a(fields.clone())).unwrap();
+            let mut parsed = authority.clone();
+            *parsed.iter_mut().find(|r| **r == delegated).unwrap() = changed.clone();
+            Governance::parse([20; 32], [21; 32], &parsed).unwrap();
+            records[index] = b(&changed);
+        } else {
+            records.remove(index);
+        }
+        files::atomic_at(
+            f.store.profile_directory(),
+            OsStr::new(CACHE),
+            &wire::encode_state(&a(value)).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert!(admission::retained(&f.bootstrap, &f.store).is_err());
+    }
+    files::atomic_at(
+        f.store.profile_directory(),
+        OsStr::new(CACHE),
+        &retained,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        admission::retained(&f.bootstrap, &f.store).unwrap(),
+        records
+    );
+    for name in names {
+        assert_eq!(std::fs::read(f.directory.0.join(name)).unwrap(), initial);
+    }
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+        floor
+    );
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityWitness.json")).unwrap(),
+        witness
+    );
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert!(f.store.resume_fence().unwrap().is_none());
+}
+
 fn page_query(f: &Fixture) -> Request {
     let mut request = domain_request(f);
     request.command = domains::page::Command::Context {
@@ -81,6 +241,1184 @@ fn elapsed_health(health: ClockHealth, elapsed: u64) -> ClockHealth {
     )
     .unwrap()
     .frozen()
+}
+
+fn admission_snapshot(f: &Fixture, records: &[Vec<u8>]) -> crate::authority_membership::Snapshot {
+    crate::authority_membership::Snapshot::parse(&a(vec![
+        a(vec![
+            V::Uint(f.store.prefix().scope().epoch),
+            V::Uint(f.store.prefix().height()),
+            b(f.store.prefix().policy_state()),
+        ]),
+        a(references(records, [20; 32], [21; 32])
+            .unwrap()
+            .iter()
+            .map(version_value)
+            .collect()),
+    ]))
+    .unwrap()
+}
+
+fn admission_record(
+    kind: u64,
+    id: [u8; 32],
+    payload: V,
+    snapshot: &crate::authority_membership::Snapshot,
+    old: Option<&[u8]>,
+) -> Vec<u8> {
+    wire::encode(&a(vec![
+        V::Uint(kind),
+        V::Uint(1),
+        b(&[20; 32]),
+        b(&[21; 32]),
+        V::Uint(old.map_or(1, |old| {
+            crate::authority_admission::record_reference(old, [20; 32], [21; 32])
+                .unwrap()
+                .generation
+                + 1
+        })),
+        old.map_or(V::Null, |old| b(&wire::digest(old))),
+        b(&id),
+        payload,
+        snapshot.value.clone(),
+    ]))
+    .unwrap()
+}
+
+fn certified_admission(
+    f: &mut Fixture,
+    operation: &crate::authority_admission::Operation,
+    source: &[Vec<u8>],
+    replay_records: Option<&[Vec<u8>]>,
+) -> (proof::VerifiedResult, Vec<Vec<u8>>, Vec<u8>) {
+    use crate::authority_admission as native;
+    let descriptor = f.store.descriptor().clone();
+    let next = native::record_reference(&operation.next, [20; 32], [21; 32]).unwrap();
+    let intent = if let Some(pending) = f.store.resume_ordinary().unwrap() {
+        assert_eq!(
+            native::Operation::parse(&Intent::from_signed(pending.signed()).unwrap())
+                .unwrap()
+                .parameters()
+                .unwrap(),
+            operation.parameters().unwrap()
+        );
+        pending.signed().to_vec()
+    } else {
+        prepare_ordinary(
+            &descriptor,
+            &f.signer,
+            &mut f.store,
+            "AuthorityAdmission",
+            next.id,
+            next.generation,
+            &operation.snapshot.references,
+            &operation.parameters().unwrap(),
+        )
+        .unwrap()
+    };
+    let wall = f.current.observe().unwrap().wall_ms;
+    let boot = boot_time_ms().unwrap();
+    f.current = ClockHealth::new(wall, boot, boot + 30000, 100)
+        .unwrap()
+        .frozen();
+    let challenge = f
+        .session
+        .issue(
+            &intent,
+            &f.signer,
+            random_id().unwrap(),
+            DURATION,
+            f.current,
+        )
+        .unwrap();
+    let ordered = wire::encode(&a(vec![
+        V::Uint(22),
+        V::Uint(1),
+        descriptor.scope().value(),
+        b(&intent),
+        b(&challenge),
+        V::Uint(Challenge::from_signed(&challenge).unwrap().expires_at_ms),
+    ]))
+    .unwrap();
+    let parsed = Intent::from_signed(&intent).unwrap();
+    let selected = operation
+        .authorise(
+            replay_records.unwrap_or(source),
+            &Reservations(f.bootstrap.reservations().to_vec()),
+            &parsed,
+            wall,
+            replay_records.is_some(),
+        )
+        .unwrap();
+    let refs = operation
+        .result_references(&selected.dependencies, parsed.network, parsed.incarnation)
+        .unwrap();
+    let value = a(vec![
+        V::Uint(201),
+        V::Uint(1),
+        V::Text("AuthorityAdmission".into()),
+        a(refs.iter().map(version_value).collect()),
+        b(&operation.next),
+    ]);
+    let (packet, node) = certified_request(
+        &descriptor,
+        &intent,
+        &challenge,
+        &ordered,
+        value.clone(),
+        wall,
+        *f.store.prefix().node(),
+        f.store.prefix().height() + 1,
+        0,
+    );
+    let packet = wire::decode(&packet).unwrap();
+    let fields = packet.array(10).unwrap();
+    let verified = proof::verify_response(
+        &descriptor,
+        proof::ProofContext {
+            intent: &intent,
+            challenge: &challenge,
+            restrictions: Restrictions::default(),
+            minimum_height: f.store.prefix().height(),
+            maximum_effect: 1,
+            expected_stream: None,
+        },
+        proof::Response {
+            ordered_request: &ordered,
+            operation_result: fields[8].bytes().unwrap(),
+            certificate: fields[7].bytes().unwrap(),
+            ancestry: std::slice::from_ref(&node),
+        },
+        |request, result, executed| {
+            let actual = native::Operation::parse(request)?;
+            ensure!(
+                actual.parameters()? == operation.parameters()?,
+                "admission request differs"
+            );
+            let (records, validation) = crate::authority_inspection::admission::validate_permit(
+                &f.bootstrap,
+                &f.store,
+                &actual,
+                source,
+                request,
+                result,
+                executed,
+            )?;
+            ensure!(records == selected.records, "admission records differ");
+            ensure!(
+                wire::decode(&result.value)? == value,
+                "admission result differs"
+            );
+            Ok(validation)
+        },
+    )
+    .unwrap();
+    let verified = AncestryEvidence::direct(vec![node])
+        .attach(&f.store, verified)
+        .unwrap();
+    (verified, selected.records, intent)
+}
+
+fn learn_admission_completion(f: &mut Fixture, intent: &Intent, result: proof::Digest) {
+    use super::super::tests::{receive_control, send_control, submitted};
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    let wall = f.current.observe().unwrap().wall_ms;
+    let boot = boot_time_ms().unwrap();
+    f.current = ClockHealth::new(wall, boot, boot + 30000, 100)
+        .unwrap()
+        .frozen();
+    let socket = f.directory.0.join("AdmissionStatus.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let descriptor = f.store.descriptor().clone();
+    let server_descriptor = descriptor.clone();
+    let metadata = a(vec![
+        V::Uint(56),
+        V::Uint(1),
+        descriptor.scope().value(),
+        b(&intent.requester),
+        V::Bool(true),
+        V::Uint(intent.generation),
+        b(&intent.generation_id),
+        V::Uint(intent.acknowledged_through),
+        a(vec![
+            V::Uint(intent.sequence),
+            b(&intent.digest),
+            V::Uint(0),
+            V::Uint(0),
+            b(&result),
+        ]),
+        V::Null,
+    ]);
+    let parent = *f.store.prefix().node();
+    let height = f.store.prefix().height() + 1;
+    let server = std::thread::spawn(move || {
+        let (stream, packet) = receive_control(&listener);
+        let (ordered, signed, challenge) = submitted(&packet);
+        let at = Challenge::from_signed(&challenge).unwrap().created_at_ms;
+        let (reply, _) = certified_request(
+            &server_descriptor,
+            &signed,
+            &challenge,
+            &ordered,
+            metadata,
+            at,
+            parent,
+            height,
+            0,
+        );
+        send_control(stream, &reply);
+    });
+    let status = stream_client::status_local(
+        &descriptor,
+        &socket,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        || Ok(f.current),
+    );
+    server.join().unwrap();
+    assert_eq!(
+        status
+            .unwrap()
+            .state()
+            .unwrap()
+            .completion
+            .as_ref()
+            .unwrap()
+            .intent,
+        intent.digest
+    );
+}
+
+#[test]
+fn admission_enrolment_replaces_reserved_cache_and_retries_exact_pending_publication() {
+    admission_recovery_after_expiry(false);
+}
+
+#[test]
+fn admission_lost_first_reply_uses_certified_status_before_late_exact_replay() {
+    admission_recovery_after_expiry(true);
+}
+
+#[test]
+fn admission_current_domain_context_accepts_renewed_vouchers_and_rejects_malformed_records() {
+    use crate::authority_admission::Disclosure;
+    let mut original = State::empty([20; 32], [21; 32]);
+    let reference = |kind, id| VersionRef {
+        kind,
+        id: [id; 32],
+        generation: 1,
+        digest: [id + 1; 32],
+    };
+    let mut voucher = domains::routes::Voucher {
+        relay: reference(165, 204),
+        destination: reference(165, 205),
+        sponsor: SigningKey::from_bytes(&[92; 32]).verifying_key().to_bytes(),
+        grant: reference(102, 206),
+        possession: SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+        action: 0,
+        scope: (3, [205; 32]),
+        connections: 16,
+        bytes: 65536,
+        expires: 120000,
+        creation: [207; 32],
+        baseline: Some((0, 0)),
+    };
+    let first = domains::Record::next(&original, 166, [208; 32], voucher.value()).unwrap();
+    original.put(first).unwrap();
+    voucher.expires = 240000;
+    let renewed = domains::Record::next(&original, 166, [208; 32], voucher.value()).unwrap();
+    assert_eq!(renewed.reference.generation, 2);
+    assert!(
+        State::empty([20; 32], [21; 32])
+            .put(renewed.clone())
+            .is_err()
+    );
+    let context =
+        Disclosure::domain_context(std::slice::from_ref(&renewed.bytes), [20; 32], [21; 32])
+            .unwrap();
+    assert_eq!(context.record(166, [208; 32]).unwrap().bytes, renewed.bytes);
+    assert!(
+        Disclosure::domain_context(
+            &[renewed.bytes.clone(), renewed.bytes.clone()],
+            [20; 32],
+            [21; 32]
+        )
+        .is_err()
+    );
+    let mut malformed = wire::decode(&renewed.bytes)
+        .unwrap()
+        .array(8)
+        .unwrap()
+        .to_vec();
+    let mut payload = malformed[7].list(14).unwrap().to_vec();
+    let mut grant = payload[4].array(4).unwrap().to_vec();
+    grant[0] = V::Uint(165);
+    payload[4] = a(grant);
+    malformed[7] = a(payload);
+    let malformed = wire::encode(&a(malformed)).unwrap();
+    assert!(Disclosure::domain_context(&[malformed], [20; 32], [21; 32]).is_err());
+}
+
+fn complete_admission(
+    f: &mut Fixture,
+    operation: &crate::authority_admission::Operation,
+    source: &[Vec<u8>],
+) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let (verified, records, intent) = certified_admission(f, operation, source, None);
+    let permit = f
+        .store
+        .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
+        .unwrap();
+    permit
+        .perform_with_clock(
+            &mut f.store,
+            &mut f.session,
+            &mut || Ok(f.current),
+            1,
+            |_| Ok(()),
+            |_, store| {
+                let context = ContextState::retained(&f.bootstrap, store, &records)?;
+                context.save(store)?;
+                Cache::retain_context(&f.bootstrap, store, &context)
+            },
+        )
+        .unwrap();
+    (records, intent)
+}
+
+#[test]
+fn admission_reused_slot_snapshot_survives_certified_enrolment_and_reopen() {
+    use crate::authority_admission as native;
+    let (mut f, policy, candidate, mut records, mut old) = admission_reserved_fixture();
+    let operation = admission_enrol(&f, &records, &policy, &old, &candidate);
+    (records, _) = complete_admission(&mut f, &operation, &records);
+    old = native::Slot::parse(&operation.next, [20; 32], [21; 32]).unwrap();
+    let original_material = references(&old.material, [20; 32], [21; 32]).unwrap();
+    for transition in [native::Transition::Retire, native::Transition::Reserve] {
+        let snapshot = crate::authority_inspection_cli::admission_cli::snapshot(
+            &f.store,
+            f.current.observe().unwrap().wall_ms,
+            &records,
+            &policy,
+            Some(&old),
+            transition != native::Transition::Retire,
+        )
+        .unwrap();
+        let mut next = old.clone();
+        if transition == native::Transition::Retire {
+            next.state = 3;
+            next.challenge_until = 0;
+        } else {
+            next.state = 0;
+            next.assignment += 1;
+            next.claim = [8; 32];
+            next.nonce = [97; 32];
+            next.challenge_until = f.current.observe().unwrap().wall_ms + native::CHALLENGE_MS;
+        }
+        let operation = native::Operation {
+            transition,
+            policy: policy.bytes.clone(),
+            previous: Some(old.bytes.clone()),
+            next: admission_record(
+                native::SLOT,
+                old.reference.id,
+                next.payload(),
+                &snapshot,
+                Some(&old.bytes),
+            ),
+            acceptance: vec![],
+            legacy: vec![],
+            snapshot,
+        };
+        (records, _) = complete_admission(&mut f, &operation, &records);
+        old = native::Slot::parse(&operation.next, [20; 32], [21; 32]).unwrap();
+    }
+    assert_eq!(old.assignment, 2);
+    let operation = admission_enrol(&f, &records, &policy, &old, &candidate);
+    let source = records.clone();
+    let (records, signed) = complete_admission(&mut f, &operation, &source);
+    let intent = Intent::from_signed(&signed).unwrap();
+    assert_eq!((intent.sequence, intent.acknowledged_through), (5, 4));
+    assert_eq!(
+        original_material.iter().filter(|r| r.kind == 102).count(),
+        2
+    );
+    assert_eq!(
+        original_material.iter().filter(|r| r.kind == 125).count(),
+        1
+    );
+    for old in &original_material {
+        assert!(operation.snapshot.references.contains(old));
+        assert!(intent.expected.contains(old));
+        let mut missing = intent.clone();
+        missing.expected.retain(|r| r != old);
+        assert!(
+            operation
+                .authorise(
+                    &source,
+                    &Reservations(f.bootstrap.reservations().to_vec()),
+                    &missing,
+                    f.current.observe().unwrap().wall_ms,
+                    false,
+                )
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("exact signed predecessor")
+        );
+    }
+    let next = native::Slot::parse(&operation.next, [20; 32], [21; 32]).unwrap();
+    let next_material = references(&next.material, [20; 32], [21; 32]).unwrap();
+    let cached = Cache::load(&f.bootstrap, &f.store).unwrap().records;
+    assert!(cached.iter().all(|record| records.contains(record)));
+    let cached_versions = references(&cached, [20; 32], [21; 32]).unwrap();
+    assert!(cached_versions.contains(&next.reference));
+    for old in original_material {
+        let current = next_material
+            .iter()
+            .find(|r| r.index() == old.index())
+            .unwrap();
+        assert_eq!(current.generation, old.generation + 1);
+        assert!(cached_versions.contains(current));
+        assert!(f.store.generations().contains(current));
+        assert!(!f.store.generations().contains(&old));
+    }
+    let floor = std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap();
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert_eq!(Cache::load(&f.bootstrap, &f.store).unwrap().records, cached);
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+        floor
+    );
+}
+
+#[test]
+fn admission_legacy_closure_replaces_manual_membership_and_reopens() {
+    use crate::authority_admission as native;
+
+    let (mut f, policy, candidate, prior, old) = admission_reserved_fixture_with_legacy(true);
+    let old_governance = Governance::parse([20; 32], [21; 32], &prior).unwrap();
+    let legacy = &policy.legacy[0];
+    let mut operation = admission_enrol(&f, &prior, &policy, &old, &candidate);
+    operation.transition = native::Transition::Adopt;
+    operation.legacy = vec![
+        old_governance
+            .record_bytes(125, legacy.id)
+            .unwrap()
+            .to_vec(),
+    ];
+    operation.snapshot = admission_snapshot(&f, &prior);
+    let parent = wire::decode(old_governance.record_bytes(102, policy.parent.id).unwrap()).unwrap();
+    let tier = crate::authority_membership::version(&parent.array(17).unwrap()[9]).unwrap();
+    let mut next = native::Slot::parse(&operation.next, [20; 32], [21; 32]).unwrap();
+    next.legacy_streams = vec![candidate.verifying_key().to_bytes()];
+    next.material = native::enrol_material(
+        &policy,
+        &old,
+        &tier,
+        &operation.snapshot,
+        [20; 32],
+        [21; 32],
+    )
+    .unwrap();
+    operation.next = admission_record(
+        native::SLOT,
+        old.reference.id,
+        next.payload(),
+        &operation.snapshot,
+        Some(&old.bytes),
+    );
+    let (verified, current, _) = certified_admission(&mut f, &operation, &prior, None);
+    let governance = Governance::parse([20; 32], [21; 32], &current).unwrap();
+    let retired = references(
+        &[governance.record_bytes(125, legacy.id).unwrap().to_vec()],
+        [20; 32],
+        [21; 32],
+    )
+    .unwrap()
+    .remove(0);
+    assert_eq!(retired.generation, 2);
+    let reader = governance
+        .versions()
+        .into_iter()
+        .find(|r| {
+            r.kind == 102 && r.id == native::identifier(policy.reference.id, 0, 0, 1).unwrap()
+        })
+        .unwrap();
+    let query = Request {
+        command: domains::page::Command::Context {
+            action: 0,
+            scope_kind: 0,
+            resource: [20; 32],
+            namespace: None,
+        }
+        .into(),
+        grant: Some(reader),
+    }
+    .operation(&f.store, &[])
+    .unwrap();
+    let signed = crate::authority_deployment_tests::signed(
+        &candidate,
+        "AuthorityDomain",
+        query.command.resource(),
+        0,
+        wire::decode(&query.parameters().unwrap()).unwrap(),
+        vec![],
+    );
+    let envelope = wire::decode(&signed).unwrap();
+    let mut payload = wire::decode(envelope.array(4).unwrap()[2].bytes().unwrap())
+        .unwrap()
+        .array(17)
+        .unwrap()
+        .to_vec();
+    payload[13] = V::Uint(query.snapshot.epoch);
+    payload[14] = V::Uint(query.snapshot.height);
+    let signed = wire::sign_envelope(&wire::encode(&a(payload)).unwrap(), &candidate).unwrap();
+    let intent = Intent::from_signed(&signed).unwrap();
+    let state = State::empty([20; 32], [21; 32]);
+    let at = f.current.observe().unwrap().wall_ms;
+    let result = query
+        .prepare(
+            &state,
+            &current,
+            &Reservations(f.bootstrap.reservations().to_vec()),
+            &intent,
+            at,
+            false,
+            true,
+        )
+        .unwrap();
+    assert_eq!(result.code, 0);
+    assert!(result.versions.contains(&retired));
+    assert!(
+        !result
+            .versions
+            .iter()
+            .any(|r| r.index() == policy.legacy[1].index())
+    );
+    let challenge = f
+        .session
+        .issue(
+            &signed,
+            &candidate,
+            random_id().unwrap(),
+            DURATION,
+            f.current,
+        )
+        .unwrap();
+    let ordered = wire::encode(&a(vec![
+        V::Uint(22),
+        V::Uint(1),
+        f.store.descriptor().scope().value(),
+        b(&signed),
+        b(&challenge),
+        V::Uint(Challenge::from_signed(&challenge).unwrap().expires_at_ms),
+    ]))
+    .unwrap();
+    let independently_verify = |value: V, retained: &[Vec<u8>]| {
+        let (packet, node) = certified_request(
+            f.store.descriptor(),
+            &signed,
+            &challenge,
+            &ordered,
+            value,
+            at,
+            *f.store.prefix().node(),
+            f.store.prefix().height() + 1,
+            0,
+        );
+        let packet = wire::decode(&packet).unwrap();
+        let fields = packet.array(10).unwrap();
+        proof::verify_response(
+            f.store.descriptor(),
+            proof::ProofContext {
+                intent: &signed,
+                challenge: &challenge,
+                restrictions: Restrictions::default(),
+                minimum_height: f.store.prefix().height(),
+                maximum_effect: 1,
+                expected_stream: None,
+            },
+            proof::Response {
+                ordered_request: &ordered,
+                operation_result: fields[8].bytes().unwrap(),
+                certificate: fields[7].bytes().unwrap(),
+                ancestry: std::slice::from_ref(&node),
+            },
+            |intent, result, executed| {
+                let checked = domains::result::verify(
+                    &f.bootstrap,
+                    &state,
+                    retained,
+                    intent,
+                    result,
+                    executed,
+                    &[],
+                )?;
+                ensure!(
+                    checked.versions.contains(&retired),
+                    "legacy successor omitted"
+                );
+                proof::ActionValidation::new(checked.versions)
+            },
+        )
+    };
+    independently_verify(result.value.clone(), &prior).unwrap();
+    independently_verify(result.value.clone(), f.bootstrap.governance_records()).unwrap();
+    for omit in [false, true] {
+        let mut value = result.value.array(5).unwrap().to_vec();
+        let mut body = value[4].array(4).unwrap().to_vec();
+        let mut records = body[2].list(64).unwrap().to_vec();
+        let index = records
+            .iter()
+            .position(|v| {
+                references(&[v.bytes().unwrap().to_vec()], [20; 32], [21; 32]).unwrap()
+                    == [retired.clone()]
+            })
+            .unwrap();
+        if omit {
+            records.remove(index);
+            value[3] = a(result
+                .versions
+                .iter()
+                .filter(|r| *r != &retired)
+                .map(version_value)
+                .collect());
+        } else {
+            let mut changed = wire::decode(records[index].bytes().unwrap())
+                .unwrap()
+                .array(12)
+                .unwrap()
+                .to_vec();
+            changed[5] = b(&[254; 32]);
+            records[index] = b(&wire::encode(&a(changed)).unwrap());
+        }
+        body[2] = a(records);
+        value[4] = a(body);
+        let error = independently_verify(a(value), &prior).err().unwrap();
+        assert!(format!("{error:#}").contains(if omit {
+            "duplicate membership signing key"
+        } else {
+            "domain result references differ from its exact records"
+        }));
+    }
+    f.session.discard(&challenge).unwrap();
+    f.store
+        .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
+        .unwrap()
+        .perform_with_clock(
+            &mut f.store,
+            &mut f.session,
+            &mut || Ok(f.current),
+            1,
+            |_| Ok(()),
+            |_, store| {
+                let authenticated = current
+                    .iter()
+                    .filter(|bytes| {
+                        references(std::slice::from_ref(bytes), [20; 32], [21; 32])
+                            .is_ok_and(|refs| store.generations().contains(&refs[0]))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let context = ContextState::retained(
+                    &f.bootstrap,
+                    store,
+                    &merge(&f.bootstrap, &authenticated)?,
+                )?;
+                context.save(store)?;
+                Cache::retain_context(&f.bootstrap, store, &context)
+            },
+        )
+        .unwrap();
+    assert!(f.store.generations().contains(&retired));
+    assert!(!f.store.generations().contains(legacy));
+    let cached = Cache::load(&f.bootstrap, &f.store).unwrap().records;
+    let floor = std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap();
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert_eq!(Cache::load(&f.bootstrap, &f.store).unwrap().records, cached);
+    assert!(crate::authority_inspection::admission::retained(&f.bootstrap, &f.store).is_ok());
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+        floor
+    );
+}
+
+fn admission_reserved_fixture() -> (
+    Fixture,
+    crate::authority_admission::Policy,
+    SigningKey,
+    Vec<Vec<u8>>,
+    crate::authority_admission::Slot,
+) {
+    admission_reserved_fixture_with_legacy(false)
+}
+
+fn admission_reserved_fixture_with_legacy(
+    legacy: bool,
+) -> (
+    Fixture,
+    crate::authority_admission::Policy,
+    SigningKey,
+    Vec<Vec<u8>>,
+    crate::authority_admission::Slot,
+) {
+    use crate::authority_admission as native;
+    let registrar = SigningKey::from_bytes(&[90; 32]);
+    let mut f = Fixture::with_actions_and_signer(vec![0, 10, 11], registrar);
+    let mut source = f.bootstrap.governance_records().to_vec();
+    let snapshot = admission_snapshot(&f, &source);
+    let parent = references(&source, [20; 32], [21; 32])
+        .unwrap()
+        .into_iter()
+        .find(|r| r.kind == 102)
+        .unwrap();
+    let now = f.current.observe().unwrap().wall_ms;
+    let candidate = SigningKey::from_bytes(&[92; 32]);
+    let member = candidate.verifying_key().to_bytes();
+    let mut legacy_refs = vec![];
+    if legacy {
+        let governance = Governance::parse([20; 32], [21; 32], &source).unwrap();
+        let parent_bytes = governance.record_bytes(102, parent.id).unwrap();
+        let unrelated = SigningKey::from_bytes(&[94; 32]).verifying_key().to_bytes();
+        for (index, principal) in [member, unrelated].iter().enumerate() {
+            let mut fields = wire::decode(parent_bytes)
+                .unwrap()
+                .array(17)
+                .unwrap()
+                .to_vec();
+            fields[6] = b(&[230 + 2 * index as u8; 32]);
+            fields[8] = b(principal);
+            fields[10] = a(vec![V::Uint(0)]);
+            fields[13] = version_value(&parent);
+            fields[14] = V::Uint(0);
+            fields[16] = snapshot.value.clone();
+            let reader = wire::encode(&a(fields)).unwrap();
+            let reader_ref = references(std::slice::from_ref(&reader), [20; 32], [21; 32])
+                .unwrap()
+                .remove(0);
+            let manual = wire::encode(&a(vec![
+                V::Uint(125),
+                V::Uint(1),
+                b(&[20; 32]),
+                b(&[21; 32]),
+                V::Uint(1),
+                V::Null,
+                b(&[231 + 2 * index as u8; 32]),
+                b(principal),
+                crate::trust_validity::Validity(now - 2000, (now + 600000).into()).value(),
+                V::Bool(false),
+                version_value(&reader_ref),
+                snapshot.value.clone(),
+            ]))
+            .unwrap();
+            legacy_refs
+                .extend(references(std::slice::from_ref(&manual), [20; 32], [21; 32]).unwrap());
+            source.extend([reader, manual]);
+        }
+    }
+    let policy = native::Policy::parse(
+        &admission_record(
+            native::POLICY,
+            [201; 32],
+            a(vec![
+                b(&SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes()),
+                version_value(&parent),
+                b(&f.signer.verifying_key().to_bytes()),
+                b(&SigningKey::from_bytes(&[91; 32]).verifying_key().to_bytes()),
+                V::Bool(true),
+                V::Uint(1),
+                crate::trust_validity::Validity(now - 2000, (now + 600000).into()).value(),
+                b(&[202; 32]),
+                b(&[203; 32]),
+                a(vec![
+                    native::Template {
+                        role: 0,
+                        destination: [204; 32],
+                        application: None,
+                        page: None,
+                        limits: [100, 100, 10, 10],
+                        connections: 16,
+                        bytes: 65536,
+                        voucher_ms: 120000,
+                    }
+                    .value(),
+                ]),
+                a(legacy_refs.iter().map(version_value).collect()),
+            ]),
+            &snapshot,
+            None,
+        ),
+        [20; 32],
+        [21; 32],
+    )
+    .unwrap();
+    source.push(policy.bytes.clone());
+    crate::authority_membership::sort_records(&mut source).unwrap();
+    let relay = SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes();
+    let role = native::Role {
+        role: 0,
+        member,
+        relay,
+        request: wire::sign_envelope(
+            &wire::encode(&a(vec![
+                V::Uint(200),
+                V::Uint(1),
+                V::Text("HyperNetJoinRequest".into()),
+                b(&[20; 32]),
+                b(&[21; 32]),
+                b(&[90; 32]),
+                b(&member),
+                b(&member),
+                b(&relay),
+                V::Uint(1),
+            ]))
+            .unwrap(),
+            &candidate,
+        )
+        .unwrap(),
+    };
+    let snapshot = admission_snapshot(&f, &source);
+    let reserved = admission_record(
+        native::SLOT,
+        native::identifier(policy.reference.id, 0, 0, 0).unwrap(),
+        a(vec![
+            b(&policy.reference.id),
+            V::Uint(0),
+            V::Uint(1),
+            b(&[7; 32]),
+            b(&[94; 32]),
+            b(&[95; 32]),
+            V::Uint(0),
+            V::Uint(now + native::CHALLENGE_MS),
+            a(vec![role.value()]),
+            b(&[96; 32]),
+            V::Uint(1),
+            a(vec![]),
+            a(vec![]),
+        ]),
+        &snapshot,
+        None,
+    );
+    let reserve = native::Operation {
+        transition: native::Transition::Reserve,
+        policy: policy.bytes.clone(),
+        previous: None,
+        next: reserved.clone(),
+        acceptance: vec![],
+        legacy: vec![],
+        snapshot,
+    };
+    let (reserved_records, reserve_intent) = if legacy {
+        // The reservation certifies the policy and slot; unused manual grants
+        // remain evaluator inputs until a result independently authenticates them.
+        let (verified, records, intent) = certified_admission(&mut f, &reserve, &source, None);
+        f.store
+            .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
+            .unwrap()
+            .perform_with_clock(
+                &mut f.store,
+                &mut f.session,
+                &mut || Ok(f.current),
+                1,
+                |_| Ok(()),
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        (records, intent)
+    } else {
+        complete_admission(&mut f, &reserve, &source)
+    };
+    assert_eq!(Intent::from_signed(&reserve_intent).unwrap().sequence, 1);
+    let old = native::Slot::parse(&reserved, [20; 32], [21; 32]).unwrap();
+    (f, policy, candidate, reserved_records, old)
+}
+
+fn admission_enrol(
+    f: &Fixture,
+    records: &[Vec<u8>],
+    policy: &crate::authority_admission::Policy,
+    old: &crate::authority_admission::Slot,
+    candidate: &SigningKey,
+) -> crate::authority_admission::Operation {
+    use crate::authority_admission as native;
+    let snapshot = crate::authority_inspection_cli::admission_cli::snapshot(
+        &f.store,
+        f.current.observe().unwrap().wall_ms,
+        records,
+        policy,
+        Some(old),
+        true,
+    )
+    .unwrap();
+    let governance = Governance::parse([20; 32], [21; 32], records).unwrap();
+    let grant = wire::decode(governance.record_bytes(102, policy.parent.id).unwrap()).unwrap();
+    let tier = crate::authority_membership::version(&grant.array(17).unwrap()[9]).unwrap();
+    let mut successor = old.clone();
+    successor.state = 1;
+    successor.challenge_until = 0;
+    successor.material =
+        native::enrol_material(policy, old, &tier, &snapshot, [20; 32], [21; 32]).unwrap();
+    native::Operation {
+        transition: native::Transition::Enrol,
+        policy: policy.bytes.clone(),
+        previous: Some(old.bytes.clone()),
+        next: admission_record(
+            native::SLOT,
+            old.reference.id,
+            successor.payload(),
+            &snapshot,
+            Some(&old.bytes),
+        ),
+        acceptance: vec![
+            wire::sign_envelope(
+                &old.acceptance_payload([20; 32], [21; 32]).unwrap(),
+                candidate,
+            )
+            .unwrap(),
+        ],
+        legacy: vec![],
+        snapshot,
+    }
+}
+
+fn admission_recovery_after_expiry(lose_first_reply: bool) {
+    use crate::authority_admission as native;
+    let (mut f, policy, candidate, reserved_records, old) = admission_reserved_fixture();
+    let retained = std::fs::read(f.directory.0.join(CACHE)).unwrap();
+    let enrol = admission_enrol(&f, &reserved_records, &policy, &old, &candidate);
+    let successor = native::Slot::parse(&enrol.next, [20; 32], [21; 32]).unwrap();
+    let (mut verified, enrolled_records, exact_intent) =
+        certified_admission(&mut f, &enrol, &reserved_records, None);
+    let parsed = Intent::from_signed(&exact_intent).unwrap();
+    assert_eq!((parsed.sequence, parsed.acknowledged_through), (2, 1));
+    let mut expired = verified.executed.clone();
+    expired.evaluated_at_ms = old.challenge_until + 2000;
+    let error = crate::authority_inspection::admission::validate_permit(
+        &f.bootstrap,
+        &f.store,
+        &enrol,
+        &reserved_records,
+        &parsed,
+        &verified.result,
+        &expired,
+    )
+    .err()
+    .expect("uncommitted expired acceptance must remain refused");
+    assert!(
+        format!("{error:#}").contains("admission acceptance expired"),
+        "{error:#}"
+    );
+    if lose_first_reply {
+        let original_digest = verified.executed.result;
+        let pending = f
+            .store
+            .resume_ordinary()
+            .unwrap()
+            .unwrap()
+            .signed()
+            .to_vec();
+        drop(f.store);
+        f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+        f.session = Session::new().unwrap();
+        f.current = elapsed_health(f.current, native::CHALLENGE_MS + 2000);
+        let next = native::record_reference(&enrol.next, [20; 32], [21; 32]).unwrap();
+        assert!(!f.store.generations().contains(&next));
+        learn_admission_completion(&mut f, &parsed, original_digest);
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().signed(),
+            pending
+        );
+        assert!(!f.store.generations().contains(&next));
+        let mut changed = expired.clone();
+        changed.result = [99; 32];
+        assert!(
+            crate::authority_inspection::admission::validate_permit(
+                &f.bootstrap,
+                &f.store,
+                &enrol,
+                &reserved_records,
+                &parsed,
+                &verified.result,
+                &changed,
+            )
+            .is_err()
+        );
+        let (replayed, records, signed) =
+            certified_admission(&mut f, &enrol, &reserved_records, Some(&enrolled_records));
+        assert_eq!(signed, exact_intent);
+        assert_eq!(records, enrolled_records);
+        verified = replayed;
+    }
+    let permit = f
+        .store
+        .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
+        .unwrap();
+    let failed: Result<()> = permit.perform_with_clock(
+        &mut f.store,
+        &mut f.session,
+        &mut || Ok(f.current),
+        1,
+        |_| Ok(()),
+        |_, store| {
+            ContextState::retained(&f.bootstrap, store, &enrolled_records)?.save(store)?;
+            anyhow::bail!("interrupted before domain cache publication")
+        },
+    );
+    assert!(
+        failed
+            .unwrap_err()
+            .to_string()
+            .contains("interrupted before domain cache")
+    );
+    assert_eq!(std::fs::read(f.directory.0.join(CACHE)).unwrap(), retained);
+    let current = native::record_reference(&enrol.next, [20; 32], [21; 32]).unwrap();
+    assert_eq!(current.generation, 2);
+    assert!(f.store.generations().contains(&current));
+    assert!(!f.store.generations().contains(&old.reference));
+    let floor = std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&floor).unwrap();
+    assert_eq!(status["tracker"]["ordinary"]["bodySaved"], true);
+    assert_eq!(status["tracker"]["ordinary"]["complete"], false);
+    assert_eq!(status["tracker"]["ordinary"]["effect"], "unclaimed");
+    let body = std::fs::read(f.directory.0.join("AuthorityBody.cbor")).unwrap();
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    f.session = Session::new().unwrap();
+    assert_eq!(
+        f.store.resume_ordinary().unwrap().unwrap().signed(),
+        exact_intent
+    );
+    assert!(Cache::load(&f.bootstrap, &f.store).is_err());
+    let context = ContextState::retained(&f.bootstrap, &f.store, &enrolled_records).unwrap();
+    let forged = admission_record(
+        native::SLOT,
+        current.id,
+        successor.payload(),
+        &enrol.snapshot,
+        Some(&enrol.next),
+    );
+    let mut unproven = enrolled_records.clone();
+    *unproven.iter_mut().find(|r| **r == enrol.next).unwrap() = forged;
+    assert!(ContextState::retained(&f.bootstrap, &f.store, &unproven).is_err());
+    let stale = ContextState {
+        descriptor: f.store.descriptor().clone(),
+        governance: Governance::parse([20; 32], [21; 32], &unproven).unwrap(),
+    };
+    assert!(Cache::retain_context(&f.bootstrap, &f.store, &stale).is_err());
+    assert_eq!(std::fs::read(f.directory.0.join(CACHE)).unwrap(), retained);
+    for corrupt in [
+        b"not a cache".to_vec(),
+        wire::encode_state(&a(vec![
+            V::Uint(200),
+            V::Uint(1),
+            V::Text("AuthorityDomainCache".into()),
+            State::empty([19; 32], [21; 32]).value(),
+            a(vec![]),
+        ]))
+        .unwrap(),
+        wire::encode_state(&a(vec![
+            V::Uint(200),
+            V::Uint(1),
+            V::Text("AuthorityDomainCache".into()),
+            State::empty([20; 32], [21; 32]).value(),
+            a(vec![b(b"not a governance record")]),
+        ]))
+        .unwrap(),
+    ] {
+        std::fs::write(f.directory.0.join(CACHE), &corrupt).unwrap();
+        assert!(Cache::retain_context(&f.bootstrap, &f.store, &context).is_err());
+        assert_eq!(std::fs::read(f.directory.0.join(CACHE)).unwrap(), corrupt);
+    }
+    std::fs::write(f.directory.0.join(CACHE), &retained).unwrap();
+    Cache::retain_context(&f.bootstrap, &f.store, &context).unwrap();
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+        floor
+    );
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityBody.cbor")).unwrap(),
+        body
+    );
+    assert_eq!(
+        f.store.resume_ordinary().unwrap().unwrap().signed(),
+        exact_intent
+    );
+    assert!(
+        references(
+            &Cache::load(&f.bootstrap, &f.store).unwrap().records,
+            [20; 32],
+            [21; 32]
+        )
+        .unwrap()
+        .contains(&current)
+    );
+    f.current = elapsed_health(f.current, native::CHALLENGE_MS + 2000);
+    let (verified, retried_records, retried_intent) =
+        certified_admission(&mut f, &enrol, &reserved_records, Some(&enrolled_records));
+    assert_eq!(retried_intent, exact_intent);
+    assert!(verified.executed.evaluated_at_ms > old.challenge_until);
+    let mut different = parsed.clone();
+    different.digest = [99; 32];
+    assert!(
+        crate::authority_inspection::admission::validate_permit(
+            &f.bootstrap,
+            &f.store,
+            &enrol,
+            &reserved_records,
+            &different,
+            &verified.result,
+            &verified.executed,
+        )
+        .is_err()
+    );
+    let changed_result = proof::OperationResult {
+        action: verified.result.action.clone(),
+        disposition: Disposition::Permit,
+        code: 0,
+        value: wire::encode(&V::Null).unwrap(),
+    };
+    assert!(
+        crate::authority_inspection::admission::validate_permit(
+            &f.bootstrap,
+            &f.store,
+            &enrol,
+            &reserved_records,
+            &parsed,
+            &changed_result,
+            &verified.executed,
+        )
+        .is_err()
+    );
+    let permit = f
+        .store
+        .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
+        .unwrap();
+    permit
+        .perform_with_clock(
+            &mut f.store,
+            &mut f.session,
+            &mut || Ok(f.current),
+            1,
+            |_| Ok(()),
+            |_, store| {
+                let context = ContextState::retained(&f.bootstrap, store, &retried_records)?;
+                context.save(store)?;
+                Cache::retain_context(&f.bootstrap, store, &context)
+            },
+        )
+        .unwrap();
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    assert!(Cache::load(&f.bootstrap, &f.store).is_ok());
+    assert!(f.store.resume_ordinary().unwrap().is_none());
 }
 
 // Durable setup precedes a new challenge; frozen wall values still model quorum evaluation.

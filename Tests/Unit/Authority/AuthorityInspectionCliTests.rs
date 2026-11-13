@@ -232,3 +232,54 @@ fn delegation_cli_defaults_to_explicit_reader_only_authority() {
         Command::DelegateGrant(_)
     ));
 }
+
+#[test]
+fn exact_fence_cli_requires_all_bound_fields_and_keeps_unbound_mode() {
+    let mut args = arguments();
+    args.drain(2..4);
+    args[1] = "stream-fence".into();
+    args.extend([
+        "--key".into(),
+        "/Private/Signer.json".into(),
+        "--socket".into(),
+        "/Private/Control.sock".into(),
+    ]);
+    let Command::StreamFence { expected, .. } = Cli::try_parse_from(args.clone()).unwrap().command
+    else {
+        panic!("fence required")
+    };
+    assert!(expected.target().unwrap().is_none());
+    let fields = [
+        ("--expected-generation", "1".into()),
+        ("--expected-generation-id", "01".repeat(32)),
+        ("--expected-sequence", "2".into()),
+        ("--expected-intent", "02".repeat(32)),
+    ];
+    for mask in 1u8..16 {
+        let mut partial = args.clone();
+        for (bit, (flag, value)) in fields.iter().enumerate() {
+            if mask & (1 << bit) != 0 {
+                partial.extend([(*flag).into(), value.clone()]);
+            }
+        }
+        let parsed = Cli::try_parse_from(partial);
+        if mask == 15 {
+            let Command::StreamFence { expected, .. } = parsed.unwrap().command else {
+                panic!("fence required")
+            };
+            assert_eq!(expected.target().unwrap().unwrap().sequence, 2);
+        } else {
+            assert!(parsed.is_err());
+        }
+    }
+    let mut direct = ExpectedFence {
+        expected_generation: Some(0),
+        expected_generation_id: Some("01".repeat(32)),
+        expected_sequence: Some(2),
+        expected_intent: Some("02".repeat(32)),
+    };
+    assert!(direct.target().is_err());
+    direct.expected_generation = Some(1);
+    direct.expected_intent = Some("bad".into());
+    assert!(direct.target().is_err());
+}

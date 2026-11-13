@@ -451,6 +451,24 @@ impl Store {
                         .is_some_and(|reply| reply.disposition == 1)
             }))
     }
+    /// Find an exact retained ordinary request without resolving or discarding its outcome.
+    pub(crate) fn retained_fence_target(&self, digest: Digest) -> Result<PreparedRequest> {
+        self.unchanged()?;
+        if let Some(ordinary) = &self.stored.tracker.ordinary {
+            let request = PreparedRequest::new(hex::decode(&ordinary.signed)?, None)?;
+            if request.digest() == digest {
+                return Ok(request);
+            }
+        }
+        let retained = self
+            .stored
+            .tracker
+            .outstanding_unknown
+            .iter()
+            .find(|old| !old.fence && old.request == digest)
+            .context("exact fence target is not retained")?;
+        PreparedRequest::new(hex::decode(&retained.signed)?, None)
+    }
     pub fn resume_fence(&self) -> Result<Option<PreparedRequest>> {
         self.unchanged()?;
         self.stored
@@ -465,6 +483,35 @@ impl Store {
             })
             .transpose()
     }
+    /// Inspect the original ordinary request while an exact fence remains outstanding.
+    /// Certified refusal may have completed that request before the fence was prepared.
+    pub(crate) fn fence_subject(&self) -> Result<Option<PreparedRequest>> {
+        self.unchanged()?;
+        let Some(fence) = self.resume_fence()? else {
+            return Ok(None);
+        };
+        let proof::SignedRequest::StreamFence(fence) =
+            proof::SignedRequest::from_signed(fence.signed())?
+        else {
+            anyhow::bail!("retained fence has another request kind");
+        };
+        self.stored
+            .tracker
+            .ordinary
+            .as_ref()
+            .map(|o| {
+                let pending = PreparedRequest::new(hex::decode(&o.signed)?, None)?;
+                let intent = proof::Intent::from_signed(pending.signed())?;
+                ensure!(
+                    intent.generation == fence.expected_generation
+                        && intent.generation_id == fence.expected_generation_id,
+                    "retained fence does not name the original request generation"
+                );
+                Ok(pending)
+            })
+            .transpose()
+    }
+
     fn request_context(&self, request: &proof::SignedRequest) -> Result<()> {
         self.unsealed()?;
         self.require_requester(request.requester())?;

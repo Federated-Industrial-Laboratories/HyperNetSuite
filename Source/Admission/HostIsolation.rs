@@ -21,7 +21,7 @@ pub struct Container {
     pub edge_uid: u32,
     pub listen: std::net::SocketAddr,
 }
-pub(super) fn argument(path: &Path) -> Result<String> {
+pub(crate) fn argument(path: &Path) -> Result<String> {
     let value = path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("container path is not UTF-8"))?;
@@ -31,7 +31,7 @@ pub(super) fn argument(path: &Path) -> Result<String> {
     );
     Ok(value.into())
 }
-pub(super) fn mapped_identity(bytes: &[u8], owner: u32, namespace_id: u32) -> Result<u32> {
+pub(crate) fn mapped_identity(bytes: &[u8], owner: u32, namespace_id: u32) -> Result<u32> {
     let text = std::str::from_utf8(bytes)?;
     let mut mapped = None;
     let mut owner_mapped = false;

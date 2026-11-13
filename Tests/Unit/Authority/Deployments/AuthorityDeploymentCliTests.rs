@@ -1,6 +1,60 @@
 // SPDX-License-Identifier: MIT
 use super::*;
+use clap::Parser;
 use ed25519_dalek::pkcs8::EncodePrivateKey;
+
+#[test]
+fn assemble_cli_accepts_successor_without_repeating_initial_possessions() {
+    let parsed = crate::Options::try_parse_from([
+        "HyperNetSuite",
+        "authority-inspection",
+        "deployments",
+        "assemble",
+        "--bootstrap",
+        "Bootstrap.cbor",
+        "--bootstrap-digest",
+        &"12".repeat(32),
+        "--manifest",
+        "Manifest.cbor",
+        "--consent",
+        "Consent.cbor",
+        "--output",
+        "Offer.cbor",
+    ])
+    .unwrap();
+    let crate::Command::AuthorityInspection(
+        crate::authority_inspection_cli::Command::Deployments {
+            command: Command::Assemble { possession, .. },
+        },
+    ) = parsed.command
+    else {
+        panic!("deployment assembly command changed");
+    };
+    assert!(possession.is_empty());
+
+    let initial = crate::authority_deployment_tests::manifest();
+    let signer = crate::authority_deployment_tests::key(90);
+    let consent = wire::sign_envelope(&initial.unsigned_consent(0).unwrap(), &signer).unwrap();
+    assert!(Offer::parse(&initial.encode().unwrap(), &consent, &a(vec![])).is_err());
+
+    let mut next = initial.clone();
+    next.generation = 2;
+    next.previous_profile = Some(wire::digest(&initial.desired().unwrap()));
+    next.previous_consent = Some(wire::digest(&initial.unsigned_consent(0).unwrap()));
+    let next_consent = wire::sign_envelope(&next.unsigned_consent(0).unwrap(), &signer).unwrap();
+    let successor = Offer::parse(&next.encode().unwrap(), &next_consent, &a(vec![])).unwrap();
+    assert_eq!(
+        offer(&offer_bytes(&successor).unwrap())
+            .unwrap()
+            .manifest_bytes,
+        next.encode().unwrap()
+    );
+    assert!(Offer::parse(&next.encode().unwrap(), &consent, &a(vec![])).is_err());
+
+    let complete = crate::authority_deployment_tests::offer(next.clone());
+    let partial = a(vec![b(&complete.possessions[0])]);
+    assert!(Offer::parse(&next.encode().unwrap(), &next_consent, &partial).is_err());
+}
 
 #[test]
 fn possession_import_preserves_exact_key_class_and_approved_manifest() {

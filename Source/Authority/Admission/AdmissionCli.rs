@@ -173,35 +173,53 @@ impl Connection {
         slot: Option<&native::Slot>,
         authority_required: bool,
     ) -> Result<Snapshot> {
-        let scope = self.store.descriptor().scope();
-        let at = self.clock.health()?.observe()?.wall_ms;
-        let g = crate::authority_governance::Governance::parse(
+        snapshot(
+            &self.store,
+            self.clock.health()?.observe()?.wall_ms,
+            records,
+            policy,
+            slot,
+            authority_required,
+        )
+    }
+}
+pub(crate) fn snapshot(
+    store: &Store,
+    at: u64,
+    records: &[Vec<u8>],
+    policy: &native::Policy,
+    slot: Option<&native::Slot>,
+    authority_required: bool,
+) -> Result<Snapshot> {
+    let scope = store.descriptor().scope();
+    let g =
+        crate::authority_governance::Governance::parse(scope.network, scope.incarnation, records)?;
+    let mut refs = if authority_required {
+        policy.authorise(&g, scope.network, at)?
+    } else {
+        vec![]
+    };
+    if g.versions().contains(&policy.reference) {
+        refs.push(policy.reference.clone());
+    }
+    if let Some(slot) = slot {
+        refs.push(slot.reference.clone());
+        refs.extend(crate::authority_governance::Governance::record_versions(
             scope.network,
             scope.incarnation,
-            records,
-        )?;
-        let mut refs = if authority_required {
-            policy.authorise(&g, scope.network, at)?
-        } else {
-            vec![]
-        };
-        if g.versions().contains(&policy.reference) {
-            refs.push(policy.reference.clone());
-        }
-        if let Some(slot) = slot {
-            refs.push(slot.reference.clone());
-        }
-        refs.sort_by_key(crate::authority_proof::VersionRef::index);
-        refs.dedup();
-        Snapshot::parse(&V::Array(vec![
-            V::Array(vec![
-                V::Uint(scope.epoch),
-                V::Uint(self.store.prefix().height()),
-                V::Bytes(self.store.prefix().policy_state().to_vec()),
-            ]),
-            V::Array(refs.iter().map(reference).collect()),
-        ]))
+            &slot.material,
+        )?);
     }
+    refs.sort_by_key(crate::authority_proof::VersionRef::index);
+    refs.dedup();
+    Snapshot::parse(&V::Array(vec![
+        V::Array(vec![
+            V::Uint(scope.epoch),
+            V::Uint(store.prefix().height()),
+            V::Bytes(store.prefix().policy_state().to_vec()),
+        ]),
+        V::Array(refs.iter().map(reference).collect()),
+    ]))
 }
 pub(super) fn id(value: &str) -> Result<[u8; 32]> {
     trust_bootstrap::hex32(value)

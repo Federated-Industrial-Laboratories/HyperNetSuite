@@ -84,6 +84,13 @@ HTTPS listener, which reloads it without restarting chat. Failed refreshes appea
 in the dashboard; clients continue to enforce hostname, chain and expiry checks.
 The host never bypasses certificate checks to recover a failed renewal.
 
+Native transport certificates renew through the retained host's normal stopped
+successor transaction. The issuer and service keys, addresses, approved resources
+and lasting permissions stay fixed. Services briefly reconnect after renewal.
+**Renew native certificates now** uses the same transaction for planned maintenance.
+It requires a completed host whose online choice is still enabled. A cancelled
+operation stops hosting and retains exact progress for the next explicit Start.
+
 ## Share and control access
 
 The dashboard can create private invitations with a use count and expiry, show
@@ -114,19 +121,65 @@ controls use the owner's separate HRC account.
 
 **Stop hosting** preserves the state for an ordinary restart. It disables the
 public joining user service and stops the native host through its supported
-lifecycle command. **Withdraw hosting consent** also changes the native consent;
-hosting again requires a fresh review. Neither action deletes user history or
-private recovery material.
+lifecycle command. An authority's idle private bridge remains for the next
+explicit restart. **Withdraw hosting consent** permanently withdraws this host
+profile and releases its verified owned bridges. Hosting again requires a
+separately reviewed host. Neither action deletes user history or private recovery
+material. Unresolved cleanup remains visible and can be retried.
+
+An interrupted finite activation retains its exact request until the native
+completion is verified and reported. Completed finite request and receipt exports
+are bounded to the current and previous activations; native requester floors
+remain intact. Persistent activation remains pending while its installation is
+in use. After an exact newer profile is applied and certified, the stopped host
+checks complete cleanup and advances that same manager through the normal
+requester fence. Interrupted retries preserve the exact fence and cannot advance
+a second generation. The manager key, application and grant remain unchanged.
+Old persistent requests, receipts and uncertain effects remain retained under
+the existing native evidence and host inventory bounds. A capacity refusal does
+not discard that evidence or create another manager to bypass the bound.
+
+A private receiver interrupted beyond a finite route deadline resolves only its
+own exact expired issuance before obtaining fresh transport. The host records
+selected deadlines before sending, retains the original member invitation and
+keys, and preserves requester floors and unresolved effects. A live exhausted
+allowance waits for its original expiry. Current and previous recovery exports
+are retained until a successor completes. Expired finite host or membership
+consent still requires its normal reviewed successor.
+
+Certificate renewal of a live receiver retains its original voucher identifier,
+expiry, usage baseline and limits. With the receiver stopped, the host obtains
+current recovery transport, resumes the exact receiver operation and publishes
+the certified certificate successor. An interrupted refresh retains its original
+plan; crossing the old deadline uses normal expired-route recovery instead.
 
 For operation after logout and reboot, enable unattended user services from the
 dashboard. The desktop may request administrator authentication for this local
 system setting. The host supervisor uses service restart with backoff, without a
 service lifetime timer. A stopped host stays stopped until explicitly resumed.
+The supervisor checks health before recovering services. Status waits for an
+active host operation to finish before reading its state. That wait supports
+cancellation and shares the normal bounded request deadline with the status check.
 
 Export **redacted diagnosis** to inspect native phase, joining readiness and
 unattended startup status. It omits private invitations, passwords, key bytes and
 member histories. Keep owner recovery files separately backed up and stop the
 host before changing its software or moving private state.
+
+For a Suite controller update, stop hosting and use **Install or update signed
+hosting software**. Install the coordinated packages, open the verified installed
+hosting application, select the saved server and choose **Review controller
+update**. Apply the exact review, then use **Start / resume** separately. The
+controller update requires the same Core package and image, HRC executable,
+publisher and state contract. It changes the stopped controller and its exact
+service commands; it does not change permissions or replace identities.
+
+An interrupted controller update stays offline. Review and apply its retained
+update again. Do not delete the update plan or restore an older journal to retry.
+The shared-host controller does not currently replace Core or HRC. Do not
+substitute binaries or edit retained host state. Separate manual native
+deployments retain their reviewed software-transition commands; the shared-host
+controller cannot adopt those transitions.
 
 ## Isolation and administration boundary
 
@@ -148,8 +201,54 @@ private. The registrar authenticates Unix peer identities and accepts owner
 controls only from its separate owner UID. Ordinary participants
 cannot select helper programs, paths, native grants or owner credentials.
 
+Joining uses separate bounded request and admission-action budgets. The public
+listener and registrar each allow up to 256 requests per source and 512 overall
+per minute, with at most eight active TLS workers. This accommodates previews,
+two-request continuations and clients sharing an address. Descriptor, challenge
+and completed-membership status requests still obtain fresh native evidence;
+they do not reuse a stale permission response. Enrolment, password checks and
+renewal retain a separate limit of 24 actions per source and 120 overall per
+minute. Status consumes that action budget when it must resume unfinished
+enrolment or other admission work. Frame limits and operation deadlines remain
+independent of both budgets.
+
 Native policy bounds constrain the registrar even if its public-facing input is
 hostile. Each slot has fixed purpose, selected roles, quotas and no delegation
 rights. Password rotation and invitation changes do not create new native
 policies. Immutable policy rotation has a retained native policy limit; it must
 not discard withdrawal evidence to bypass that limit.
+
+Native certificate maintenance keeps permission lifetime separate from transport
+lifetime. The host renews within thirty days of the earliest issuer or leaf
+certificate deadline. The owner can also select **Renew certificates now**.
+The retained issuer key, service keys, addresses, resources and permission ends
+remain fixed. A renewal briefly stops all affected services and the four
+voters, applies exact reviewed same-key certificate successors, certifies fresh
+route and application bindings, and obtains normal service activation proofs.
+
+The complete local proposal and application consent are retained before native
+registration changes. After a long interruption, expired proposals can become
+non-serving history before a fresh successor is issued. Native requester fences
+are limited to exact expired registrations from that retained transaction;
+other unresolved operations remain available for their normal recovery. The
+receiver refreshes a live voucher at the same expiry and with its existing
+baseline, so certificate renewal does not refill its connection allowance.
+
+Current and previous certificate exports remain available. Older acknowledged
+public offers and duplicate inert input exports are retired through a durable
+bounded inventory. Unresolved transactions, original keys, bootstrap material,
+requester floors and revocation state are retained. Stop and withdrawal continue
+to veto automatic maintenance and startup.
+
+The managed controller update accepts an authenticated Suite-only successor
+with the same retained Core executable, image, and HRC installation. Create,
+Start, and certificate renewal do not replace Core or HRC. Certificate
+maintenance keeps the reviewed software, keys, endpoints, resources, and
+permission limits.
+
+If initial setup outlasts its finite key-possession proofs, the host first
+resolves only its exact expired registration through the normal requester fence.
+It checks current certified registration before creating fresh proofs. The
+manifest, signed consent, keys, and permissions remain unchanged. Proof exports
+retain current and previous sets; an unresolved set is preserved until recovery.
+This also applies to the Page store, which has no transport endpoint.

@@ -9,19 +9,21 @@ use std::{
     fs::{File, OpenOptions},
     os::{
         fd::AsRawFd,
-        unix::{
-            fs::{MetadataExt, OpenOptionsExt},
-            process::CommandExt,
-        },
+        unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
+#[path = "RuntimeObserverExecutable.rs"]
+mod observer_executable;
+#[path = "RuntimeProcess.rs"]
+mod process;
+pub(super) use process::Process;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configuration {
@@ -95,81 +97,6 @@ fn current_user() -> Result<String> {
         "invalid local user name"
     );
     Ok(name)
-}
-pub(super) struct Process {
-    child: Child,
-    reaped: bool,
-}
-impl Process {
-    pub(super) fn spawn(program: &Path, args: &[OsString]) -> Result<Self> {
-        executable(program)?;
-        let parent = unsafe { libc::getpid() };
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .env_clear()
-            .env("LC_ALL", "C")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0);
-        command.env("PATH", "/usr/bin:/bin").env("LANG", "C.UTF-8");
-        for name in ["HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        // The observer and companion cannot survive an abruptly lost supervisor.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::getppid() != parent {
-                    return Err(std::io::Error::other("runtime owner exited"));
-                }
-                Ok(())
-            });
-        }
-        Ok(Self {
-            child: command.spawn()?,
-            reaped: false,
-        })
-    }
-    pub(super) fn running(&mut self) -> Result<bool> {
-        if self.reaped {
-            return Ok(false);
-        }
-        if self.child.try_wait()?.is_some() {
-            self.reaped = true;
-            Ok(false)
-        } else {
-            Ok(true)
-        }
-    }
-}
-impl Drop for Process {
-    fn drop(&mut self) {
-        if self.reaped {
-            return;
-        }
-        unsafe {
-            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGTERM);
-        }
-        let until = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < until {
-            if self.child.try_wait().ok().flatten().is_some() {
-                self.reaped = true;
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        unsafe {
-            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
-        }
-        let _ = self.child.wait();
-        self.reaped = true;
-    }
 }
 fn args(parts: &[&str]) -> Vec<OsString> {
     parts.iter().map(OsString::from).collect()
@@ -281,8 +208,13 @@ impl Runtime {
             } else {
                 crate::files::write_new(&conf, content.as_bytes())?;
             }
+            let executable = observer_executable::prepare(&native, executable, stop)?;
+            ensure!(
+                !stop.load(Ordering::Acquire),
+                "private time observer startup cancelled"
+            );
             let process = Process::spawn(
-                executable,
+                &executable,
                 &args(&["-U", "-x", "-d", "-u", &current_user()?, "-f", text(&conf)?]),
             )?;
             (socket, Some(process))

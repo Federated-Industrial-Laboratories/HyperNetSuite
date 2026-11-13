@@ -997,7 +997,7 @@ fn local_ingress(
 
 fn status_v2(runtime: &Runtime, state: &State) -> Value {
     json!({
-        "version":2,"ok":true,"status":"Ready","authorityRoute":state.authority_route,
+        "version":2,"ok":true,"status":"Ready",
         "network":runtime.profile["network"],"incarnation":runtime.profile["incarnation"],
         "principal":runtime.profile["principal"],"binding":runtime.profile["binding"],
         "uptimeMs":runtime.started.elapsed().as_millis(),"incoming":runtime.binding.is_some(),

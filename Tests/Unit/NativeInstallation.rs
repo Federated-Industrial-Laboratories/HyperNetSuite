@@ -44,6 +44,15 @@ fn signed_pair_reuses_exact_prefixes_and_refuses_modified_index_or_files() {
     let result = install(&root, &packages, &f.publisher).unwrap();
     assert_eq!(result, inspect(&root, &f.publisher).unwrap());
     assert_eq!(result, install(&root, &packages, &f.publisher).unwrap());
+    let core_trust = std::fs::read(root.join("Products/Core/Trust/Trust.json")).unwrap();
+    assert_eq!(
+        serde_json::to_value(&result).unwrap(),
+        admit_controller_pinned(&root, &f.publisher).unwrap()
+    );
+    assert_eq!(
+        core_trust,
+        std::fs::read(root.join("Products/Core/Trust/Trust.json")).unwrap()
+    );
     assert_eq!(
         std::fs::read_dir(root.join("Products/Suite/Installed"))
             .unwrap()
@@ -65,6 +74,7 @@ fn signed_pair_reuses_exact_prefixes_and_refuses_modified_index_or_files() {
     .unwrap();
     std::fs::write(result.packages.core.prefix.join("ReadMe.md"), b"Changed").unwrap();
     assert!(inspect(&root, &f.publisher).is_err());
+    assert!(admit_controller_pinned(&root, &f.publisher).is_err());
 }
 #[test]
 fn refused_second_package_leaves_no_index_and_exact_retry_retains_first_floor() {

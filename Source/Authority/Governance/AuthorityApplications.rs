@@ -40,6 +40,27 @@ fn refs(value: &V, maximum: usize) -> Result<Vec<VersionRef>> {
     validate_versions(&result, maximum)?;
     Ok(result)
 }
+// Read minima describe the requester's mixed retained floor, not authority to use
+// another record kind. Only relevant authorised closure entries are compared later.
+fn minimum_refs(value: &V, maximum: usize) -> Result<Vec<VersionRef>> {
+    let result = value
+        .list(maximum)?
+        .iter()
+        .map(|value| {
+            let f = value.array(4)?;
+            let reference = VersionRef {
+                kind: f[0].uint()?,
+                id: id(&f[1])?,
+                generation: f[2].uint()?,
+                digest: id(&f[3])?,
+            };
+            ensure!(reference.kind > 0, "zero minimum record kind");
+            Ok(reference)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    validate_versions(&result, maximum)?;
+    Ok(result)
+}
 pub fn record_reference(bytes: &[u8]) -> Result<VersionRef> {
     let value = wire::decode(bytes)?;
     let f = value.list(32)?;
@@ -374,7 +395,7 @@ impl Operation {
                     } else {
                         Some(id(&f[5])?)
                     },
-                    minimum: refs(&f[7], 512)?,
+                    minimum: minimum_refs(&f[7], 512)?,
                 }
             }
             "AuthorityApplicationRegister" => {
@@ -422,7 +443,7 @@ impl Operation {
                 ensure!(application == intent.resource, "application lookup differs");
                 Self::Get {
                     application,
-                    minimum: refs(&f[4], 512)?,
+                    minimum: minimum_refs(&f[4], 512)?,
                 }
             }
             "AuthorityApplicationList" => {
@@ -434,7 +455,7 @@ impl Operation {
                 );
                 Self::List {
                     owner,
-                    minimum: refs(&f[4], 512)?,
+                    minimum: minimum_refs(&f[4], 512)?,
                 }
             }
             "AuthorityApplicationWithdraw" => {
@@ -1249,3 +1270,7 @@ pub fn validate_lifecycle_result(intent: &Intent, value: &V) -> Result<Vec<Versi
 #[cfg(test)]
 #[path = "../../../Tests/Unit/Authority/Governance/AuthorityApplicationsRenewalVectors.rs"]
 mod renewal_vectors;
+
+#[cfg(test)]
+#[path = "../../../Tests/Unit/Authority/Governance/AuthorityApplicationsMinimumTests.rs"]
+mod minimum_tests;

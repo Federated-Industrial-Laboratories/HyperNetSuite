@@ -99,6 +99,13 @@ container's possibly virtualised boot identifier. The monitor key must differ
 from every authority voter key. After a host reboot, accept the new boot pin
 through the same trusted local provisioning procedure.
 
+For a local process or container that exposes the host's actual boot identifier,
+`--host-kernel-boot CurrentHost` reads that identifier from the local kernel at
+startup. This explicit option supports retained configurations across host
+reboots. It still requires the pinned monitor signature, matching boot, healthy
+time and an unshifted time namespace. Use the explicit host UUID when a container
+virtualises its boot identifier; the client never adopts a boot from an observation.
+
 ```sh
 HyperNetSuite authority-inspection initialise \
   --requester REQUESTER_PUBLIC_KEY \

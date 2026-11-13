@@ -59,6 +59,14 @@ Every action, scope and limit must attenuate the parent and selected tier.
 Application grants have zero further delegation depth and cannot include action11
 (DelegateGrant). The child is inert before registration.
 
+Retry an interrupted `applications delegate` with the same arguments and retained
+owner floor. An unresolved request resumes its exact signed intent. If delegation
+already completed, the command obtains a fresh certified child context and checks
+the complete original declaration before reporting `ApplicationGrantDelegated`
+with `recovered: true` and `currentPermission: false`. Changed declarations and
+revoked grants refuse recovery. This reports the retained creation; it does not
+renew validity, refill limits or authorise an application action.
+
 Refresh `applications context` with `--child CHILD_GRANT_ID`. Prepare the exact
 offer using `applications offer`, the owner's common arguments except `--socket`,
 and `--parent`, `--tier`, `--grant CHILD_GRANT_ID`, `--not-before-ms`,

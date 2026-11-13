@@ -16,6 +16,46 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 #[derive(Clone, Args)]
+pub struct ExpectedFence {
+    /// Close only this retained request generation; recognize its exact certified successor on retry.
+    #[arg(long, requires_all = ["expected_generation_id", "expected_sequence", "expected_intent"])]
+    expected_generation: Option<u64>,
+    #[arg(long, requires = "expected_generation")]
+    expected_generation_id: Option<String>,
+    #[arg(long, requires = "expected_generation")]
+    expected_sequence: Option<u64>,
+    #[arg(long, requires = "expected_generation")]
+    expected_intent: Option<String>,
+}
+impl ExpectedFence {
+    fn target(&self) -> Result<Option<crate::authority_inspection::stream_client::FenceTarget>> {
+        match (
+            &self.expected_generation,
+            &self.expected_generation_id,
+            &self.expected_sequence,
+            &self.expected_intent,
+        ) {
+            (None, None, None, None) => Ok(None),
+            (Some(generation), Some(id), Some(sequence), Some(intent)) => {
+                ensure!(
+                    *generation > 0 && generation.checked_add(1).is_some() && *sequence > 0,
+                    "exact fence target must be positive"
+                );
+                Ok(Some(
+                    crate::authority_inspection::stream_client::FenceTarget {
+                        generation: *generation,
+                        generation_id: trust_bootstrap::hex32(id)?,
+                        sequence: *sequence,
+                        intent: trust_bootstrap::hex32(intent)?,
+                    },
+                ))
+            }
+            _ => anyhow::bail!("all exact fence target fields are required"),
+        }
+    }
+}
+
+#[derive(Clone, Args)]
 pub struct Location {
     #[arg(long)]
     bootstrap: PathBuf,
@@ -30,7 +70,7 @@ pub struct Location {
     /// Independently pinned Ed25519 public key for the host clock monitor.
     #[arg(long, requires = "host_kernel_boot")]
     clock_monitor_key: Option<String>,
-    /// Independently pinned current host kernel boot identifier.
+    /// Pinned kernel boot UUID, or CurrentHost to read this host's current boot UUID.
     #[arg(long, requires = "clock_monitor_key")]
     host_kernel_boot: Option<String>,
 }
@@ -131,6 +171,8 @@ pub enum Command {
         key: PathBuf,
         #[arg(long)]
         socket: PathBuf,
+        #[command(flatten)]
+        expected: ExpectedFence,
     },
     /// Refresh the complete certified governance context through the private local socket.
     Context {
@@ -297,20 +339,33 @@ pub fn run(command: Command) -> Result<()> {
             location,
             key,
             socket,
+            expected,
         } => {
             let verified = bootstrap(&location)?;
             let mut store = Store::open(&location.directory, verified.descriptor().clone())?;
             let source = clock(&location, store.descriptor().voters())?;
             let signer = signer(&key)?;
             let mut session = Session::new()?;
-            let result = crate::authority_inspection::stream_client::fence_local(
-                &store.descriptor().clone(),
-                &socket,
-                &signer,
-                &mut store,
-                &mut session,
-                || source.health(),
-            )?;
+            let result = if let Some(target) = expected.target()? {
+                crate::authority_inspection::stream_client::fence_exact_local(
+                    &store.descriptor().clone(),
+                    &socket,
+                    &signer,
+                    &mut store,
+                    &mut session,
+                    || source.health(),
+                    target,
+                )?
+            } else {
+                crate::authority_inspection::stream_client::fence_local(
+                    &store.descriptor().clone(),
+                    &socket,
+                    &signer,
+                    &mut store,
+                    &mut session,
+                    || source.health(),
+                )?
+            };
             let crate::authority_proof::StreamResponse::Fence { outcome, metadata } = result else {
                 anyhow::bail!("fence returned another control result");
             };

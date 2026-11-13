@@ -45,9 +45,8 @@ impl Cache {
         store: &Store,
         context: &ContextState,
     ) -> Result<()> {
-        let mut cache = Self::load(bootstrap, store)?;
         let scope = store.descriptor().scope();
-        cache.records.clear();
+        let mut records = Vec::new();
         for bytes in context.current_records(store)? {
             let version = references(
                 std::slice::from_ref(&bytes),
@@ -55,13 +54,20 @@ impl Cache {
                 scope.incarnation,
             )?;
             if version.iter().all(|r| store.generations().contains(r)) {
-                cache.records.push(bytes);
+                records.push(bytes);
             }
         }
-        cache.save(store)
+        Self::load_with_records(bootstrap, store, Some(records))?.save(store)
     }
 
     pub fn load(bootstrap: &Verified, store: &Store) -> Result<Self> {
+        Self::load_with_records(bootstrap, store, None)
+    }
+    fn load_with_records(
+        bootstrap: &Verified,
+        store: &Store,
+        records: Option<Vec<Vec<u8>>>,
+    ) -> Result<Self> {
         ensure!(
             bootstrap.fully_accepted()
                 && bootstrap.descriptor().canonical() == store.initial_descriptor().canonical(),
@@ -84,7 +90,7 @@ impl Cache {
                 error.raw_os_error() == Some(libc::ENOENT),
                 "cannot inspect domain cache: {error}"
             );
-            let mut records = vec![];
+            let mut records = records.unwrap_or_default();
             crate::authority_inspection::policy::refresh_cached_policies(
                 bootstrap,
                 store,
@@ -122,6 +128,13 @@ impl Cache {
             }
             Err(error) => return Err(error),
         };
+        if let Some(records) = records {
+            // Validate the retained cache before replacing only its governance with
+            // the independently authenticated current context. Its domain records
+            // still require their own exact retained quorum evidence below.
+            references(&result.records, scope.network, scope.incarnation)?;
+            result.records = records;
+        }
         crate::authority_inspection::policy::refresh_cached_policies(
             bootstrap,
             store,

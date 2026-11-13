@@ -71,7 +71,7 @@ pub(crate) fn leaf(seed: u8) -> Vec<u8> {
             ));
             fs::create_dir(&root).unwrap();
             let mut leaves = BTreeMap::new();
-            for seed in (31..=34).chain(110..=117) {
+            for seed in (9..=10).chain(31..=34).chain(110..=117) {
                 let mut private = vec![
                     0x30, 0x2e, 0x02, 0x01, 0, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04,
                     0x22, 0x04, 0x20,
@@ -228,6 +228,61 @@ pub(crate) fn offer(manifest: Manifest) -> Offer {
     )
     .unwrap()
 }
+
+pub(crate) fn persistent_activation_manager() -> (Fixture, Vec<Vec<u8>>, Registration, VersionRef) {
+    use crate::trust_validity::{End, Validity};
+    let f = Fixture::persistent();
+    let mut manifest = manifest();
+    manifest.validity.1 = End::UntilWithdrawn;
+    let offer = offer(manifest);
+    let (mut records, registration, _, _) = admitted(&f, &offer);
+    let governance = Governance::parse([20; 32], [21; 32], &records).unwrap();
+    let root = governance
+        .versions()
+        .into_iter()
+        .find(|r| r.kind == 102 && r.id == [23; 32])
+        .unwrap();
+    let mut grant = wire::decode(governance.record_bytes(102, root.id).unwrap())
+        .unwrap()
+        .array(17)
+        .unwrap()
+        .to_vec();
+    grant[6] = b(&[179; 32]);
+    grant[8] = b(&public(80));
+    grant[10] = a(vec![V::Uint(26)]);
+    grant[11] = a(vec![a(vec![V::Uint(5), b(&[60; 32])])]);
+    grant[12] = Validity(1000, End::UntilWithdrawn).value();
+    grant[13] = reference(&root);
+    grant[14] = V::Uint(0);
+    grant[16] = snapshot(&[]);
+    let grant_bytes = wire::encode(&a(grant)).unwrap();
+    let manager = VersionRef {
+        kind: 102,
+        id: [179; 32],
+        generation: 1,
+        digest: wire::digest(&grant_bytes),
+    };
+    records.push(grant_bytes);
+    records.push(
+        wire::encode(&a(vec![
+            V::Uint(127),
+            V::Uint(1),
+            b(&[20; 32]),
+            b(&[21; 32]),
+            V::Uint(1),
+            V::Null,
+            b(&public(80)),
+            b(&public(5)),
+            reference(&manager),
+            Validity(1000, End::UntilWithdrawn).value(),
+            snapshot(&[]),
+        ]))
+        .unwrap(),
+    );
+    members::sort_records(&mut records).unwrap();
+    (f, records, registration, manager)
+}
+
 pub(crate) struct Fixture {
     pub records: Vec<Vec<u8>>,
     pub reservations: Reservations,
@@ -1189,14 +1244,8 @@ fn expired_certificate_successor_is_history_only_and_activation_keeps_finite_dea
                 .into_iter()
                 .map(|(class, seed)| {
                     b(&wire::sign_envelope(
-                        &Offer::possession(
-                            manifest,
-                            class,
-                            public(seed),
-                            [199; 32],
-                            (1000, 8000),
-                        )
-                        .unwrap(),
+                        &Offer::possession(manifest, class, public(seed), [199; 32], (1000, 8000))
+                            .unwrap(),
                         &key(seed),
                     )
                     .unwrap())
