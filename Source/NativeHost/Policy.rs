@@ -344,6 +344,46 @@ pub fn refresh(host: &mut Host<'_>, roles: Vec<u64>) -> Result<Value> {
     )?;
     host.remember("owner-installed", installed)
 }
+fn owner_reader_key(root: &Path, reader: &Value) -> Result<std::path::PathBuf> {
+    let role = root.join("OwnerCandidate/Roles/0");
+    let joined = role.join("Joined");
+    let profile = std::path::PathBuf::from(string(reader, "profile")?);
+    ensure!(
+        reader["role"] == 0
+            && profile == role.join("Profile.json")
+            && Path::new(&string(reader, "directory")?) == joined,
+        "owner Page path differs"
+    );
+    crate::admission::private::directory(&role)?;
+    crate::admission::private::directory(&joined)?;
+    let bytes = zeroize::Zeroizing::new(files::read(&profile, 1_048_576)?);
+    #[derive(serde::Deserialize)]
+    struct Joined {
+        directory: std::path::PathBuf,
+        admitted: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct Profile {
+        device: crate::Identity,
+        joined: Joined,
+    }
+    let profile: Profile = serde_json::from_slice(&bytes)?;
+    ensure!(
+        profile.device.public_key == reader["member"]
+            && profile.joined.directory == joined
+            && profile.joined.admitted,
+        "owner Page identity differs"
+    );
+    let key = joined.join("Device.json");
+    let bytes = zeroize::Zeroizing::new(files::read(&key, 1_048_576)?);
+    let device: crate::Identity = serde_json::from_slice(&bytes)?;
+    ensure!(
+        device.public_key == profile.device.public_key
+            && device.secret_key == profile.device.secret_key,
+        "owner Page key differs from the joined profile"
+    );
+    Ok(key)
+}
 pub fn owner_report(host: &mut Host<'_>) -> Result<Value> {
     let installed = host
         .remembered("owner-installed")
@@ -355,26 +395,7 @@ pub fn owner_report(host: &mut Host<'_>) -> Result<Value> {
         .iter()
         .find(|p| p["role"] == 0)
         .context("owner Page profile absent")?;
-    let profile = std::path::PathBuf::from(string(reader, "profile")?);
-    ensure!(
-        profile.starts_with(host.p("OwnerCandidate/Roles/0")),
-        "owner Page path differs"
-    );
-    let bytes = zeroize::Zeroizing::new(files::read(&profile, 1_048_576)?);
-    #[derive(serde::Deserialize)]
-    struct Profile {
-        device: crate::Identity,
-    }
-    let profile: Profile = serde_json::from_slice(&bytes)?;
-    ensure!(
-        profile.device.public_key == reader["member"],
-        "owner Page identity differs"
-    );
-    let key = host.p("Keys/OwnerReader.json");
-    files::exact_file(
-        &key,
-        &zeroize::Zeroizing::new(serde_json::to_vec(&profile.device)?),
-    )?;
+    let key = owner_reader_key(&host.c.root, reader)?;
     let chat = profiles.iter().find(|p| p["role"] == 1);
     Ok(
         json!({"candidateDirectory":host.p("OwnerCandidate"),"binding":installed["binding"],
@@ -390,6 +411,113 @@ mod tests {
     use std::{cell::RefCell, collections::VecDeque};
 
     type Step = (&'static str, Value, Option<Value>);
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn owner_reader_report_uses_the_joined_browser_key_and_refuses_substitution() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        struct Directory(std::path::PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = Directory(
+            std::env::temp_dir().join(format!("NativeOwnerReader{}", crate::random_hex::<16>())),
+        );
+        files::directory(&directory.0).unwrap();
+        for relative in [
+            "OwnerCandidate",
+            "OwnerCandidate/Roles",
+            "OwnerCandidate/Roles/0",
+        ] {
+            files::directory(&directory.0.join(relative)).unwrap();
+        }
+        let role = directory.0.join("OwnerCandidate/Roles/0");
+        let path = role.join("Profile.json");
+        let joined = role.join("Joined");
+        files::directory(&joined).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let (bootstrap, _) = crate::authority_recovery::tests::fixture(20, now);
+        let request = crate::networks::admission::prepare(&path, &bootstrap, &[], 1, 0).unwrap();
+        let mut profile: Value =
+            serde_json::from_slice(&files::read(&path, 1_048_576).unwrap()).unwrap();
+        profile["joined"] = json!({
+            "directory":joined,"clockWitness":directory.0.join("Clock.json"),
+            "invitationDigest":"11".repeat(32),"member":"22".repeat(32),
+            "readerGrant":"33".repeat(32),"admitted":true,
+        });
+        crate::admission::saved::replace(&path, &profile).unwrap();
+        let key = joined.join("Device.json");
+        let original_key = serde_json::to_vec(&profile["device"]).unwrap();
+        files::exact_file(&key, &original_key).unwrap();
+        files::exact_file(&joined.join("Routes.json"), b"[]").unwrap();
+        let reader = json!({"role":0,"profile":path,"directory":joined,"member":request.member});
+        let reported = owner_reader_key(&directory.0, &reader).unwrap();
+        // Use the network consumer's real profile loading and key selection without route traffic.
+        {
+            let browser = crate::networks::application::Connection::open(&path).unwrap();
+            assert_eq!(reported, browser.key());
+        }
+        assert_eq!(reported, key);
+        let legacy_key = directory.0.join("Keys/OwnerReader.json");
+        assert!(!legacy_key.exists());
+        files::directory(&directory.0.join("Keys")).unwrap();
+        files::exact_file(&legacy_key, &original_key).unwrap();
+        let original_profile = std::fs::read(&path).unwrap();
+        for (field, value) in [
+            ("role", json!(1)),
+            (
+                "profile",
+                json!(directory.0.join("OwnerCandidate/Roles/1/Profile.json")),
+            ),
+            (
+                "directory",
+                json!(directory.0.join("OwnerCandidate/Roles/1/Joined")),
+            ),
+            ("member", json!("44".repeat(32))),
+        ] {
+            let mut changed = reader.clone();
+            changed[field] = value;
+            assert!(owner_reader_key(&directory.0, &changed).is_err(), "{field}");
+        }
+        for (field, value) in [
+            ("directory", json!(directory.0.join("Elsewhere"))),
+            ("admitted", json!(false)),
+        ] {
+            let mut changed = profile.clone();
+            changed["joined"][field] = value;
+            crate::admission::saved::replace(&path, &changed).unwrap();
+            assert!(owner_reader_key(&directory.0, &reader).is_err(), "{field}");
+        }
+        crate::admission::saved::replace(&path, &profile).unwrap();
+        let mut changed = profile["device"].clone();
+        changed["secretKey"] = json!("55".repeat(32));
+        crate::admission::saved::replace(&key, &changed).unwrap();
+        assert!(owner_reader_key(&directory.0, &reader).is_err());
+        crate::admission::saved::replace(&key, &profile["device"]).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(owner_reader_key(&directory.0, &reader).is_err());
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&joined, std::fs::Permissions::from_mode(0o711)).unwrap();
+        assert!(owner_reader_key(&directory.0, &reader).is_err());
+        std::fs::set_permissions(&joined, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let retained = joined.join("RetainedDevice.json");
+        std::fs::rename(&key, &retained).unwrap();
+        assert!(owner_reader_key(&directory.0, &reader).is_err());
+        symlink(&retained, &key).unwrap();
+        assert!(owner_reader_key(&directory.0, &reader).is_err());
+        std::fs::remove_file(&key).unwrap();
+        std::fs::rename(&retained, &key).unwrap();
+        assert_eq!(owner_reader_key(&directory.0, &reader).unwrap(), key);
+        assert_eq!(std::fs::read(&key).unwrap(), original_key);
+        assert_eq!(std::fs::read(&legacy_key).unwrap(), original_key);
+        assert_eq!(std::fs::read(&path).unwrap(), original_profile);
+    }
 
     fn binding() -> Value {
         json!({"policy":"11".repeat(32),"slot":0,"generation":1,

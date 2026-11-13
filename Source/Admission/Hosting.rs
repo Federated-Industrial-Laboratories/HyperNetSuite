@@ -738,9 +738,11 @@ pub(super) fn running_choice(directory: &Path) -> Result<bool> {
 fn owner_reader_paths(directory: &Path, owner: &Value) -> Result<()> {
     let native = directory.join("NativeHost");
     let candidate = native.join("OwnerCandidate");
+    let joined = candidate.join("Roles/0/Joined");
     ensure!(
         path(owner, "candidateDirectory")? == candidate
-            && path(owner, "readerKeyFile")? == native.join("Keys/OwnerReader.json")
+            && path(owner, "readerKeyFile")? == joined.join("Device.json")
+            && path(owner, "readerDirectory")? == joined
             && path(owner, "readerProfile")? == candidate.join("Roles/0/Profile.json"),
         "owner reader paths differ from the retained host"
     );
@@ -829,11 +831,12 @@ mod readiness_tests {
         let host = Path::new("/Hosting/Example");
         let native = host.join("NativeHost");
         let candidate = native.join("OwnerCandidate");
-        // NativeHost::policy::owner_report exports the reader key beside the
-        // candidate, while the scoped profile stays inside its reader role.
+        let joined = candidate.join("Roles/0/Joined");
+        // The report names the same retained key consumed by network browse.
         let report = json!({
             "candidateDirectory": candidate,
-            "readerKeyFile": native.join("Keys/OwnerReader.json"),
+            "readerKeyFile": joined.join("Device.json"),
+            "readerDirectory": joined,
             "readerProfile": candidate.join("Roles/0/Profile.json"),
         });
         owner_reader_paths(host, &report).unwrap();
@@ -841,9 +844,12 @@ mod readiness_tests {
 
         for (field, replacement) in [
             ("candidateDirectory", json!("/Outside/OwnerCandidate")),
+            ("readerKeyFile", json!(native.join("Keys/OwnerReader.json"))),
             ("readerKeyFile", json!(candidate.join("OwnerReader.json"))),
             ("readerKeyFile", json!("/Outside/OwnerReader.json")),
             ("readerKeyFile", json!("Keys/OwnerReader.json")),
+            ("readerDirectory", json!(candidate.join("Roles/1/Joined"))),
+            ("readerDirectory", json!("/Outside/Joined")),
             (
                 "readerProfile",
                 json!(candidate.join("Roles/1/Profile.json")),
