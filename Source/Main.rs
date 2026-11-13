@@ -21,6 +21,8 @@ mod sealed_page_data;
 #[path = "Sealed/SealedVault.rs"]
 mod sealed_vault;
 // SPDX-License-Identifier: MIT
+#[path = "Authority/Admission/AuthorityAdmission.rs"]
+mod authority_admission;
 #[path = "Authority/Governance/AuthorityApplications.rs"]
 mod authority_applications;
 #[path = "Authority/AuthorityChallenge.rs"]

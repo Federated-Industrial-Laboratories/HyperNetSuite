@@ -171,8 +171,15 @@ pub enum Command {
         page_id: String,
         #[arg(long)]
         revision: u64,
+        #[arg(
+            long,
+            required_unless_present = "until_withdrawn",
+            conflicts_with = "until_withdrawn"
+        )]
+        expires_ms: Option<u64>,
+        /// Retain this static Page until its author or hosting permission is withdrawn.
         #[arg(long)]
-        expires_ms: u64,
+        until_withdrawn: bool,
         #[arg(long)]
         output: PathBuf,
     },

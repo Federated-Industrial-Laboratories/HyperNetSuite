@@ -5,6 +5,7 @@ fn exhausted_connections_report_capacity_and_recover_after_release() {
     let state = Arc::new(Mutex::new(State {
         active: BTreeMap::new(),
         errors: VecDeque::new(),
+        authority_route: Value::Null,
         controls: 0,
     }));
     let mut held = (0..16)
@@ -137,6 +138,7 @@ fn full_v2_status_fits_one_frame_and_excludes_private_configuration() {
     let n = u64::MAX;
     let privacy = json!({"direction":"outgoing","transport":"HyperNet","transportAuthenticated":true,"tls":"TLS1.3","relayPath":"nestedTlsViaRelay","relayService":h,"destinationService":h,"selectedMinimum":"Independent","configuredAssurance":"Independent","provenance":"observedAuthenticatedTransport","certifiedEndpointProfile":{"source":"certifiedServiceLookup","service":h,"generation":n,"recordDigest":h,"profileDigest":h,"endpointMode":3,"evaluatedAtMs":n,"expiresAtMs":n,"notAfterBootMs":n},"certifiedRelayProfile":null,"physicalIndependenceVerified":false,"profileCurrentnessAsserted":false,"endToEndMessageEncryption":"applicationDefined"});
     let state = State {
+        authority_route: json!({"mode":"automatic","state":"quotaExhausted","expiresAtMs":90000,"recoveryAfterMs":90000}),
         active: (0..16)
             .map(|i| {
                 let id = format!("{i:064x}");
@@ -167,6 +169,7 @@ fn full_v2_status_fits_one_frame_and_excludes_private_configuration() {
         state: Arc::new(Mutex::new(State {
             active: BTreeMap::new(),
             errors: VecDeque::new(),
+            authority_route: Value::Null,
             controls: 0,
         })),
         jobs,

@@ -74,8 +74,14 @@ pub enum Command {
         copies: u64,
         #[arg(long)]
         failure_domains: u64,
+        #[arg(
+            long,
+            required_unless_present = "until_withdrawn",
+            conflicts_with = "until_withdrawn"
+        )]
+        expires_ms: Option<u64>,
         #[arg(long)]
-        expires_ms: u64,
+        until_withdrawn: bool,
     },
     Get {
         #[command(flatten)]
@@ -417,6 +423,7 @@ pub fn run(command: Command) -> Result<()> {
             copies,
             failure_domains,
             expires_ms,
+            until_withdrawn,
         } => {
             let mut c = Client::new(&online)?;
             let grant = c.grant(capability)?;
@@ -449,7 +456,7 @@ pub fn run(command: Command) -> Result<()> {
                     hosts,
                     copies,
                     failure_domains,
-                    expires_ms,
+                    expires_ms: crate::trust_validity::End::selected(expires_ms, until_withdrawn)?,
                 }),
                 Some(grant),
                 Resolved::default(),

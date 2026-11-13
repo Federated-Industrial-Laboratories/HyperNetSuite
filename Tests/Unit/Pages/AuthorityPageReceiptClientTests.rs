@@ -69,6 +69,9 @@ fn fresh_page_view_precedes_ordered_content_receipt_without_consuming_its_sequen
             let (request, challenge) = submitted(&bytes);
             let parsed = read::Request::from_signed(&request).unwrap();
             let (value, expiry) = match &parsed.query {
+                Query::Admission { .. } => {
+                    panic!("unexpected admission query in Page receipt test")
+                }
                 Query::PolicyContext => {
                     assert_eq!(index, 0);
                     (policy_value.clone(), u64::MAX)

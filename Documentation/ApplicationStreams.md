@@ -382,3 +382,38 @@ The owner can retrieve its current metadata and withdraw even after expiry or
 loss of a discretionary grant. Withdrawal is permanent for that service identity.
 New sessions refuse and active forwarding stops at its next bounded permission
 check. Pending exact withdrawal remains recoverable across process restart.
+
+A network-connected stream companion checks its own authority route every ten
+seconds, including while idle. In the final minute it requests a normal finite
+successor on its existing requester stream. The successor preserves service
+identities, grant, possession key, connection and byte allowances, and the live
+usage baseline. Existing sessions follow the compatible generation without
+receiving another budget. A certified renewal interrupted before its private
+route file is replaced is recovered from the retained requester cache at startup.
+
+This maintenance requires the companion's member to be the voucher sponsor.
+An administrator-sponsored route remains a manual finite route. An expired or
+exhausted authority route needs renewal through the server registrar or the
+operator's normal route workflow before restarting the companion. Maintenance
+never bypasses expiry, revocation, host withdrawal or cumulative usage limits.
+
+
+Status responses expose `authorityRoute` with `mode` (`automatic`, `manual` or
+`local`), `state` (`current`, `quotaExhausted` or `unavailable`), `expiresAtMs`
+and `recoveryAfterMs`. These describe the retained credential and maintenance,
+not an independent assertion of server health. A failed maintenance operation
+leaves its finite expiry unchanged. The server refuses handover when certified
+usage cannot admit another connection. A supervisor can preserve existing
+sessions until `recoveryAfterMs`, then renew through current external authority
+and restart the same retained profile. It must not repeatedly restart an
+exhausted credential before that boundary. Local control has no route expiry;
+unavailable local metadata may report null times and requires normal recovery.
+
+For an endpoint certificate change, `streams offer --renew-from` accepts
+paired `--certificate-previous-route` and `--certificate-route` files. Both are
+operator-signed native route profiles. The new one must be an actual same-key
+certificate successor for the retained endpoint. This explicit mode can preserve
+the exact service interval, including `UntilWithdrawn`, while advancing its route
+reference. It retains the accepted local binding, owner, operator, protocol and
+limits. Ordinary renewal still requires expiry advancement. Register the new
+route first, then use its exact certified reference when producing the offer.

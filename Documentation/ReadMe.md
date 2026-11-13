@@ -123,3 +123,5 @@ Do not paste private keys, vault contents or credential-bearing profiles into
 logs, issue reports or documentation.
 
 [Persistent access and hosting](PersistentAccess.md) describes optional until-withdrawn permissions, managed service activation and finite route handover.
+
+[Scoped admission](ScopedAdmission.md) describes restricted registrars, reusable member slots and the native candidate helper.

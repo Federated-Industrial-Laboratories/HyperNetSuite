@@ -13,6 +13,8 @@ use crate::{
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+#[path = "ApplicationStreamRenewal.rs"]
+mod renewal;
 pub(super) struct Client {
     pub bootstrap: trust_bootstrap::Verified,
     pub store: Store,
@@ -30,6 +32,12 @@ impl Client {
         let key = control::signer(&online.key)?;
         store.require_requester(key.verifying_key().to_bytes())?;
         let mut session = Session::new()?;
+        renewal::recover(
+            &bootstrap,
+            &store,
+            &online.socket,
+            key.verifying_key().to_bytes(),
+        )?;
         stream_client::resolve_refusal_local(
             &store.descriptor().clone(),
             &online.socket,
@@ -189,6 +197,13 @@ impl Client {
                     domain::Command::Stream(c) => {
                         !c.mutation() || matches!(c, streams::Command::Close { .. })
                     }
+                    domain::Command::Route(domain::routes::Command::Handover {
+                        voucher, ..
+                    }) => renewal::owns(
+                        &self.socket,
+                        self.key.verifying_key().to_bytes(),
+                        voucher.id,
+                    )?,
                     domain::Command::Route(domain::routes::Command::Issue { id, .. }) => {
                         targets.iter().any(|t| {
                             crate::private_route_client::Endpoint::load(&t.route).is_ok_and(|e| {
@@ -265,15 +280,6 @@ impl Client {
             )?;
             let current = context.cache.state.record(166, record.reference.id)?;
             let old = domain::routes::Voucher::parse(&current.payload)?;
-            let baseline = old.baseline.unwrap_or((0, 0));
-            let connections = old
-                .connections
-                .checked_sub(baseline.0)
-                .context("voucher connection allowance differs from baseline")?;
-            let bytes = old
-                .bytes
-                .checked_sub(baseline.1)
-                .context("voucher byte allowance differs from baseline")?;
             let expires = now
                 .checked_add(target.renewal_ms)
                 .context("voucher expiry overflow")?;
@@ -286,8 +292,8 @@ impl Client {
                     possession: old.possession,
                     action: old.action,
                     scope: old.scope,
-                    connections,
-                    bytes,
+                    connections: old.connections,
+                    bytes: old.bytes,
                     expires,
                 }),
             )?;

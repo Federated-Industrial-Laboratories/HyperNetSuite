@@ -114,6 +114,7 @@ fn accept_hands_off_unknown_privacy_before_any_explicit_action_check() {
     let state = Arc::new(Mutex::new(AgentState {
         active: BTreeMap::new(),
         errors: VecDeque::new(),
+        authority_route: Value::Null,
         controls: 0,
     }));
     let (guard, cancel) = reserve(&state, "incoming", "service".into()).unwrap();

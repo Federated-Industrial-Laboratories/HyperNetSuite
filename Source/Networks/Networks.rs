@@ -27,6 +27,9 @@ mod recovery;
 #[path = "../Routing/PrivateRouteWorkflow.rs"]
 mod workflow;
 
+#[path = "NativeAdmissionProfiles.rs"]
+pub(crate) mod admission;
+
 const PROFILE_LIMIT: usize = 600000;
 
 #[derive(Subcommand)]

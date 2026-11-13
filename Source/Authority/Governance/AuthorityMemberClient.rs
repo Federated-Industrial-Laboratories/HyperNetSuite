@@ -276,6 +276,7 @@ impl MemberPrepared<'_> {
         Ok((
             governance,
             crate::authority_governance::CapabilityDecision {
+                validity: (decision.not_before_ms, decision.expires_ms).into(),
                 dependencies: decision.dependencies,
                 not_before_ms: decision.not_before_ms,
                 expires_ms: decision.expires_ms,

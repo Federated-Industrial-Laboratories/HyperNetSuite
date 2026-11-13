@@ -15,7 +15,7 @@ impl Copy {
             V::Uint(self.bytes),
             b(&self.request),
             V::Uint(self.recorded_ms),
-            V::Uint(self.expires_ms),
+            self.expires_ms.value(),
         ]))
     }
 }

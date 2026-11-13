@@ -103,6 +103,8 @@ impl Fixture {
             },
             key: self.directory.join("Owner.json"),
             renew_from: Some(self.directory.join("Accepted.cbor")),
+            certificate_previous_route: None,
+            certificate_route: None,
             service: hex::encode(old.id),
             route: format!("{}:3:{}", hex::encode(old.route.id), hex::encode([64; 32])),
             operator: hex::encode(old.operator),
@@ -230,4 +232,77 @@ fn new_services_still_receive_fresh_binding_ids() {
     }
     assert_ne!(bindings[0].id, bindings[1].id);
     assert_ne!(bindings[0].id, f.previous.binding.id);
+}
+
+#[test]
+fn unchanged_permanent_service_requires_both_signed_certificate_routes_and_new_consent() {
+    let mut f = Fixture::new();
+    let (before, after) = crate::authority_domains::routes::tests::certificate_profiles();
+    let scope = f.bootstrap.descriptor().scope();
+    f.previous.registration.operator = before.operator;
+    f.previous.registration.route.id = before.identity.service;
+    f.previous.registration.validity =
+        crate::trust_validity::Validity(1000, crate::trust_validity::End::UntilWithdrawn);
+    let payload = f
+        .previous
+        .registration
+        .payload(scope.network, scope.incarnation)
+        .unwrap();
+    let mut signatures = [5, 90].map(|seed| {
+        wire::envelope(&wire::sign_envelope(&payload, &key(seed)).unwrap(), 1)
+            .unwrap()
+            .1[0]
+    });
+    signatures.sort_by_key(|s| s.0);
+    f.previous.registration.envelope = wire::encode(&V::Array(vec![
+        V::Uint(0),
+        V::Uint(1),
+        V::Bytes(payload),
+        V::Array(
+            signatures
+                .into_iter()
+                .map(|(k, s)| V::Array(vec![V::Bytes(k.to_vec()), V::Bytes(s.to_vec())]))
+                .collect(),
+        ),
+    ]))
+    .unwrap();
+    std::fs::write(
+        f.directory.join("Accepted.cbor"),
+        f.previous.bytes().unwrap(),
+    )
+    .unwrap();
+    let before_path = f.directory.join("PreviousRoute.cbor");
+    let after_path = f.directory.join("NextRoute.cbor");
+    files::write_new(&before_path, &before.envelope).unwrap();
+    files::write_new(&after_path, &after.envelope).unwrap();
+    let arguments = || {
+        let mut a = f.arguments();
+        a.not_before_ms = 1000;
+        a.expires_ms = None;
+        a.until_withdrawn = true;
+        a
+    };
+    assert!(create(arguments()).is_err());
+    let mut one = arguments();
+    one.certificate_previous_route = Some(before_path.clone());
+    assert!(create(one).is_err());
+    let mut stale = arguments();
+    stale.certificate_previous_route = Some(before_path.clone());
+    stale.certificate_route = Some(before_path.clone());
+    assert!(create(stale).is_err());
+    let mut valid = arguments();
+    valid.certificate_previous_route = Some(before_path);
+    valid.certificate_route = Some(after_path);
+    create(valid).unwrap();
+    let bytes = std::fs::read(f.directory.join("Renewed.cbor")).unwrap();
+    let output = Artifact::parse(&f.bootstrap, &bytes, false).unwrap();
+    assert_eq!(
+        output.registration.validity,
+        f.previous.registration.validity
+    );
+    assert_eq!(output.binding, f.previous.binding);
+    assert!(
+        Artifact::parse(&f.bootstrap, &bytes, true).is_err(),
+        "certificate refresh still needs current operator consent"
+    );
 }

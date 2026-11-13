@@ -147,9 +147,17 @@ pub(super) fn run(command: Command) -> Result<()> {
             page_id,
             revision,
             expires_ms,
+            until_withdrawn,
             output,
         } => statements::author(
-            online, capability, source, namespace, page_id, revision, expires_ms, output,
+            online,
+            capability,
+            source,
+            namespace,
+            page_id,
+            revision,
+            crate::trust_validity::End::selected(expires_ms, until_withdrawn)?,
+            output,
         ),
         Command::Submit {
             online,

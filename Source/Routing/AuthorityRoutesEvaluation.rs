@@ -161,6 +161,17 @@ impl Context<'_> {
             ensure!(!live, "route deployment is withdrawn");
         }
         if live {
+            r.manifest.current_transport(self.at)?;
+            p.manifest.current_transport(self.at)?;
+            for end in [
+                r.manifest.transport_expiry()?,
+                p.manifest.transport_expiry()?,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.expires = self.expires.min(end);
+            }
             let consent = wire::decode(self.governance.record_bytes(105, r.deployment)?)?;
             let f = consent.array(19)?;
             let validity = crate::trust_validity::Validity::parse(&f[16])?;
@@ -378,7 +389,67 @@ pub fn evaluate(
     let mut next = state.clone();
     let mut changed = None;
     let outcome = (|| -> Result<()> {
+        let handover;
+        let command = if let Command::Handover { voucher, expires } = command {
+            let current = c.select(166, voucher.id)?;
+            let old = Voucher::parse(&current.payload)?;
+            if replay {
+                ensure!(
+                    voucher.generation.checked_add(1) == Some(current.reference.generation)
+                        && current.predecessor == Some(voucher.digest)
+                        && old.creation == intent.digest
+                        && old.expires == *expires,
+                    "route handover replay differs from its exact successor"
+                );
+            } else {
+                let usage = if state.records.contains_key(&(167, voucher.id)) {
+                    Some(Usage::parse(&c.select(167, voucher.id)?.payload)?)
+                } else {
+                    None
+                };
+                let (relay_record, relay) = c.service(old.relay.id, true)?;
+                let (destination_record, destination) = c.service(old.destination.id, true)?;
+                ensure!(
+                    relay_record.reference == old.relay
+                        && destination_record.reference == old.destination,
+                    "Live handover cannot change its pinned service certificates"
+                );
+                ensure!(
+                    old.permits_next(
+                        usage.as_ref(),
+                        relay
+                            .profile
+                            .limits
+                            .bytes
+                            .min(destination.profile.limits.bytes)
+                    ),
+                    "exhausted route must expire before ordinary quota renewal"
+                );
+                ensure!(
+                    current.reference == *voucher
+                        && at < old.expires
+                        && old.expires - at <= 60_000
+                        && *expires > old.expires,
+                    "route handover requires its exact live voucher in the handover window"
+                );
+            }
+            handover = Command::Issue {
+                id: voucher.id,
+                relay: old.relay.id,
+                destination: old.destination.id,
+                possession: old.possession,
+                action: old.action,
+                scope: old.scope,
+                connections: old.connections,
+                bytes: old.bytes,
+                expires: *expires,
+            };
+            &handover
+        } else {
+            command
+        };
         match command {
+            Command::Handover { .. } => unreachable!("normalized handover"),
             Command::Context { action, scope } => {
                 c.capability(grant(operation)?, intent.requester, *action, *scope)?;
                 if *action == 26 && scope.0 == 5 {
@@ -487,6 +558,19 @@ pub fn evaluate(
                 expires,
             } => {
                 let grant = grant(operation)?;
+                c.governance.admission().route_template(
+                    intent.requester,
+                    grant.id,
+                    *id,
+                    *relay,
+                    *destination,
+                    *action,
+                    *scope,
+                    *connections,
+                    *bytes,
+                    *expires,
+                    at,
+                )?;
                 c.capability(grant, intent.requester, *action, *scope)?;
                 let (rr, r) = c.service(*relay, true)?;
                 let (dr, d) = c.service(*destination, true)?;
@@ -516,6 +600,7 @@ pub fn evaluate(
                         "relay possession key is an application identity"
                     );
                 }
+                let mut certificate_refresh = false;
                 let baseline = if let Some(previous) = state.records.get(&(166, *id)) {
                     let previous = previous.clone();
                     c.select(166, *id)?;
@@ -523,14 +608,24 @@ pub fn evaluate(
                     if replay {
                         old.baseline
                     } else {
+                        certificate_refresh = (old.relay != rr.reference
+                            || old.destination != dr.reference)
+                            && (old.relay == rr.reference
+                                || rr.reference.generation > old.relay.generation
+                                    && r.profile.manifest.transport_certificates.is_some())
+                            && (old.destination == dr.reference
+                                || dr.reference.generation > old.destination.generation
+                                    && d.profile.manifest.transport_certificates.is_some());
                         ensure!(
                             (at >= old.expires
-                                || (old.expires - at <= 60_000
-                                    && *expires > old.expires
+                                || ((old.expires - at <= 60_000 || certificate_refresh)
+                                    && (*expires > old.expires
+                                        || certificate_refresh && *expires == old.expires)
                                     && *connections == old.connections
                                     && *bytes == old.bytes
-                                    && rr.reference == old.relay
-                                    && dr.reference == old.destination
+                                    && (rr.reference == old.relay
+                                        && dr.reference == old.destination
+                                        || certificate_refresh)
                                     && *grant == old.grant))
                                 && old.sponsor == intent.requester
                                 && old.possession == *possession
@@ -571,7 +666,11 @@ pub fn evaluate(
                 };
                 Voucher::parse(&voucher.value())?;
                 if !replay && let Some(previous) = state.records.get(&(166, *id)) {
-                    let previous = Voucher::parse(&previous.payload)?;
+                    let mut previous = Voucher::parse(&previous.payload)?;
+                    if certificate_refresh {
+                        previous.relay = voucher.relay.clone();
+                        previous.destination = voucher.destination.clone();
+                    }
                     ensure!(
                         at >= previous.expires || voucher.continues(&previous),
                         "early route replacement changes live authority or usage baseline"
@@ -870,7 +969,7 @@ pub fn evaluate(
     validate_versions(&versions, 64)?;
     let governance = versions
         .iter()
-        .filter(|r| r.kind < 132)
+        .filter(|r| r.kind < 132 || matches!(r.kind, 180 | 181))
         .map(|r| Ok(b(c.governance.record_bytes(r.kind, r.id)?)))
         .collect::<Result<Vec<_>>>()?;
     let value = a(vec![
@@ -958,7 +1057,7 @@ pub(crate) fn evaluate_read(
     validate_versions(&versions, 64)?;
     let governance = versions
         .iter()
-        .filter(|r| r.kind < 132)
+        .filter(|r| r.kind < 132 || matches!(r.kind, 180 | 181))
         .map(|r| Ok(b(c.governance.record_bytes(r.kind, r.id)?)))
         .collect::<Result<Vec<_>>>()?;
     let value = a(vec![

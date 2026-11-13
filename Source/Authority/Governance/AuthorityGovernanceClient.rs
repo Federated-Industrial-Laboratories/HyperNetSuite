@@ -18,7 +18,7 @@ pub(crate) mod tier;
 fn governance_kind(kind: u64) -> bool {
     matches!(
         kind,
-        100 | 101 | 102 | 105 | 114 | 117 | 125 | 126 | 127 | 128 | 129 | 130 | 131
+        100 | 101 | 102 | 105 | 114 | 117 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 180 | 181
     )
 }
 fn point(prefix: &Prefix) -> V {
@@ -367,6 +367,10 @@ impl<'a> GovernancePrepared<'a> {
         ensure!(
             target.kind == 102 && context.governance.versions().contains(&target),
             "revocation requires the exact retained grant reference"
+        );
+        ensure!(
+            !context.governance.admission().owns_grant(target.id),
+            "slot-owned grants retire through their native admission claim"
         );
         ensure!(
             !context

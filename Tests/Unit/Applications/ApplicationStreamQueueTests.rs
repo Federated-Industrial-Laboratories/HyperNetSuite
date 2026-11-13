@@ -267,3 +267,22 @@ fn poisoned_queue_refuses_jobs_and_shutdown_releases_waiting_replies() {
         Err(mpsc::RecvTimeoutError::Disconnected)
     ));
 }
+
+#[test]
+fn idle_maintenance_timeout_keeps_queue_live_and_preserves_shutdown() {
+    let (sender, receiver) = channel();
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_millis(5)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    sender.try_send(preparation(9)).unwrap();
+    assert_eq!(
+        identity(receiver.recv_timeout(Duration::ZERO).unwrap()),
+        (true, 9)
+    );
+    drop(sender);
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(10)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+}

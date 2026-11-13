@@ -258,3 +258,10 @@ Named cold archives and current-authority restore are available through
 [`authority-inspection backup`](Backups.md). They include associated canonical
 bitmap and vector assets. `pages media repair` restores exact currently published
 media with the author's current authority; it does not approve changed bytes.
+
+## Optional persistent static content
+
+[Persistent access and hosting](PersistentAccess.md#persistent-static-pages)
+describes explicit until-withdrawn authoring, retention and placement. This mode
+requires the complete persistent authority chain and preserves finite review and
+execution proofs. The original timestamp-based workflow remains available.
