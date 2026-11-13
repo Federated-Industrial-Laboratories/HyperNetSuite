@@ -9,6 +9,7 @@ use anyhow::{Result, ensure};
 use eframe::egui;
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -41,14 +42,39 @@ fn root() -> Result<PathBuf> {
     super::private::directory(&root)?;
     Ok(root)
 }
-pub fn discover(name: &str) -> Option<PathBuf> {
-    let sibling = std::env::current_exe().ok()?.parent()?.join(name);
-    let search = std::env::var_os("PATH").unwrap_or_default();
+fn discover_with(
+    name: &str,
+    executable: &Path,
+    environment: impl Fn(&str) -> Option<OsString>,
+) -> Option<PathBuf> {
+    if name == "hrc" {
+        let installed = environment("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                environment("HOME")
+                    .map(|home| PathBuf::from(home).join(".local/share"))
+                    .filter(|path| path.is_absolute())
+            })
+            .map(|base| base.join("HyperNetRelayChat/Application/Bin/hrc"));
+        if let Some(path) = installed
+            && runtime::executable(&path).is_ok()
+        {
+            return Some(path);
+        }
+    }
+    let sibling = executable.parent()?.join(name);
+    let search = environment("PATH").unwrap_or_default();
     let paths =
         std::iter::once(sibling).chain(std::env::split_paths(&search).map(|p| p.join(name)));
     paths
         .filter_map(|p| p.canonicalize().ok())
         .find(|p| runtime::executable(p).is_ok())
+}
+pub fn discover(name: &str) -> Option<PathBuf> {
+    discover_with(name, &std::env::current_exe().ok()?, |name| {
+        std::env::var_os(name)
+    })
 }
 fn defaults(application: Application) -> runtime::Configuration {
     runtime::Configuration {
@@ -594,4 +620,86 @@ pub fn run(
         .map_err(|_| anyhow::anyhow!("join result unavailable"))?
         .take()
         .ok_or_else(|| anyhow::anyhow!("join cancelled; saved keys and progress retained"))
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use std::{
+        fs,
+        os::unix::fs::{DirBuilderExt, PermissionsExt},
+    };
+
+    struct Directory(PathBuf);
+    impl Directory {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("DesktopDiscovery{}", crate::random_hex::<8>()));
+            fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+            Self(path)
+        }
+        fn hrc(&self, base: &Path) -> PathBuf {
+            let path = base.join("HyperNetRelayChat/Application/Bin/hrc");
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(path.parent().unwrap())
+                .unwrap();
+            fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        }
+        fn discover(&self, data: Option<&Path>, home: &Path) -> Option<PathBuf> {
+            discover_with(
+                "hrc",
+                &self.0.join("Suite/Bin/HyperNetSuite"),
+                |name| match name {
+                    "XDG_DATA_HOME" => data.map(|p| p.as_os_str().to_owned()),
+                    "HOME" => Some(home.as_os_str().to_owned()),
+                    "PATH" => Some(self.0.join("Empty Search Path").into_os_string()),
+                    _ => None,
+                },
+            )
+        }
+    }
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn normally_installed_hrc_is_found_without_path_changes() {
+        let fixture = Directory::new();
+        let home = fixture.0.join("Home");
+        let default = fixture.hrc(&home.join(".local/share"));
+        let data = fixture.0.join("Selected Desktop Data");
+        let selected = fixture.hrc(&data);
+        assert_eq!(fixture.discover(Some(&data), &home), Some(selected));
+        assert_eq!(fixture.discover(None, &home), Some(default.clone()));
+        assert_eq!(
+            fixture.discover(Some(Path::new("relative")), &home),
+            Some(default)
+        );
+    }
+
+    #[test]
+    fn installed_hrc_discovery_rejects_links_and_replaceable_paths() {
+        let fixture = Directory::new();
+        let home = fixture.0.join("Home");
+        let data = fixture.0.join("Desktop Data");
+        let installed = fixture.hrc(&data);
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(fixture.discover(Some(&data), &home).is_none());
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o722)).unwrap();
+        assert!(fixture.discover(Some(&data), &home).is_none());
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = installed.parent().unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o722)).unwrap();
+        assert!(fixture.discover(Some(&data), &home).is_none());
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_file(&installed).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/true", &installed).unwrap();
+        assert!(fixture.discover(Some(&data), &home).is_none());
+    }
 }

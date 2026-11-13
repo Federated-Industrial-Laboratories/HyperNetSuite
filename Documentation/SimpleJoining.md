@@ -38,7 +38,12 @@ system prerequisites with the distribution's software manager. The installer
 reports unsupported platforms or missing requirements rather than weakening the
 verification rules.
 
-To register the installed native-link handler explicitly:
+The coordinated Suite and HRC installers register the shared native-link handler.
+A chat invitation finds HRC in its normal per-user installation, including a
+custom `XDG_DATA_HOME`, without requiring a PATH change. Manual installations
+can retain their existing sibling executable or PATH setup.
+
+To register or repair the installed native-link handler explicitly:
 
 ```sh
 HyperNetSuite join install
