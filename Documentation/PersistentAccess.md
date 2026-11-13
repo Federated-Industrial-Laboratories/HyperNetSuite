@@ -231,3 +231,11 @@ certificate successor can be admitted only as non-serving history after its
 not-before time. Synchronisation uses that historical path when recovering a
 retained generation chain. The final serving admission and every runtime
 activation still require current certificates and finite certificate deadlines.
+
+Authority certificate origins may retain a legacy replica trust store containing
+up to 16 copies of one identical issuer certificate, bounded to 64 KiB. Its exact
+original PEM digest is preserved. Distinct issuers are refused for certificate
+succession; new issuer material remains a single canonical certificate.
+Origins above 1024 bytes use explicit certificate metadata version2 with bounded
+UTF-8 bytes. Short origins preserve version1 exactly. Core and Suite 0.11 support
+both forms; older readers refuse version2 rather than interpreting changed pins.
