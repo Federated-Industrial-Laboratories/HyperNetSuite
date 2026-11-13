@@ -79,6 +79,23 @@ pub fn output(
     );
     run_owned(executable, args, input, stop, Some(timeout), false)
 }
+fn graphical_environment(command: &mut Command, value: impl Fn(&str) -> Option<OsString>) {
+    for name in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "XDG_SESSION_TYPE",
+        "XDG_ACTIVATION_TOKEN",
+        "DESKTOP_STARTUP_ID",
+        "XDG_STATE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    ] {
+        if let Some(value) = value(name) {
+            command.env(name, value);
+        }
+    }
+}
 fn run_owned(
     executable: &Path,
     args: &[OsString],
@@ -106,18 +123,7 @@ fn run_owned(
         }
     }
     if graphical {
-        for name in [
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "XAUTHORITY",
-            "XDG_SESSION_TYPE",
-            "XDG_ACTIVATION_TOKEN",
-            "DESKTOP_STARTUP_ID",
-        ] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
+        graphical_environment(&mut command, |name| std::env::var_os(name));
     }
     let parent = unsafe { libc::getpid() };
     unsafe {
@@ -231,6 +237,7 @@ fn run_owned(
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Native {
@@ -319,5 +326,31 @@ impl Hrc {
             "HRC admission helper version differs"
         );
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+
+    #[test]
+    fn nested_desktop_keeps_the_selected_installation_and_saved_state_roots() {
+        let mut command = Command::new("/usr/bin/env");
+        command.env_clear();
+        graphical_environment(&mut command, |name| {
+            Some(OsString::from(format!("/Private/{name}")))
+        });
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let output = String::from_utf8(output.stdout).unwrap();
+        let values: std::collections::BTreeMap<_, _> = output
+            .lines()
+            .map(|line| line.split_once('=').unwrap())
+            .collect();
+        for name in ["XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"] {
+            assert_eq!(values[name], format!("/Private/{name}"));
+        }
+        assert!(!values.contains_key("LD_PRELOAD"));
+        assert!(!values.contains_key("PATH"));
     }
 }
