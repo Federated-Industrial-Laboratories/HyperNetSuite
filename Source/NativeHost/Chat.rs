@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Compose normal native streams and HRC provisioning with separately scoped registrar state.
 use super::{engine::*, files, operator, services};
-use crate::admission::{helper, private, protocol, saved};
+use crate::admission::{helper, protocol, saved};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -263,9 +263,34 @@ pub fn register_application(host: &mut Host<'_>) -> Result<()> {
     Ok(())
 }
 
+fn runtime_parent(path: &Path) -> Result<()> {
+    let owner = unsafe { libc::geteuid() };
+    let metadata = std::fs::symlink_metadata(path)?;
+    ensure!(
+        path.is_absolute()
+            && path.canonicalize()? == path
+            && metadata.is_dir()
+            && !metadata.file_type().is_symlink()
+            && metadata.uid() == owner
+            && metadata.mode() & 0o022 == 0,
+        "private user runtime directory unavailable"
+    );
+    for ancestor in path.ancestors().skip(1) {
+        let parent = std::fs::symlink_metadata(ancestor)?;
+        let sticky_root = parent.uid() == 0 && parent.mode() & 0o1000 != 0;
+        ensure!(
+            parent.is_dir()
+                && !parent.file_type().is_symlink()
+                && (parent.uid() == 0 || parent.uid() == owner)
+                && (parent.mode() & 0o022 == 0 || sticky_root),
+            "private state ancestor permits replacement"
+        );
+    }
+    Ok(())
+}
 fn runtime_root(host: &Host<'_>) -> Result<PathBuf> {
     let parent = PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }));
-    private::directory(&parent)?;
+    runtime_parent(&parent)?;
     let root = companion_path(&host.c.root, &host.state.configuration_digest, "Receiver")?
         .parent()
         .context("companion parent absent")?
@@ -654,6 +679,63 @@ fn provision_registrar(host: &mut Host<'_>, state: &Path, descriptor: &Value) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn native_companion_runtime_parent_allows_traversal_and_keeps_children_private() {
+        let parent = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("NativeRuntimeParent{}", crate::random_hex::<8>()));
+        saved::create_directory(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o711)).unwrap();
+        runtime_parent(&parent).unwrap();
+        let namespace = parent.join("HNcompanion");
+        DirBuilder::new().mode(0o711).create(&namespace).unwrap();
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o711)).unwrap();
+        let receiver = namespace.join("Receiver");
+        saved::create_directory(&receiver).unwrap();
+        assert_eq!(std::fs::metadata(&parent).unwrap().mode() & 0o7777, 0o711);
+        assert_eq!(
+            std::fs::metadata(&namespace).unwrap().mode() & 0o7777,
+            0o711
+        );
+        assert_eq!(std::fs::metadata(&receiver).unwrap().mode() & 0o7777, 0o700);
+        std::fs::set_permissions(&receiver, std::fs::Permissions::from_mode(0o711)).unwrap();
+        assert!(saved::create_directory(&receiver).is_err());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn native_companion_runtime_parent_rejects_unsafe_ownership_links_and_ancestors() {
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "NativeRuntimeAncestors{}",
+            crate::random_hex::<8>()
+        ));
+        saved::create_directory(&root).unwrap();
+        let parent = root.join("Parent");
+        saved::create_directory(&parent).unwrap();
+        runtime_parent(&parent).unwrap();
+        for mode in [0o770, 0o707, 0o777] {
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(runtime_parent(&parent).is_err());
+        }
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o711)).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o722)).unwrap();
+        assert!(runtime_parent(&parent).is_err());
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = root.join("Link");
+        symlink(&parent, &link).unwrap();
+        assert!(runtime_parent(&link).is_err());
+        let file = root.join("File");
+        std::fs::write(&file, []).unwrap();
+        assert!(runtime_parent(&file).is_err());
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(runtime_parent(Path::new("/")).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn home() -> Value {
         json!({"network":{"network":"11".repeat(32),"incarnation":"22".repeat(32)},"service":"33".repeat(32)})
     }

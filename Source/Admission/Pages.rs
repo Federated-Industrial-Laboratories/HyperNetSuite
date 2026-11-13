@@ -404,13 +404,24 @@ pub fn reader_needs_refresh(key: &Path) -> Result<Option<bool>> {
         (role, reader.directory.join("Native/Clock/ClockHealth.json"))
     };
     let now = crate::authority_clock::health(&clock)?.observe()?.wall_ms;
+    Ok(Some(role_needs_refresh(&role, now)?))
+}
+fn role_needs_refresh(role: &Value, now: u64) -> Result<bool> {
+    let profile = role
+        .get("profile")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("reader profile absent"))?;
     for name in ["authorityRoute", "destinationRoute"] {
         let file = role
             .get(name)
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("reader route absent"))?;
-        let route: crate::route_profile::Profile = saved::read(Path::new(file))?;
-        route.validate()?;
+        let endpoint = crate::private_route_client::Endpoint::load(Path::new(file))?;
+        ensure!(
+            endpoint.profile == Path::new(profile),
+            "reader route selected another profile"
+        );
+        let route = endpoint.route;
         let record = crate::authority_domains::Record::parse(
             &route.voucher,
             route.network,
@@ -418,10 +429,10 @@ pub fn reader_needs_refresh(key: &Path) -> Result<Option<bool>> {
         )?;
         let voucher = crate::authority_domains::routes::Voucher::parse(&record.payload)?;
         if voucher.expires <= now.saturating_add(61000) {
-            return Ok(Some(true));
+            return Ok(true);
         }
     }
-    Ok(Some(false))
+    Ok(false)
 }
 pub fn refresh_reader(key: &Path) -> Result<()> {
     if reader_needs_refresh(key)? != Some(true) {
@@ -468,4 +479,159 @@ pub fn refresh_reader(key: &Path) -> Result<()> {
         "reader renewal pending or access removed"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        authority_deployment_tests as deployment,
+        authority_domains::{Record, State, routes::Voucher},
+        authority_proof::VersionRef,
+        private_route_client::Endpoint,
+        route_profile::{Assurance, Identity, Limits, Profile},
+        trust_bootstrap as trust,
+    };
+
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn saved_reader_refresh_loads_exact_endpoint_wrappers_and_profile_binding() {
+        let root = std::env::temp_dir().join(format!(
+            "HyperNetReaderEndpoints{}",
+            crate::random_hex::<16>()
+        ));
+        saved::create_directory(&root).unwrap();
+        let directory = Directory(root);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let (bootstrap, _) = crate::authority_recovery::tests::fixture(20, now);
+        let profile = directory.0.join("Profile.json");
+        let request = crate::networks::admission::prepare(&profile, &bootstrap, &[], 1, 0).unwrap();
+        let original_profile = std::fs::read(&profile).unwrap();
+        let checked = trust::inspect(&bootstrap, true).unwrap();
+        let network = trust::hex32(&checked.summary.network).unwrap();
+        let incarnation = trust::hex32(&checked.summary.incarnation).unwrap();
+        let reference = |kind, id| VersionRef {
+            kind,
+            id: [id; 32],
+            generation: 1,
+            digest: [id; 32],
+        };
+        let identity = |service, seed| Identity {
+            service: [service; 32],
+            server_name: "route.invalid".into(),
+            transport_key: deployment::key(seed).verifying_key().to_bytes(),
+            leaf_der: deployment::leaf(seed),
+            certificate_authority_pem: "Pinned route issuer".into(),
+        };
+        let endpoint = |protocol, expires| {
+            let destination = if protocol == 1 { 14 } else { 16 };
+            let voucher = Voucher {
+                relay: reference(165, 12),
+                destination: reference(165, destination),
+                sponsor: trust::hex32(&request.member).unwrap(),
+                grant: reference(102, 30),
+                possession: trust::hex32(&request.relay).unwrap(),
+                action: 0,
+                scope: (3, [destination; 32]),
+                connections: 16,
+                bytes: 65_536,
+                expires,
+                creation: [31; 32],
+                baseline: Some((0, 0)),
+            };
+            Endpoint {
+                format: "HyperNetRelayEndpoint/1".into(),
+                profile: profile.clone(),
+                route: Profile {
+                    version: 1,
+                    network,
+                    incarnation,
+                    relay_address: "127.0.0.1:24443".parse().unwrap(),
+                    relay: identity(12, 9),
+                    destination: identity(destination, if protocol == 1 { 10 } else { 110 }),
+                    domain: if protocol == 1 {
+                        checked.summary.route.admission_domain.clone()
+                    } else {
+                        hex::encode([17; 32])
+                    },
+                    relay_domain: checked.summary.route.relay_domain.clone(),
+                    protocol,
+                    assurance: Assurance::Independent,
+                    minimum_assurance: Assurance::Independent,
+                    limits: Limits {
+                        bytes: 16_384,
+                        duration_ms: 1000,
+                        idle_ms: 1000,
+                    },
+                    voucher: Record::next(
+                        &State::empty(network, incarnation),
+                        166,
+                        [32; 32],
+                        voucher.value(),
+                    )
+                    .unwrap()
+                    .bytes,
+                },
+            }
+        };
+        let authority = directory.0.join("AuthorityRoute.json");
+        let destination = directory.0.join("DestinationRoute.json");
+        let role = json!({"role":0,"profile":profile,
+            "authorityRoute":authority,"destinationRoute":destination});
+        let live = [endpoint(1, now + 61_001), endpoint(2, now + 61_001)];
+        for (path, route) in [(&authority, &live[0]), (&destination, &live[1])] {
+            saved::replace(path, route).unwrap();
+        }
+        assert!(!role_needs_refresh(&role, now).unwrap());
+        for (path, protocol, original) in [(&authority, 1, &live[0]), (&destination, 2, &live[1])] {
+            saved::replace(path, &endpoint(protocol, now + 61_000)).unwrap();
+            assert!(role_needs_refresh(&role, now).unwrap());
+            saved::replace(path, original).unwrap();
+        }
+        let mut malformed = serde_json::to_value(&live[0]).unwrap();
+        malformed["format"] = json!("UnknownEndpoint/1");
+        saved::replace(&authority, &malformed).unwrap();
+        assert!(role_needs_refresh(&role, now).is_err());
+        saved::replace(&authority, &live[0].route).unwrap();
+        assert!(role_needs_refresh(&role, now).is_err(), "no raw fallback");
+
+        let other_profile = directory.0.join("OtherProfile.json");
+        crate::transfer_files::write_new(&other_profile, &original_profile).unwrap();
+        let mut changed = live[0].clone();
+        changed.profile = other_profile;
+        saved::replace(&authority, &changed).unwrap();
+        Endpoint::load(&authority).unwrap();
+        assert_eq!(
+            role_needs_refresh(&role, now).unwrap_err().to_string(),
+            "reader route selected another profile"
+        );
+        let mut changed = live[0].clone();
+        changed.route.network[0] ^= 1;
+        saved::replace(&authority, &changed).unwrap();
+        assert!(role_needs_refresh(&role, now).is_err());
+        let mut changed = live[0].clone();
+        let record = Record::parse(&changed.route.voucher, network, incarnation).unwrap();
+        let mut voucher = Voucher::parse(&record.payload).unwrap();
+        voucher.possession = deployment::key(99).verifying_key().to_bytes();
+        changed.route.voucher = Record::next(
+            &State::empty(network, incarnation),
+            166,
+            record.reference.id,
+            voucher.value(),
+        )
+        .unwrap()
+        .bytes;
+        saved::replace(&authority, &changed).unwrap();
+        assert!(role_needs_refresh(&role, now).is_err());
+        assert_eq!(std::fs::read(&profile).unwrap(), original_profile);
+    }
 }

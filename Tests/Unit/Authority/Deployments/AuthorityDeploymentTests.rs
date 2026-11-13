@@ -71,7 +71,7 @@ pub(crate) fn leaf(seed: u8) -> Vec<u8> {
             ));
             fs::create_dir(&root).unwrap();
             let mut leaves = BTreeMap::new();
-            for seed in (31..=34).chain(110..=117) {
+            for seed in (9..=10).chain(31..=34).chain(110..=117) {
                 let mut private = vec![
                     0x30, 0x2e, 0x02, 0x01, 0, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04,
                     0x22, 0x04, 0x20,
