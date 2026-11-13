@@ -96,6 +96,17 @@ fn graphical_environment(command: &mut Command, value: impl Fn(&str) -> Option<O
         }
     }
 }
+fn helper_environment(command: &mut Command, value: impl Fn(&str) -> Option<OsString>) {
+    command
+        .env_clear()
+        .env("LC_ALL", "C")
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    for name in ["HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] {
+        if let Some(value) = value(name) {
+            command.env(name, value);
+        }
+    }
+}
 fn run_owned(
     executable: &Path,
     args: &[OsString],
@@ -109,19 +120,12 @@ fn run_owned(
     let mut command = Command::new(executable);
     command
         .args(args)
-        .env_clear()
-        .env("LC_ALL", "C")
-        .env("PATH", "/usr/bin:/bin")
         .current_dir("/")
         .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for name in ["HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
+    helper_environment(&mut command, |name| std::env::var_os(name));
     if graphical {
         graphical_environment(&mut command, |name| std::env::var_os(name));
     }
@@ -334,9 +338,14 @@ mod environment_tests {
     use super::*;
 
     #[test]
-    fn nested_desktop_keeps_the_selected_installation_and_saved_state_roots() {
+    fn nested_desktop_keeps_selected_roots_and_fixed_system_tool_search() {
         let mut command = Command::new("/usr/bin/env");
-        command.env_clear();
+        command
+            .env("PATH", "/Untrusted/bin")
+            .env("LD_PRELOAD", "/Untrusted/preload.so");
+        helper_environment(&mut command, |name| {
+            Some(OsString::from(format!("/Private/{name}")))
+        });
         graphical_environment(&mut command, |name| {
             Some(OsString::from(format!("/Private/{name}")))
         });
@@ -351,6 +360,7 @@ mod environment_tests {
             assert_eq!(values[name], format!("/Private/{name}"));
         }
         assert!(!values.contains_key("LD_PRELOAD"));
-        assert!(!values.contains_key("PATH"));
+        assert_eq!(values["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin");
+        assert_eq!(values["LC_ALL"], "C");
     }
 }
