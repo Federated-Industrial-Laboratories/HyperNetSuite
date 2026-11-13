@@ -23,12 +23,20 @@ fn reply(p: &Prepared, f: &Fixture) -> (CertifiedReply, AncestryEvidence) {
     reply_at(p, f.current.observe().unwrap().wall_ms, f.store.prefix())
 }
 fn reply_at(p: &Prepared, at: u64, prefix: &Prefix) -> (CertifiedReply, AncestryEvidence) {
+    reply_with_records(p, at, prefix, p.bootstrap.governance_records())
+}
+fn reply_with_records(
+    p: &Prepared,
+    at: u64,
+    prefix: &Prefix,
+    records: &[Vec<u8>],
+) -> (CertifiedReply, AncestryEvidence) {
     let intent = Intent::from_signed(&p.intent).unwrap();
     let result = Operation::parse(&intent)
         .unwrap()
         .prepare(
             &p.prior.state,
-            p.bootstrap.governance_records(),
+            records,
             &Reservations(p.bootstrap.reservations().to_vec()),
             &intent,
             at,
@@ -58,6 +66,158 @@ fn reply_at(p: &Prepared, at: u64, prefix: &Prefix) -> (CertifiedReply, Ancestry
         },
         AncestryEvidence::direct(vec![node]),
     )
+}
+
+#[test]
+fn admission_context_reopens_after_domain_discovery_without_replacing_its_floor() {
+    use crate::authority_inspection::admission;
+
+    let mut f = Fixture::with_actions(vec![0, 11, 20]);
+    f.context.save(&f.store).unwrap();
+    let initial = std::fs::read(f.directory.0.join("Governance.cbor")).unwrap();
+    let names = [
+        "AdmissionRecordsPending.cbor",
+        "AdmissionRecords.cbor",
+        "Governance.cbor",
+    ];
+    for name in names {
+        files::atomic_at(
+            f.store.profile_directory(),
+            OsStr::new(name),
+            &initial,
+            true,
+        )
+        .unwrap();
+    }
+    admission::retained(&f.bootstrap, &f.store).unwrap();
+
+    let parent = domain_request(&f).grant.unwrap();
+    let mut fields = wire::decode(
+        f.context
+            .governance
+            .record_bytes(parent.kind, parent.id)
+            .unwrap(),
+    )
+    .unwrap()
+    .array(17)
+    .unwrap()
+    .to_vec();
+    fields[6] = b(&[24; 32]);
+    fields[13] = version_value(&parent);
+    fields[14] = V::Uint(7);
+    fields[16] = a(vec![
+        a(vec![
+            V::Uint(f.store.prefix().scope().epoch),
+            V::Uint(f.store.prefix().height()),
+            b(f.store.prefix().policy_state()),
+        ]),
+        a(vec![version_value(&parent)]),
+    ]);
+    let delegated = wire::encode(&a(fields.clone())).unwrap();
+    let child = VersionRef {
+        kind: 102,
+        id: [24; 32],
+        generation: 1,
+        digest: wire::digest(&delegated),
+    };
+    let mut authority = f.bootstrap.governance_records().to_vec();
+    authority.push(delegated.clone());
+    crate::authority_membership::sort_records(&mut authority).unwrap();
+    Governance::parse([20; 32], [21; 32], &authority).unwrap();
+    let mut request = domain_request(&f);
+    request.grant = Some(child.clone());
+    let cache = Cache::load(&f.bootstrap, &f.store).unwrap();
+    let prepared = Prepared::new_with_objects(
+        &f.bootstrap,
+        request,
+        cache,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        vec![],
+        &mut attempt_clock(&mut f.issued, &mut f.current),
+    )
+    .unwrap();
+    let (reply, evidence) = reply_with_records(
+        &prepared,
+        f.current.observe().unwrap().wall_ms,
+        f.store.prefix(),
+        &authority,
+    );
+    // The normal typed domain verifier accepts and publishes the newly learned grant.
+    prepared
+        .finish(reply, evidence, &mut f.store, &mut f.session, &mut || {
+            Ok(f.current)
+        })
+        .unwrap();
+    assert!(f.store.generations().contains(&child));
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert!(ContextState::load(&f.bootstrap, &f.store, &f.directory.0).is_err());
+    drop(f.store);
+    f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+    let floor = std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap();
+    let witness = std::fs::read(f.directory.0.join("AuthorityWitness.json")).unwrap();
+    let records = admission::retained(&f.bootstrap, &f.store).unwrap();
+    assert!(records.contains(&delegated));
+    ContextState::retained(&f.bootstrap, &f.store, &records).unwrap();
+
+    let path = f.directory.0.join(CACHE);
+    let retained = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(admission::retained(&f.bootstrap, &f.store).is_err());
+    for tamper in [false, true] {
+        let mut value = wire::decode_state(&retained)
+            .unwrap()
+            .array(5)
+            .unwrap()
+            .to_vec();
+        let V::Array(records) = &mut value[4] else {
+            unreachable!()
+        };
+        let index = records.iter().position(|r| *r == b(&delegated)).unwrap();
+        if tamper {
+            fields[14] = V::Uint(6);
+            let changed = wire::encode(&a(fields.clone())).unwrap();
+            let mut parsed = authority.clone();
+            *parsed.iter_mut().find(|r| **r == delegated).unwrap() = changed.clone();
+            Governance::parse([20; 32], [21; 32], &parsed).unwrap();
+            records[index] = b(&changed);
+        } else {
+            records.remove(index);
+        }
+        files::atomic_at(
+            f.store.profile_directory(),
+            OsStr::new(CACHE),
+            &wire::encode_state(&a(value)).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert!(admission::retained(&f.bootstrap, &f.store).is_err());
+    }
+    files::atomic_at(
+        f.store.profile_directory(),
+        OsStr::new(CACHE),
+        &retained,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        admission::retained(&f.bootstrap, &f.store).unwrap(),
+        records
+    );
+    for name in names {
+        assert_eq!(std::fs::read(f.directory.0.join(name)).unwrap(), initial);
+    }
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityFloor.json")).unwrap(),
+        floor
+    );
+    assert_eq!(
+        std::fs::read(f.directory.0.join("AuthorityWitness.json")).unwrap(),
+        witness
+    );
+    assert!(f.store.resume_ordinary().unwrap().is_none());
+    assert!(f.store.resume_fence().unwrap().is_none());
 }
 
 fn page_query(f: &Fixture) -> Request {

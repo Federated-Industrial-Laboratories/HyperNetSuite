@@ -16,33 +16,128 @@ use std::{
     time::Duration,
 };
 
-pub struct Bindings(Vec<(PathBuf, (u64, u64))>);
-fn directory_identity(path: &Path) -> Result<(u64, u64)> {
-    let metadata = std::fs::symlink_metadata(path)?;
+#[derive(Clone)]
+struct Directory {
+    path: PathBuf,
+    owner: u32,
+    group: u32,
+    mode: u32,
+}
+impl Directory {
+    fn new(path: PathBuf, owner: u32, mode: u32) -> Self {
+        Self {
+            path,
+            owner,
+            group: owner,
+            mode,
+        }
+    }
+    fn check(&self, metadata: &Metadata) -> Result<()> {
+        ensure!(
+            metadata.mode & libc::S_IFMT == libc::S_IFDIR
+                && metadata.mode & 0o7777 == self.mode
+                && metadata.owner == self.owner
+                && metadata.group == self.group,
+            "registrar mount directory ownership, type or permissions differ"
+        );
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Metadata {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    owner: u32,
+    group: u32,
+}
+fn parse_metadata(bytes: &[u8], count: usize) -> Result<Vec<Metadata>> {
     ensure!(
-        metadata.is_dir() && !metadata.file_type().is_symlink() && metadata.mode() & 0o022 == 0,
-        "registrar mount directory is unavailable or permits replacement"
+        count <= 7 && bytes.len() <= 4096,
+        "registrar mount metadata exceeds bound"
     );
-    Ok((metadata.dev(), metadata.ino()))
+    let rows = std::str::from_utf8(bytes)?
+        .lines()
+        .map(|line| {
+            let fields = line.split(':').collect::<Vec<_>>();
+            ensure!(fields.len() == 5, "registrar mount metadata is incomplete");
+            Ok(Metadata {
+                device: fields[0].parse()?,
+                inode: fields[1].parse()?,
+                mode: u32::from_str_radix(fields[2], 16)?,
+                owner: fields[3].parse()?,
+                group: fields[4].parse()?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        rows.len() == count,
+        "registrar mount metadata count differs"
+    );
+    Ok(rows)
+}
+fn mapped_metadata(podman: &Path, directories: &[Directory]) -> Result<Vec<Metadata>> {
+    ensure!(
+        !directories.is_empty() && directories.len() <= 7,
+        "registrar mount count differs"
+    );
+    // The owner cannot traverse native 0700 mapped state. stat without -L inspects
+    // the final entry in that namespace without following a substituted symlink.
+    let mut args: Vec<OsString> = [
+        "unshare",
+        "/usr/bin/stat",
+        "--printf",
+        "%d:%i:%f:%u:%g\n",
+        "--",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    for directory in directories {
+        args.push(argument(&directory.path)?.into());
+    }
+    let bytes = helper::output(
+        podman,
+        &args,
+        &[],
+        &AtomicBool::new(false),
+        Duration::from_secs(30),
+    )?;
+    let metadata = parse_metadata(&bytes, directories.len())?;
+    for (directory, metadata) in directories.iter().zip(&metadata) {
+        directory.check(metadata)?;
+    }
+    Ok(metadata)
+}
+pub struct Bindings {
+    podman: PathBuf,
+    directories: Vec<Directory>,
+    metadata: Vec<Metadata>,
 }
 impl Bindings {
-    fn capture(paths: impl IntoIterator<Item = PathBuf>) -> Result<Self> {
-        paths
-            .into_iter()
-            .map(|path| {
-                let identity = directory_identity(&path)?;
-                Ok((path, identity))
-            })
-            .collect::<Result<Vec<_>>>()
-            .map(Self)
+    fn capture(podman: &Path, directories: Vec<Directory>) -> Result<Self> {
+        let metadata = mapped_metadata(podman, &directories)?;
+        Ok(Self {
+            podman: podman.into(),
+            directories,
+            metadata,
+        })
     }
     pub fn require_current(&self) -> Result<()> {
-        for (path, expected) in &self.0 {
-            ensure!(
-                directory_identity(path)? == *expected,
-                "native control mount changed; restart public joining"
-            );
+        self.check_current(&mapped_metadata(&self.podman, &self.directories)?)
+    }
+    fn check_current(&self, current: &[Metadata]) -> Result<()> {
+        ensure!(
+            current.len() == self.directories.len(),
+            "registrar mount metadata count differs"
+        );
+        for (directory, metadata) in self.directories.iter().zip(current) {
+            directory.check(metadata)?;
         }
+        ensure!(
+            current == self.metadata.as_slice(),
+            "native control mount changed; restart public joining"
+        );
         Ok(())
     }
 }
@@ -117,15 +212,33 @@ pub fn initialise(directory: &Path, initial: Initial) -> Result<Value> {
 impl RegistrarContainer {
     pub fn bindings(&self, edge: &Container) -> Result<Bindings> {
         self.validate(edge)?;
-        let mut paths = vec![
-            edge.directory.join("Registrar"),
-            edge.directory.join("Bridge"),
+        let mut directories = vec![
+            Directory::new(edge.directory.join("Registrar"), 1001, 0o700),
+            Directory::new(edge.directory.join("Bridge"), 1001, 0o711),
         ];
-        paths.extend(self.native.mounts.iter().map(|mount| mount.source.clone()));
+        directories.extend(self.directories());
+        Bindings::capture(&edge.podman, directories)
+    }
+    fn directories(&self) -> Vec<Directory> {
+        let mut directories = self
+            .native
+            .mounts
+            .iter()
+            .map(|mount| {
+                if mount.target == Path::new("/Clock") {
+                    Directory::new(mount.source.clone(), 0, 0o755)
+                } else {
+                    Directory::new(mount.source.clone(), 1001, 0o700)
+                }
+            })
+            .collect::<Vec<_>>();
         if let Some(hrc) = &self.hrc {
-            paths.extend([hrc.state_directory.clone(), hrc.bridge_directory.clone()]);
+            directories.extend([
+                Directory::new(hrc.state_directory.clone(), 1001, 0o700),
+                Directory::new(hrc.bridge_directory.clone(), 0, 0o711),
+            ]);
         }
-        Bindings::capture(paths)
+        directories
     }
     fn validate(&self, edge: &Container) -> Result<()> {
         ensure!(
@@ -156,11 +269,6 @@ impl RegistrarContainer {
                 "registrar mount permissions differ"
             );
             argument(&matches[0].source)?;
-            let meta = std::fs::symlink_metadata(&matches[0].source)?;
-            ensure!(
-                meta.is_dir() && !meta.file_type().is_symlink() && meta.mode() & 0o022 == 0,
-                "registrar mount must not permit replacement"
-            );
         }
         if let Some(hrc) = &self.hrc {
             super::runtime::executable(&hrc.executable)?;
@@ -170,13 +278,9 @@ impl RegistrarContainer {
             );
             for path in [&hrc.state_directory, &hrc.bridge_directory] {
                 argument(path)?;
-                let m = std::fs::symlink_metadata(path)?;
-                ensure!(
-                    m.is_dir() && !m.file_type().is_symlink() && m.mode() & 0o022 == 0,
-                    "HRC admission mount differs"
-                );
             }
         }
+        mapped_metadata(&edge.podman, &self.directories())?;
         Ok(())
     }
     fn transfer_empty(
@@ -364,15 +468,15 @@ impl RegistrarContainer {
 mod tests {
     use super::*;
     use std::os::unix::fs::DirBuilderExt;
-    struct Directory(PathBuf);
-    impl Drop for Directory {
+    struct TemporaryDirectory(PathBuf);
+    impl Drop for TemporaryDirectory {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
     #[test]
     fn replaced_control_directory_requires_a_new_bind_mount() {
-        let root = Directory(std::env::temp_dir().join(format!(
+        let root = TemporaryDirectory(std::env::temp_dir().join(format!(
             "HyperNetRegistrarBindings-{}",
             crate::random_hex::<16>()
         )));
@@ -385,25 +489,102 @@ mod tests {
             .mode(0o700)
             .create(&control)
             .unwrap();
-        let bindings = Bindings::capture([control.clone()]).unwrap();
+        let read = |path: &Path| -> Result<Metadata> {
+            let meta = std::fs::symlink_metadata(path)?;
+            Ok(Metadata {
+                device: meta.dev(),
+                inode: meta.ino(),
+                mode: meta.mode(),
+                owner: meta.uid(),
+                group: meta.gid(),
+            })
+        };
+        let spec = Directory {
+            path: control.clone(),
+            owner: unsafe { libc::geteuid() },
+            group: unsafe { libc::getegid() },
+            mode: 0o700,
+        };
+        let bindings = Bindings {
+            podman: "/usr/bin/podman".into(),
+            directories: vec![spec.clone()],
+            metadata: vec![read(&control).unwrap()],
+        };
         std::fs::write(
             control.join("Current"),
             b"new socket entries remain visible",
         )
         .unwrap();
-        bindings.require_current().unwrap();
+        bindings.check_current(&[read(&control).unwrap()]).unwrap();
         std::fs::rename(&control, root.0.join("Previous")).unwrap();
-        assert!(bindings.require_current().is_err());
+        assert!(read(&control).is_err());
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&control)
             .unwrap();
-        assert!(bindings.require_current().is_err());
-        let refreshed = Bindings::capture([control.clone()]).unwrap();
-        refreshed.require_current().unwrap();
+        assert!(bindings.check_current(&[read(&control).unwrap()]).is_err());
+        let refreshed = Bindings {
+            podman: "/usr/bin/podman".into(),
+            directories: vec![spec],
+            metadata: vec![read(&control).unwrap()],
+        };
+        refreshed.check_current(&[read(&control).unwrap()]).unwrap();
         std::fs::remove_dir(&control).unwrap();
         std::os::unix::fs::symlink(root.0.join("Previous"), &control).unwrap();
-        assert!(refreshed.require_current().is_err());
-        assert!(Bindings::capture([control]).is_err());
+        assert!(refreshed.check_current(&[read(&control).unwrap()]).is_err());
+    }
+    #[test]
+    fn mapped_private_mount_metadata_preserves_ownership_and_inode_checks() {
+        let directories = vec![
+            Directory::new("/Host/Authority/Launch/State/Control".into(), 1001, 0o700),
+            Directory::new("/Host/Clock/Public".into(), 0, 0o755),
+            Directory::new("/Host/Bridge".into(), 1001, 0o711),
+            Directory::new("/Runtime/HrcBridge".into(), 0, 0o711),
+        ];
+        let metadata = parse_metadata(b"2050:101:41c0:1001:1001\n2050:102:41ed:0:0\n2050:103:41c9:1001:1001\n2050:104:41c9:0:0\n", directories.len()).unwrap();
+        let bindings = Bindings {
+            podman: "/usr/bin/podman".into(),
+            directories,
+            metadata: metadata.clone(),
+        };
+        bindings.check_current(&metadata).unwrap();
+        for replacement in [
+            Metadata {
+                mode: libc::S_IFLNK | 0o777,
+                ..metadata[0].clone()
+            },
+            Metadata {
+                mode: libc::S_IFDIR | 0o720,
+                ..metadata[0].clone()
+            },
+            Metadata {
+                mode: libc::S_IFDIR | 0o755,
+                ..metadata[0].clone()
+            },
+            Metadata {
+                owner: 0,
+                ..metadata[0].clone()
+            },
+            Metadata {
+                group: 0,
+                ..metadata[0].clone()
+            },
+            Metadata {
+                inode: 201,
+                ..metadata[0].clone()
+            },
+            Metadata {
+                device: 2051,
+                ..metadata[0].clone()
+            },
+        ] {
+            let mut changed = metadata.clone();
+            changed[0] = replacement;
+            assert!(bindings.check_current(&changed).is_err());
+        }
+        assert!(bindings.check_current(&metadata[..3]).is_err());
+        assert!(parse_metadata(b"2050:101:41c0:1001:1001\n", 2).is_err());
+        assert!(parse_metadata(b"2050:101:invalid:1001:1001\n", 1).is_err());
+        assert!(parse_metadata(&[b'0'; 4097], 1).is_err());
     }
 }

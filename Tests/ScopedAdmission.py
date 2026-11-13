@@ -197,11 +197,32 @@ def run(workflow):
     accepted = local('acceptChallenge','acceptance',challenge=offered['challenge'],
         applicationBinding=application,requestDigest=request,claim=claim)
     ready = reg('enrol','ready',challenge=offered['challenge'],acceptance=accepted['acceptance'])
+    # A delayed first installation renews transport without replacing accepted keys or claims.
+    delayed_binding = ready['binding']
+    assert local('status','pending')['binding'] == delayed_binding
+    expiry_wait = time.monotonic()+spec['templates'][0]['voucherMs']/1000+3
+    assert expiry_wait+60 < w.deadline, 'Insufficient original deadline for delayed installation'
+    while time.monotonic() < expiry_wait:
+        time.sleep(max(0,min(1,expiry_wait-time.monotonic())))
+    expired = reg('status','pending',binding=delayed_binding)
+    assert expired['code'] == 'RenewalRequired' and expired['binding'] == delayed_binding
+    replay = reg('challenge','pending',claim=claim,requestDigest=request,
+        roles=selected['roles'],applicationBinding=application)
+    assert replay['code'] == 'RenewalRequired' and replay['binding'] == delayed_binding
+    renewal = reg('renewalChallenge','challenge',binding=delayed_binding)
+    proof = local('renewalProof','acceptance',challenge=renewal['challenge'])
+    ready = reg('renew','ready',binding=delayed_binding,proof=proof['acceptance'])
+    assert ready['binding'] == delayed_binding
+    assert ready['principals'] == [{key: role[key] for key in ('role','member','relay')}
+        for role in selected['roles']]
     reader_only = local('acceptResult','installed',result=ready['result'])
+    assert reader_only['binding'] == delayed_binding
     assert len(reader_only['profiles']) == 1 and reader_only['profiles'][0]['role'] == 0
     assert reader_only['profiles'][0].get('connectGrant') is None
     w.c['report']['cases'].append(dict(case='NativeAdmissionReaderOnlySubset',passed=True,
         advertisedRoles=[0,1],selectedRoles=[0],noApplicationGrant=True))
+    w.c['report']['cases'].append(dict(case='NativeAdmissionDelayedInitialInstall',passed=True,
+        sameBinding=True,sameKeys=True,transportExpired=True,fullInitialInstall=True))
     spec['enabled'] = False
     w.write(path := root/'Policy.json', json.dumps(spec).encode())
     w.client('Administrator', ['authority-inspection', 'admission', 'policy'],

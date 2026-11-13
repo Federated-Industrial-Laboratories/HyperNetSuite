@@ -152,6 +152,13 @@ pub(crate) fn retained(bootstrap: &Verified, store: &Store) -> Result<Vec<Vec<u8
         .unwrap_or_else(|| bootstrap.governance_records().to_vec());
     tier::refresh_cached_tiers(bootstrap, store, &mut records)?;
     policy::refresh_cached_policies(bootstrap, store, &mut records)?;
+    if ContextState::retained(bootstrap, store, &records).is_ok() {
+        return Ok(records);
+    }
+    // Normal domain use can certify governance without updating the admission cache.
+    // Authenticate that cache before requiring the same complete retained context.
+    let cache = domain_client::Cache::load(bootstrap, store)?;
+    let records = crate::authority_domains::result::merge(bootstrap, &cache.records)?;
     ContextState::retained(bootstrap, store, &records)?;
     Ok(records)
 }
