@@ -129,6 +129,7 @@ fn certified_admission(
     f: &mut Fixture,
     operation: &crate::authority_admission::Operation,
     source: &[Vec<u8>],
+    replay_records: Option<&[Vec<u8>]>,
 ) -> (proof::VerifiedResult, Vec<Vec<u8>>, Vec<u8>) {
     use crate::authority_admission as native;
     let descriptor = f.store.descriptor().clone();
@@ -182,11 +183,11 @@ fn certified_admission(
     let parsed = Intent::from_signed(&intent).unwrap();
     let selected = operation
         .authorise(
-            source,
+            replay_records.unwrap_or(source),
             &Reservations(f.bootstrap.reservations().to_vec()),
             &parsed,
             wall,
-            false,
+            replay_records.is_some(),
         )
         .unwrap();
     let refs = operation
@@ -234,21 +235,21 @@ fn certified_admission(
                 actual.parameters()? == operation.parameters()?,
                 "admission request differs"
             );
-            actual.authorise(
+            let (records, validation) = crate::authority_inspection::admission::validate_permit(
+                &f.bootstrap,
+                &f.store,
+                &actual,
                 source,
-                &Reservations(f.bootstrap.reservations().to_vec()),
                 request,
-                executed.evaluated_at_ms,
-                false,
+                result,
+                executed,
             )?;
+            ensure!(records == selected.records, "admission records differ");
             ensure!(
                 wire::decode(&result.value)? == value,
                 "admission result differs"
             );
-            ActionValidation::mutation(
-                refs.clone(),
-                actual.updates(request.network, request.incarnation)?,
-            )
+            Ok(validation)
         },
     )
     .unwrap();
@@ -258,8 +259,89 @@ fn certified_admission(
     (verified, selected.records, intent)
 }
 
+fn learn_admission_completion(f: &mut Fixture, intent: &Intent, result: proof::Digest) {
+    use super::super::tests::{receive_control, send_control, submitted};
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    let wall = f.current.observe().unwrap().wall_ms;
+    let boot = boot_time_ms().unwrap();
+    f.current = ClockHealth::new(wall, boot, boot + 30000, 100)
+        .unwrap()
+        .frozen();
+    let socket = f.directory.0.join("AdmissionStatus.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let descriptor = f.store.descriptor().clone();
+    let server_descriptor = descriptor.clone();
+    let metadata = a(vec![
+        V::Uint(56),
+        V::Uint(1),
+        descriptor.scope().value(),
+        b(&intent.requester),
+        V::Bool(true),
+        V::Uint(intent.generation),
+        b(&intent.generation_id),
+        V::Uint(intent.acknowledged_through),
+        a(vec![
+            V::Uint(intent.sequence),
+            b(&intent.digest),
+            V::Uint(0),
+            V::Uint(0),
+            b(&result),
+        ]),
+        V::Null,
+    ]);
+    let parent = *f.store.prefix().node();
+    let height = f.store.prefix().height() + 1;
+    let server = std::thread::spawn(move || {
+        let (stream, packet) = receive_control(&listener);
+        let (ordered, signed, challenge) = submitted(&packet);
+        let at = Challenge::from_signed(&challenge).unwrap().created_at_ms;
+        let (reply, _) = certified_request(
+            &server_descriptor,
+            &signed,
+            &challenge,
+            &ordered,
+            metadata,
+            at,
+            parent,
+            height,
+            0,
+        );
+        send_control(stream, &reply);
+    });
+    let status = stream_client::status_local(
+        &descriptor,
+        &socket,
+        &f.signer,
+        &mut f.store,
+        &mut f.session,
+        || Ok(f.current),
+    );
+    server.join().unwrap();
+    assert_eq!(
+        status
+            .unwrap()
+            .state()
+            .unwrap()
+            .completion
+            .as_ref()
+            .unwrap()
+            .intent,
+        intent.digest
+    );
+}
+
 #[test]
 fn admission_enrolment_replaces_reserved_cache_and_retries_exact_pending_publication() {
+    admission_recovery_after_expiry(false);
+}
+
+#[test]
+fn admission_lost_first_reply_uses_certified_status_before_late_exact_replay() {
+    admission_recovery_after_expiry(true);
+}
+
+fn admission_recovery_after_expiry(lose_first_reply: bool) {
     use crate::authority_admission as native;
     let registrar = SigningKey::from_bytes(&[90; 32]);
     let mut f = Fixture::with_actions_and_signer(vec![0, 10, 11], registrar);
@@ -366,7 +448,7 @@ fn admission_enrolment_replaces_reserved_cache_and_retries_exact_pending_publica
         snapshot,
     };
     let (verified, reserved_records, reserve_intent) =
-        certified_admission(&mut f, &reserve, &source);
+        certified_admission(&mut f, &reserve, &source, None);
     assert_eq!(Intent::from_signed(&reserve_intent).unwrap().sequence, 1);
     let permit = f
         .store
@@ -418,10 +500,68 @@ fn admission_enrolment_replaces_reserved_cache_and_retries_exact_pending_publica
         legacy: vec![],
         snapshot,
     };
-    let (verified, enrolled_records, exact_intent) =
-        certified_admission(&mut f, &enrol, &reserved_records);
+    let (mut verified, enrolled_records, exact_intent) =
+        certified_admission(&mut f, &enrol, &reserved_records, None);
     let parsed = Intent::from_signed(&exact_intent).unwrap();
     assert_eq!((parsed.sequence, parsed.acknowledged_through), (2, 1));
+    let mut expired = verified.executed.clone();
+    expired.evaluated_at_ms = old.challenge_until + 2000;
+    let error = crate::authority_inspection::admission::validate_permit(
+        &f.bootstrap,
+        &f.store,
+        &enrol,
+        &reserved_records,
+        &parsed,
+        &verified.result,
+        &expired,
+    )
+    .err()
+    .expect("uncommitted expired acceptance must remain refused");
+    assert!(
+        format!("{error:#}").contains("admission acceptance expired"),
+        "{error:#}"
+    );
+    if lose_first_reply {
+        let original_digest = verified.executed.result;
+        let pending = f
+            .store
+            .resume_ordinary()
+            .unwrap()
+            .unwrap()
+            .signed()
+            .to_vec();
+        drop(f.store);
+        f.store = Store::open(&f.directory.0, f.bootstrap.descriptor().clone()).unwrap();
+        f.session = Session::new().unwrap();
+        f.current = elapsed_health(f.current, native::CHALLENGE_MS + 2000);
+        let next = native::record_reference(&enrol.next, [20; 32], [21; 32]).unwrap();
+        assert!(!f.store.generations().contains(&next));
+        learn_admission_completion(&mut f, &parsed, original_digest);
+        assert_eq!(
+            f.store.resume_ordinary().unwrap().unwrap().signed(),
+            pending
+        );
+        assert!(!f.store.generations().contains(&next));
+        let mut changed = expired.clone();
+        changed.result = [99; 32];
+        assert!(
+            crate::authority_inspection::admission::validate_permit(
+                &f.bootstrap,
+                &f.store,
+                &enrol,
+                &reserved_records,
+                &parsed,
+                &verified.result,
+                &changed,
+            )
+            .is_err()
+        );
+        let (replayed, records, signed) =
+            certified_admission(&mut f, &enrol, &reserved_records, Some(&enrolled_records));
+        assert_eq!(signed, exact_intent);
+        assert_eq!(records, enrolled_records);
+        verified = replayed;
+    }
     let permit = f
         .store
         .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
@@ -525,9 +665,43 @@ fn admission_enrolment_replaces_reserved_cache_and_retries_exact_pending_publica
         .unwrap()
         .contains(&current)
     );
+    f.current = elapsed_health(f.current, native::CHALLENGE_MS + 2000);
     let (verified, retried_records, retried_intent) =
-        certified_admission(&mut f, &enrol, &reserved_records);
+        certified_admission(&mut f, &enrol, &reserved_records, Some(&enrolled_records));
     assert_eq!(retried_intent, exact_intent);
+    assert!(verified.executed.evaluated_at_ms > old.challenge_until);
+    let mut different = parsed.clone();
+    different.digest = [99; 32];
+    assert!(
+        crate::authority_inspection::admission::validate_permit(
+            &f.bootstrap,
+            &f.store,
+            &enrol,
+            &reserved_records,
+            &different,
+            &verified.result,
+            &verified.executed,
+        )
+        .is_err()
+    );
+    let changed_result = proof::OperationResult {
+        action: verified.result.action.clone(),
+        disposition: Disposition::Permit,
+        code: 0,
+        value: wire::encode(&V::Null).unwrap(),
+    };
+    assert!(
+        crate::authority_inspection::admission::validate_permit(
+            &f.bootstrap,
+            &f.store,
+            &enrol,
+            &reserved_records,
+            &parsed,
+            &changed_result,
+            &verified.executed,
+        )
+        .is_err()
+    );
     let permit = f
         .store
         .accept_with_clock(verified, &mut f.session, &mut || Ok(f.current), 0)
