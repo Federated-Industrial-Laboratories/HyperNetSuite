@@ -388,3 +388,24 @@ identities and the last successful local TLS observation. It does not label a
 historical result as current permission. The observation identifies encryption
 endpoints and selected assurance; it does not claim verified physical Internet
 hops. These private diagnostics stay local and contain no public telemetry upload.
+
+`routes register --preview` predicts the exact next route record from a current
+certified context. It performs a read and returns `expectedRecord` in
+`ID:generation:digest` form. Bind a later registration with
+`--expected-record VALUE`; a changed predecessor, operator, grant or signed
+profile causes refusal. A preview has no permission of its own. Exact retries
+can recognise the same already-certified result without creating another record.
+This permits complete owner/operator application consent before a stopped
+certificate transition starts changing network registrations.
+
+For an interrupted certificate transaction, `routes recover-expired-registration`
+accepts at most eight `--candidate DEPLOYMENT:MANIFEST_RECORD_DIGEST` values.
+Only the exact retained DeploymentRegister or RouteRegister can be fenced after
+its certificate or permission deadline. StreamRegister additionally requires its
+exact `--accepted FILE --route-profile FILE` pair. Current signed clock health
+and authenticated own-stream generation checks precede the fence. Other pending
+operations are refused, and unknown outcomes remain in the native history.
+
+Initial deployment recovery also uses the exact signed possession expiry. An
+endpoint-free initial Page store can therefore recover an expired registration
+without assigning a fictional transport deadline or changing its manifest.

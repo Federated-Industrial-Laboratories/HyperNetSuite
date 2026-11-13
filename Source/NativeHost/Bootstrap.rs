@@ -101,7 +101,9 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
             "3650",
         ]))?;
     }
-    let issuer_cert = native::public_file(&issuer.join("Authority.pem"), 16384)
+    super::certificates::prepare_inputs(host)?;
+    let issuer_certificate = super::certificates::issuer(host)?;
+    let issuer_cert = native::public_file(&issuer_certificate, 16384)
         .map_err(|_| anyhow!("retained native host state differs"))?;
     let issuer_pin = digest(&issuer_cert);
     host.artifact(&issuer.join("Authority.pem"))?;
@@ -164,6 +166,8 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
                 "issue",
                 "--directory",
                 &text(&issuer)?,
+                "--issuer-certificate",
+                &text(&issuer_certificate)?,
                 "--issuer-digest",
                 &issuer_pin,
                 "--request",
@@ -179,6 +183,7 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
         host.artifact(&peer)?;
         host.remember(&format!("role/{name}"), request)?;
     }
+    super::certificates::prepare_inputs(host)?;
     for name in [
         "Administrator",
         "RelayOperator",
@@ -285,7 +290,7 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
     host.remember("bootstrap", inspected["trust"].clone())?;
     host.phase("Authority preparation")?;
     for n in 1..=4 {
-        let input = host.p(&format!("A{n}Inputs"));
+        let input = super::certificates::authority_inputs(host, n)?;
         let folder = host.p(&format!("A{n}"));
         if !input.exists() {
             let mut a = bytes(&[
@@ -300,13 +305,19 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
             a.extend(host.trust()?);
             a.push("--peer".into());
             for k in 1..=4 {
-                a.push(text(&host.p(&format!("Peers/Voter{k}.json")))?);
+                a.push(text(&super::certificates::peer(
+                    host,
+                    &format!("Voter{k}"),
+                )?)?);
             }
             a.push("--peer-digest".into());
             for k in 1..=4 {
                 a.push(digest(
-                    &native::public_file(&host.p(&format!("Peers/Voter{k}.json")), 16384)
-                        .map_err(|_| anyhow!("retained native host state differs"))?,
+                    &native::public_file(
+                        &super::certificates::peer(host, &format!("Voter{k}"))?,
+                        16384,
+                    )
+                    .map_err(|_| anyhow!("retained native host state differs"))?,
                 ));
             }
             a.extend(bytes(&[
@@ -376,34 +387,39 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
     }
     Ok(())
 }
+pub(super) fn consent(host: &mut Host<'_>, n: u16) -> Result<()> {
+    let folder = host.p(&format!("A{n}"));
+    let preview = host.core(&bytes(&[
+        "runtime",
+        "preview",
+        "--directory",
+        &text(&folder)?,
+    ]))?;
+    let consent_name = format!("consent/A{n}");
+    if host.remembered(&consent_name).is_none() {
+        let op = host.id(&consent_name)?;
+        let result = host.core(&bytes(&[
+            "runtime",
+            "consent",
+            "--directory",
+            &text(&folder)?,
+            "--operation-id",
+            &op[..32],
+            "--expected-generation",
+            &number(&preview, "generation")?.to_string(),
+            "--profile-digest",
+            &string(&preview, "profileDigest")?,
+        ]))?;
+        host.remember(&consent_name, result)?;
+    }
+    Ok(())
+}
 pub(super) fn activate(host: &mut Host<'_>) -> Result<()> {
     host.phase("Authority activation")?;
     for n in 1..=4 {
         let folder = host.p(&format!("A{n}"));
         let name = format!("a{n}");
-        let preview = host.core(&bytes(&[
-            "runtime",
-            "preview",
-            "--directory",
-            &text(&folder)?,
-        ]))?;
-        let consent_name = format!("consent/A{n}");
-        if host.remembered(&consent_name).is_none() {
-            let op = host.id(&consent_name)?;
-            let result = host.core(&bytes(&[
-                "runtime",
-                "consent",
-                "--directory",
-                &text(&folder)?,
-                "--operation-id",
-                &op[..32],
-                "--expected-generation",
-                &number(&preview, "generation")?.to_string(),
-                "--profile-digest",
-                &string(&preview, "profileDigest")?,
-            ]))?;
-            host.remember(&consent_name, result)?;
-        }
+        consent(host, n)?;
         let key = format!("signer-floor/A{n}");
         let floor = if let Some(value) = host.remembered(&key) {
             value.as_u64().context("retained signer floor differs")?

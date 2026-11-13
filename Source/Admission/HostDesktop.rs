@@ -709,6 +709,10 @@ impl Window {
                 let directory=self.directory.clone();
                 self.job=Some(Job::new(ctx,move|stop|super::pages::open_owner(&directory,super::pages::Input{location:None},stop)));
             }
+            ui.small("Native connection certificates renew automatically. Renewing now briefly reconnects hosted services and preserves their keys and permissions.");
+            if ui.add_enabled(status.get("desiredRunning").and_then(Value::as_bool)==Some(true),egui::Button::new("Renew native certificates now")).clicked() {
+                self.call(ctx,hosting::Request::RenewCertificates);
+            }
             if ui.button("Export redacted diagnosis").clicked() { self.call(ctx,hosting::Request::Diagnose); }
             ui.checkbox(&mut self.confirm_withdraw,"Withdraw this host's consent and close its native services");
             if ui.add_enabled(self.confirm_withdraw,egui::Button::new("Withdraw hosting consent")).clicked() { self.call(ctx,hosting::Request::Withdraw); }

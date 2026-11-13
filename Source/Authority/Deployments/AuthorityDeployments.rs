@@ -121,6 +121,17 @@ impl Offer {
         }
         Ok(true)
     }
+    /// The signed, finite possession window never extends initial admission authority.
+    pub fn possession_expiry(&self) -> Result<Option<u64>> {
+        self.possessions
+            .iter()
+            .map(|bytes| {
+                let (payload, _) = wire::envelope(bytes, 1)?;
+                wire::decode(&payload)?.array(12)?[11].array(2)?[1].uint()
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(|ends| ends.into_iter().min())
+    }
     pub fn possessions_value(&self) -> V {
         a(self.possessions.iter().map(|p| b(p)).collect())
     }

@@ -1391,3 +1391,48 @@ fn successor_cache_failure_reopens_and_completes_the_exact_registration() {
     let saved = Cache::load(&f.bootstrap, &f.store, manifest.deployment, None).unwrap();
     assert_eq!(saved.provenance().unwrap().0, manifest);
 }
+
+#[test]
+fn committed_registration_retry_requires_exact_registrar_grant_and_signed_definition() {
+    use crate::authority_deployment_tests as fixture;
+    let f = fixture::Fixture::new();
+    let offer = fixture::offer(fixture::manifest());
+    let (entries, registration, _, _) = fixture::admitted(&f, &offer);
+    let state = Cache {
+        scope: f.scope.clone(),
+        deployment: registration.deployment,
+        grant: Some(registration.grant.id),
+        entries,
+        manifest: Some(offer.manifest_bytes.clone()),
+        consent: Some(offer.consent.clone()),
+    };
+    assert!(
+        state
+            .registered(&offer, registration.registrar, &registration.grant)
+            .unwrap()
+    );
+    assert!(
+        !state
+            .registered(
+                &offer,
+                fixture::key(6).verifying_key().to_bytes(),
+                &registration.grant
+            )
+            .unwrap()
+    );
+    let mut grant = registration.grant.clone();
+    grant.generation += 1;
+    assert!(
+        !state
+            .registered(&offer, registration.registrar, &grant)
+            .unwrap()
+    );
+    let mut changed = offer.manifest.clone();
+    changed.validity.1 = 19_000.into();
+    let changed = fixture::offer(changed);
+    assert!(
+        !state
+            .registered(&changed, registration.registrar, &registration.grant)
+            .unwrap()
+    );
+}

@@ -84,6 +84,13 @@ HTTPS listener, which reloads it without restarting chat. Failed refreshes appea
 in the dashboard; clients continue to enforce hostname, chain and expiry checks.
 The host never bypasses certificate checks to recover a failed renewal.
 
+Native transport certificates renew through the retained host's normal stopped
+successor transaction. The issuer and service keys, addresses, approved resources
+and lasting permissions stay fixed. Services briefly reconnect after renewal.
+**Renew native certificates now** uses the same transaction for planned maintenance.
+It requires a completed host whose online choice is still enabled. A cancelled
+operation stops hosting and retains exact progress for the next explicit Start.
+
 ## Share and control access
 
 The dashboard can create private invitations with a use count and expiry, show
@@ -158,8 +165,10 @@ service commands; it does not change permissions or replace identities.
 
 An interrupted controller update stays offline. Review and apply its retained
 update again. Do not delete the update plan or restore an older journal to retry.
-Core software changes use the native stopped deployment successor workflow and
-its separate software consent; a controller update cannot authorise them.
+The shared-host controller does not currently replace Core or HRC. Do not
+substitute binaries or edit retained host state. Separate manual native
+deployments retain their reviewed software-transition commands; the shared-host
+controller cannot adopt those transitions.
 
 ## Isolation and administration boundary
 
@@ -186,3 +195,38 @@ hostile. Each slot has fixed purpose, selected roles, quotas and no delegation
 rights. Password rotation and invitation changes do not create new native
 policies. Immutable policy rotation has a retained native policy limit; it must
 not discard withdrawal evidence to bypass that limit.
+
+Native certificate maintenance keeps permission lifetime separate from transport
+lifetime. The host renews within thirty days of the earliest issuer or leaf
+certificate deadline. The owner can also select **Renew certificates now**.
+The retained issuer key, service keys, addresses, resources and permission ends
+remain fixed. A renewal briefly stops all affected services and the four
+voters, applies exact reviewed same-key certificate successors, certifies fresh
+route and application bindings, and obtains normal service activation proofs.
+
+The complete local proposal and application consent are retained before native
+registration changes. After a long interruption, expired proposals can become
+non-serving history before a fresh successor is issued. Native requester fences
+are limited to exact expired registrations from that retained transaction;
+other unresolved operations remain available for their normal recovery. The
+receiver refreshes a live voucher at the same expiry and with its existing
+baseline, so certificate renewal does not refill its connection allowance.
+
+Current and previous certificate exports remain available. Older acknowledged
+public offers and duplicate inert input exports are retired through a durable
+bounded inventory. Unresolved transactions, original keys, bootstrap material,
+requester floors and revocation state are retained. Stop and withdrawal continue
+to veto automatic maintenance and startup.
+
+The managed controller update accepts an authenticated Suite-only successor
+with the same retained Core executable, image, and HRC installation. Create,
+Start, and certificate renewal do not replace Core or HRC. Certificate
+maintenance keeps the reviewed software, keys, endpoints, resources, and
+permission limits.
+
+If initial setup outlasts its finite key-possession proofs, the host first
+resolves only its exact expired registration through the normal requester fence.
+It checks current certified registration before creating fresh proofs. The
+manifest, signed consent, keys, and permissions remain unchanged. Proof exports
+retain current and previous sets; an unresolved set is preserved until recovery.
+This also applies to the Page store, which has no transport endpoint.

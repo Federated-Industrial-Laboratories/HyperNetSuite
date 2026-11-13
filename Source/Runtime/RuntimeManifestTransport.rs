@@ -187,7 +187,6 @@ impl Manifest {
         }
         Ok(())
     }
-    #[cfg(test)]
     pub fn adopt_certificates(
         &mut self,
         previous: &Self,

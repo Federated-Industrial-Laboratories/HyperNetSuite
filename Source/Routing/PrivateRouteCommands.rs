@@ -22,6 +22,8 @@ use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
 #[path = "PrivateRouteAuthoring.rs"]
 mod authoring;
+#[path = "PrivateRouteRegistration.rs"]
+mod registration;
 #[derive(Subcommand)]
 pub enum Command {
     /// Sign a route profile derived from an independently reviewed role5 deployment.
@@ -36,6 +38,24 @@ pub enum Command {
         grant: String,
         #[arg(long)]
         profile: PathBuf,
+        /// Predict the exact record from certified context without registering it.
+        #[arg(long, conflicts_with = "expected_record")]
+        preview: bool,
+        /// Refuse mutation unless its exact next record matches this reviewed ID:generation:digest.
+        #[arg(long)]
+        expected_record: Option<String>,
+    },
+    /// Fence only an expired registration from this exact retained certificate transaction.
+    RecoverExpiredRegistration {
+        #[command(flatten)]
+        online: Online,
+        /// Reviewed deployment ID:manifest RecordDigest pairs; at most eight.
+        #[arg(long, required=true, num_args=1..=8)]
+        candidate: Vec<String>,
+        #[arg(long, requires = "route_profile")]
+        accepted: Option<PathBuf>,
+        #[arg(long, requires = "accepted")]
+        route_profile: Option<PathBuf>,
     },
     /// Fetch the current registered service and its dependency closure.
     Lookup {
@@ -275,6 +295,19 @@ pub fn run(command: Command) -> Result<()> {
         Command::Profile(arguments) => return authoring::profile(arguments),
         Command::Template(arguments) => return authoring::template(arguments),
         Command::RecoverExpiredIssue { online, id } => return recover_expired(&online, &id),
+        Command::RecoverExpiredRegistration {
+            online,
+            candidate,
+            accepted,
+            route_profile,
+        } => {
+            return registration::recover(
+                &online,
+                &candidate,
+                accepted.as_deref(),
+                route_profile.as_deref(),
+            );
+        }
         command => command,
     };
     let online = match &command {
@@ -283,23 +316,38 @@ pub fn run(command: Command) -> Result<()> {
         | Command::Issue { online, .. }
         | Command::Invite { online, .. }
         | Command::Withdraw { online, .. } => online,
-        Command::Profile(_) | Command::Template(_) | Command::RecoverExpiredIssue { .. } => {
+        Command::Profile(_)
+        | Command::Template(_)
+        | Command::RecoverExpiredIssue { .. }
+        | Command::RecoverExpiredRegistration { .. } => {
             unreachable!("offline route command was handled")
         }
     };
     let mut c = Client::new(online)?;
     let mut issued = None;
     let result = match command {
-        Command::Profile(_) | Command::Template(_) | Command::RecoverExpiredIssue { .. } => {
+        Command::Profile(_)
+        | Command::Template(_)
+        | Command::RecoverExpiredIssue { .. }
+        | Command::RecoverExpiredRegistration { .. } => {
             unreachable!("offline route command was handled")
         }
-        Command::Register { grant, profile, .. } => {
+        Command::Register {
+            grant,
+            profile,
+            preview,
+            expected_record,
+            ..
+        } => {
             let profile = routes::RegisteredProfile::parse(
                 &files::read_single(&profile, wire::MAXIMUM, true)?,
                 c.bootstrap.descriptor().scope().network,
                 c.bootstrap.descriptor().scope().incarnation,
             )?;
             let grant = c.grant(&grant)?;
+            if preview || expected_record.is_some() {
+                return registration::run(&mut c, grant, profile, preview, expected_record);
+            }
             c.context(&grant, 26, (5, profile.deployment))?;
             c.execute(
                 Some(grant),

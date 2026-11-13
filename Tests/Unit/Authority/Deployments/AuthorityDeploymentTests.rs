@@ -1189,14 +1189,8 @@ fn expired_certificate_successor_is_history_only_and_activation_keeps_finite_dea
                 .into_iter()
                 .map(|(class, seed)| {
                     b(&wire::sign_envelope(
-                        &Offer::possession(
-                            manifest,
-                            class,
-                            public(seed),
-                            [199; 32],
-                            (1000, 8000),
-                        )
-                        .unwrap(),
+                        &Offer::possession(manifest, class, public(seed), [199; 32], (1000, 8000))
+                            .unwrap(),
                         &key(seed),
                     )
                     .unwrap())

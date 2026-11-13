@@ -52,6 +52,7 @@ pub enum Request {
     Stop,
     Withdraw,
     EnableUnattended,
+    RenewCertificates,
     Admin {
         action: control::Admin,
     },
@@ -461,7 +462,7 @@ pub fn request(directory: &Path, request: Request, stop: &AtomicBool) -> Result<
     let _lock = host_service::lock(directory, "HostControl.lock")?;
     if matches!(
         &request,
-        Request::Create { .. } | Request::Start | Request::Resume
+        Request::Create { .. } | Request::Start | Request::Resume | Request::RenewCertificates
     ) {
         ensure!(
             !software::pending(directory)?,
@@ -475,6 +476,7 @@ pub fn request(directory: &Path, request: Request, stop: &AtomicBool) -> Result<
             | Request::Start
             | Request::Stop
             | Request::Withdraw
+            | Request::RenewCertificates
     );
     let result = (|| match &request {
         Request::PreviewSoftware => software::preview(directory, stop),
@@ -595,6 +597,24 @@ pub fn request(directory: &Path, request: Request, stop: &AtomicBool) -> Result<
                     ensure!(
                         field(&n, "status")? == "Running",
                         "native hosting has not reached readiness"
+                    );
+                    running(directory, &r, stop)?;
+                    status(directory, &setup, &r, stop)
+                }
+                Request::RenewCertificates => {
+                    ensure!(
+                        desired(directory)?,
+                        "start the retained host before requesting certificate renewal"
+                    );
+                    let n = native(
+                        directory,
+                        &setup.configuration,
+                        json!({"operation":"renewCertificates"}),
+                        stop,
+                    )?;
+                    ensure!(
+                        field(&n, "status")? == "Running",
+                        "native certificate renewal has not reached readiness"
                     );
                     running(directory, &r, stop)?;
                     status(directory, &setup, &r, stop)

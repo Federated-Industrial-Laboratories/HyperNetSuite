@@ -114,6 +114,35 @@ impl Cache {
             .find(|v| v.index() == (kind, id))
             .context("deployment cache lacks exact record")
     }
+    pub(crate) fn public_registration(&self) -> Result<Option<records::Registration>> {
+        self.entries
+            .iter()
+            .find(|bytes| {
+                records::reference(bytes).is_ok_and(|r| r.kind == 129 && r.id == self.deployment)
+            })
+            .map(|bytes| {
+                records::Registration::parse(bytes, self.scope.network, self.scope.incarnation)
+            })
+            .transpose()
+    }
+    pub(crate) fn registered(
+        &self,
+        offer: &Offer,
+        registrar: [u8; 32],
+        grant: &VersionRef,
+    ) -> Result<bool> {
+        if self.version(130, offer.manifest.deployment).is_ok() {
+            return Ok(false);
+        }
+        let Some(r) = self.public_registration()? else {
+            return Ok(false);
+        };
+        Ok(r.registrar == registrar
+            && &r.grant == grant
+            && r.manifest == offer.manifest
+            && r.profile.digest == wire::digest(&offer.manifest.desired()?)
+            && r.consent.digest == wire::digest(&offer.manifest.unsigned_consent(0)?))
+    }
     pub(super) fn current(&self, store: &Store) -> Result<()> {
         ensure!(
             &self.scope == store.prefix().scope(),
