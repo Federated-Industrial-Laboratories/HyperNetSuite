@@ -734,6 +734,18 @@ fn status(directory: &Path, setup: &Setup, r: &Ready, stop: &AtomicBool) -> Resu
 pub(super) fn running_choice(directory: &Path) -> Result<bool> {
     desired(directory)
 }
+#[cfg(any(feature = "gui", test))]
+fn owner_reader_paths(directory: &Path, owner: &Value) -> Result<()> {
+    let native = directory.join("NativeHost");
+    let candidate = native.join("OwnerCandidate");
+    ensure!(
+        path(owner, "candidateDirectory")? == candidate
+            && path(owner, "readerKeyFile")? == native.join("Keys/OwnerReader.json")
+            && path(owner, "readerProfile")? == candidate.join("Roles/0/Profile.json"),
+        "owner reader paths differ from the retained host"
+    );
+    Ok(())
+}
 #[cfg(feature = "gui")]
 pub(super) fn owner_reader(directory: &Path, refresh: bool, stop: &AtomicBool) -> Result<Value> {
     ensure!(
@@ -754,12 +766,7 @@ pub(super) fn owner_reader(directory: &Path, refresh: bool, stop: &AtomicBool) -
     let owner = result
         .get("owner")
         .ok_or_else(|| anyhow::anyhow!("host owner absent"))?;
-    let candidate = path(owner, "candidateDirectory")?;
-    ensure!(
-        path(owner, "readerKeyFile")?.starts_with(&candidate)
-            && path(owner, "readerProfile")?.starts_with(&candidate),
-        "owner reader escapes its candidate directory"
-    );
+    owner_reader_paths(directory, owner)?;
     Ok(result)
 }
 pub fn serve(directory: &Path, stop: Arc<AtomicBool>) -> Result<Value> {
@@ -813,7 +820,48 @@ pub fn serve(directory: &Path, stop: Arc<AtomicBool>) -> Result<Value> {
 
 #[cfg(test)]
 mod readiness_tests {
-    use super::readiness;
+    use super::{owner_reader_paths, readiness};
+    use serde_json::json;
+    use std::path::Path;
+
+    #[test]
+    fn host_owner_reader_accepts_native_report_and_refuses_substituted_paths() {
+        let host = Path::new("/Hosting/Example");
+        let native = host.join("NativeHost");
+        let candidate = native.join("OwnerCandidate");
+        // NativeHost::policy::owner_report exports the reader key beside the
+        // candidate, while the scoped profile stays inside its reader role.
+        let report = json!({
+            "candidateDirectory": candidate,
+            "readerKeyFile": native.join("Keys/OwnerReader.json"),
+            "readerProfile": candidate.join("Roles/0/Profile.json"),
+        });
+        owner_reader_paths(host, &report).unwrap();
+        assert!(owner_reader_paths(Path::new("/Hosting/Another"), &report).is_err());
+
+        for (field, replacement) in [
+            ("candidateDirectory", json!("/Outside/OwnerCandidate")),
+            ("readerKeyFile", json!(candidate.join("OwnerReader.json"))),
+            ("readerKeyFile", json!("/Outside/OwnerReader.json")),
+            ("readerKeyFile", json!("Keys/OwnerReader.json")),
+            (
+                "readerProfile",
+                json!(candidate.join("Roles/1/Profile.json")),
+            ),
+            ("readerProfile", json!("/Outside/Profile.json")),
+            (
+                "readerProfile",
+                json!(candidate.join("Roles/0/../../../../Outside/Profile.json")),
+            ),
+            ("readerProfile", report["readerKeyFile"].clone()),
+            ("readerKeyFile", report["readerProfile"].clone()),
+        ] {
+            let mut changed = report.clone();
+            changed[field] = replacement;
+            assert!(owner_reader_paths(host, &changed).is_err(), "{field}");
+        }
+    }
+
     #[test]
     fn offline_choice_does_not_hide_pending_cleanup_or_terminal_withdrawal() {
         for (native, expected) in [
