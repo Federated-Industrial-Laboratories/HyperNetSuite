@@ -145,7 +145,7 @@ pub(super) fn prepare(host: &mut Host<'_>) -> Result<()> {
             continue;
         }
         let folder = active_directory(host, name)?;
-        host.dir(&text(folder.strip_prefix(&host.c.root)?)?)?;
+        host.dir_path(folder.strip_prefix(&host.c.root)?)?;
         let inputs = folder.join("Inputs");
         native::directory(&inputs)?;
         let peer = public_read(&super::certificates::peer(host, name)?)?;

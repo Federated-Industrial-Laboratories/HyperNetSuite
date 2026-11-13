@@ -28,6 +28,26 @@ pub fn text(path: &Path) -> Result<String> {
     );
     Ok(value.into())
 }
+fn host_directory(root: &Path, name: &Path) -> Result<PathBuf> {
+    let p = root.join(name);
+    ensure!(
+        p.starts_with(root)
+            && name
+                .to_str()
+                .is_some_and(|value| !value.chars().any(char::is_control))
+            && !name.components().any(|c| matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::RootDir
+            )),
+        "native directory escapes host root"
+    );
+    let mut at = root.to_owned();
+    for part in name.components() {
+        at.push(part.as_os_str());
+        saved::create_directory(&at)?;
+    }
+    Ok(p)
+}
 pub fn bytes(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| (*s).into()).collect()
 }
@@ -357,21 +377,10 @@ impl<'a> Host<'a> {
         self.c.root.join(name)
     }
     pub fn dir(&self, name: &str) -> Result<PathBuf> {
-        let p = self.p(name);
-        ensure!(
-            p.starts_with(&self.c.root)
-                && !Path::new(name).components().any(|c| matches!(
-                    c,
-                    std::path::Component::ParentDir | std::path::Component::RootDir
-                )),
-            "native directory escapes host root"
-        );
-        let mut at = self.c.root.clone();
-        for part in Path::new(name).components() {
-            at.push(part.as_os_str());
-            saved::create_directory(&at)?;
-        }
-        Ok(p)
+        self.dir_path(Path::new(name))
+    }
+    pub fn dir_path(&self, name: &Path) -> Result<PathBuf> {
+        host_directory(&self.c.root, name)
     }
     pub fn id(&mut self, name: &str) -> Result<String> {
         if let Some(id) = self.state.ids.get(name) {
@@ -517,5 +526,50 @@ pub fn end_arguments(end: crate::trust_validity::End) -> Vec<String> {
     match end {
         crate::trust_validity::End::At(value) => bytes(&["--expires-ms", &value.to_string()]),
         crate::trust_validity::End::UntilWithdrawn => bytes(&["--until-withdrawn"]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::fs::MetadataExt};
+
+    #[test]
+    fn service_directories_accept_relative_paths_and_preserve_retry_boundaries() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("NativeDirectories{}", crate::random_hex::<8>())),
+        );
+        saved::create_directory(&fixture.0).unwrap();
+        let root = fixture.0.join("Host with spaces");
+        saved::create_directory(&root).unwrap();
+        for name in [
+            "Services/Relay",
+            "Successor/Certificates/Generation1/Services/Relay",
+        ] {
+            let folder = root.join(name);
+            let relative = folder.strip_prefix(&root).unwrap();
+            assert_eq!(host_directory(&root, relative).unwrap(), folder);
+            assert_eq!(fs::metadata(&folder).unwrap().mode() & 0o077, 0);
+            let retained = folder.join("Consent.cbor");
+            fs::write(&retained, b"retained consent").unwrap();
+            assert_eq!(host_directory(&root, relative).unwrap(), folder);
+            assert_eq!(fs::read(&retained).unwrap(), b"retained consent");
+        }
+        for name in ["../Outside", "Services/../../Outside", "Services/Bad\nName"] {
+            assert!(host_directory(&root, Path::new(name)).is_err());
+        }
+        assert!(host_directory(&root, &root.join("Services/Other")).is_err());
+        assert!(!fixture.0.join("Outside").exists());
+        let outside = fixture.0.join("Separate");
+        saved::create_directory(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("Linked")).unwrap();
+        assert!(host_directory(&root, Path::new("Linked/Child")).is_err());
+        assert!(!outside.join("Child").exists());
     }
 }
