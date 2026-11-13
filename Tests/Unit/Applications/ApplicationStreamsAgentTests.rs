@@ -194,6 +194,29 @@ fn full_v2_status_fits_one_frame_and_excludes_private_configuration() {
         checks: None,
     };
     let mut value = status_v2(&runtime, &state);
+    // Existing SDK clients reject unknown fields in the versioned status contract.
+    assert_eq!(
+        value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            "version",
+            "ok",
+            "status",
+            "network",
+            "incarnation",
+            "principal",
+            "binding",
+            "uptimeMs",
+            "incoming",
+            "capabilities",
+            "targets",
+            "connections",
+        ])
+    );
     // Reserve the largest ready-channel identity and numeric fields too.
     value["capabilities"]["checkAuthority"] = json!({"supported":true,"capability":streams::control::CAPABILITY,"endpointReady":true,"companionInstance":h,"endpointInstance":h,"controlGeneration":n});
     value["uptimeMs"] = json!(n);

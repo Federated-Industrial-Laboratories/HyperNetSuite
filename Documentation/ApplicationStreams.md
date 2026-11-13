@@ -398,8 +398,9 @@ operator's normal route workflow before restarting the companion. Maintenance
 never bypasses expiry, revocation, host withdrawal or cumulative usage limits.
 
 
-Status responses expose `authorityRoute` with `mode` (`automatic`, `manual` or
-`local`), `state` (`current`, `quotaExhausted` or `unavailable`), `expiresAtMs`
+The `streams status` diagnostic command (IPC version 1) exposes `authorityRoute`
+with `mode` (`automatic`, `manual` or `local`), `state` (`current`,
+`quotaExhausted` or `unavailable`), `expiresAtMs`
 and `recoveryAfterMs`. These describe the retained credential and maintenance,
 not an independent assertion of server health. A failed maintenance operation
 leaves its finite expiry unchanged. The server refuses handover when certified
@@ -408,6 +409,7 @@ sessions until `recoveryAfterMs`, then renew through current external authority
 and restart the same retained profile. It must not repeatedly restart an
 exhausted credential before that boundary. Local control has no route expiry;
 unavailable local metadata may report null times and requires normal recovery.
+Version 2 status retains its established SDK fields without this diagnostic field.
 
 For an endpoint certificate change, `streams offer --renew-from` accepts
 paired `--certificate-previous-route` and `--certificate-route` files. Both are

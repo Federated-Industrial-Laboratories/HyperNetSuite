@@ -22,6 +22,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[path = "RuntimeObserverExecutable.rs"]
+mod observer_executable;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configuration {
@@ -281,8 +283,13 @@ impl Runtime {
             } else {
                 crate::files::write_new(&conf, content.as_bytes())?;
             }
+            let executable = observer_executable::prepare(&native, executable, stop)?;
+            ensure!(
+                !stop.load(Ordering::Acquire),
+                "private time observer startup cancelled"
+            );
             let process = Process::spawn(
-                executable,
+                &executable,
                 &args(&["-U", "-x", "-d", "-u", &current_user()?, "-f", text(&conf)?]),
             )?;
             (socket, Some(process))

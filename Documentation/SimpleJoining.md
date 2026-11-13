@@ -38,6 +38,14 @@ system prerequisites with the distribution's software manager. The installer
 reports unsupported platforms or missing requirements rather than weakening the
 verification rules.
 
+Suite starts its private Chrony observer from a verified, byte-identical copy of
+the configured `chronyd` executable inside the saved server directory. This keeps
+the private observer separate from the distribution's system Chrony service.
+The copy follows trusted executable updates at the next stopped startup; it does
+not change the selected source, system configuration or retained clock identity.
+Advanced configurations that select an existing Chrony socket continue to use
+that socket and do not prepare or start another observer.
+
 The coordinated Suite and HRC installers register the shared native-link handler.
 A chat invitation finds HRC in its normal per-user installation, including a
 custom `XDG_DATA_HOME`, without requiring a PATH change. Manual installations
