@@ -2,6 +2,44 @@
 
 [Documentation](ReadMe.md) | [Project](../ReadMe.md)
 
+## Version 0.11.0
+
+The shared join window accepts server addresses, invitation links, QR images
+and optional passwords. It retains locally generated keys, saved server entries,
+explicit offline preference and exact unfinished operations. Read-only Page
+access works without Relay Chat. When chat is selected, separate native reader
+and chat profiles sit behind the same saved server; Page links reuse the reader
+window without interrupting an active form.
+
+The host window creates Invite only, Password or explicitly selected Public
+servers through signed native packages. It reviews resource limits, private
+authority services, basic participant permissions and optional persistent
+membership and hosting. The public listener and scoped registrar use separate
+mapped identities. Owners can manage invitations, capacity, removal, passwords,
+joining and shutdown. Manual file exchange and finite consent remain available.
+
+Native transport maintenance renews finite connection proofs and same-key
+certificates within the retained permissions. Interrupted work preserves its
+exact request and outcome; exhausted live allowances do not silently refill.
+Readiness checks preserve pending owner work. Scoped application discovery can
+retain Page and route rollback floors without treating them as governance powers.
+
+Stopped software controls review and adopt a newer signed Suite controller while
+preserving the exact Core package and image, native consent, keys and participant
+state. Core and HRC replacement for a shared host is not provided by this
+control. Do not substitute their binaries or edit retained host state. Manual
+native deployments retain their separate reviewed software-transition commands.
+Installing a package does not activate services or extend existing finite consent.
+
+Use the coordinated Core 0.11.0 and Suite 0.11.0 pair. Relay Chat 0.3.0 is optional
+for native Pages and required for the shared chat extension. Upgrade all voters
+before enabling persistent records, and verify the advertised protocol features.
+Older clients can refuse new validity or successor records. The client state
+contract remains `HyperNet080Client1`; retain keys, floors and exact pending work
+across upgrades. See [persistent access](PersistentAccess.md), [simple joining](SimpleJoining.md),
+[hosting](SharedHosting.md) and [installation](Installation.md).
+
+
 ## Version 0.10.3
 
 Approved Page updates now use the next content revision. Approval changes the
